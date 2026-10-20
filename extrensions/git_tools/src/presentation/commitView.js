@@ -74,6 +74,7 @@ class CommitViewProvider {
         multiRepo: this.manager.models.size > 1,
         groupBy: this.groupBy,
         repoState: m.status.state,
+        rebase: m.rebaseProgress,
         hasCommits: !!m.status.head,
         changes: m.status.changes.map((c) => {
           const sel = m.lineSelections.get(c.path);
@@ -135,6 +136,8 @@ class CommitViewProvider {
         return vscode.commands.executeCommand('gitTools.continueOperation');
       case 'abort':
         return vscode.commands.executeCommand('gitTools.abortOperation');
+      case 'skip':
+        return vscode.commands.executeCommand('gitTools.skipRebaseCommit');
       case 'menu':
         return this.menuAction(m, msg.action, changes);
       case 'addToVcs':

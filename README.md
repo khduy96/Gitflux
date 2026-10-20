@@ -24,7 +24,8 @@ flutter build windows --release
   - Commit đi qua một index tạm, nên index thật và git hooks không bị ảnh hưởng.
   - Chỉ áp dụng cho file *modified* và không dùng khi đang merge / rebase.
 - Show History, Annotate (git blame), Copy Path, Show in Explorer
-- Banner Merging / Rebasing / Cherry-picking với Continue / Skip / Abort
+- Banner Merging / Rebasing / Cherry-picking với Continue / Skip / Abort; khi rebase hiện tiến độ
+  (`Rebasing 2/5`) và commit đang dừng để sửa (`Stopped at … for editing — amend, then Continue`)
 
 **AI commit message (✨ cạnh ô commit message)**
 - Sinh commit message từ diff của các file đã tick (khi Amend thì gồm cả thay đổi của commit trước),
@@ -50,9 +51,47 @@ flutter build windows --release
   lọc theo text/hash/author, theo branch, theo file (Show History)
 - Chi tiết commit: danh sách file đã đổi, message, author/committer, các branch chứa commit
 - Menu commit: Cherry-Pick, Checkout Revision, Compare with Local, Reset (soft/mixed/hard/keep),
-  Revert, Undo Commit, Edit Commit Message, Drop Commit, New Branch, New Tag
+  Revert, Undo Commit, Edit Commit Message, Fixup into Previous, Squash Commits, Drop Commits,
+  Move Commit Up / Down, Interactively Rebase from Here, New Branch, New Tag
+  (xem mục **Interactive rebase** bên dưới)
 - Console: toàn bộ lệnh git đã chạy và output, có ô chạy lệnh git tuỳ ý
 - Stashes: Pop / Apply / Drop / Clear / Unstash as Branch, xem file và diff trong stash
+
+**Interactive rebase (chuột phải commit trong Log)**
+
+| Menu | Khi nào bật | Làm gì |
+|---|---|---|
+| Interactively Rebase from Here… | 1 commit thuộc branch hiện tại (tổ tiên của HEAD) | Mở dialog sửa toàn bộ todo từ commit đó tới HEAD |
+| Edit Commit Message… | HEAD, hoặc commit cũ hơn không phải root / merge | HEAD: amend như trước; commit cũ: reword qua rebase |
+| Fixup into Previous | 1 commit có commit cha (không phải merge) trong branch | Gộp vào commit cha, giữ message của commit cha |
+| Squash Commits… | ≥ 2 commit liền nhau, không có merge (commit cũ nhất được là root) | Gộp thành 1 commit, hỏi message (điền sẵn các message nối bằng dòng trống) |
+| Move Commit Up / Down | 1 commit có commit liền trên / liền dưới | Đổi chỗ với commit bên cạnh (không vượt qua merge) |
+| Drop Commit(s) | Chọn được nhiều commit, không phải root / merge | Xoá khỏi lịch sử branch (có hỏi xác nhận) |
+
+Menu không áp dụng được thì bị làm mờ (không ẩn). Các lệnh trên đều chạy cùng một cơ chế:
+- Yêu cầu repo ở trạng thái bình thường và HEAD đang ở trên một branch (không detached).
+- Git tự sinh todo (`git rebase -i`, thêm `--rebase-merges` nếu trong khoảng có merge commit) rồi
+  dừng ngay mà không đụng tới HEAD, index, working tree hay stash. App chạy bước này trên một index tạm,
+  vì `--autostash` sẽ làm các thay đổi đã stage thành chưa stage.
+- Todo sau khi sửa được chạy lại bằng `git rebase -i --autostash`. Reword / squash dùng
+  `exec git commit --amend --allow-empty -F <file>`, nên các hook (`pre-commit`, `commit-msg`…) vẫn chạy.
+  Hook từ chối thì rebase dừng lại ở trạng thái Rebasing.
+- Nếu có commit trong khoảng đã nằm trên upstream (`@{u}`), app cảnh báo sẽ phải force push và hỏi trước khi chạy.
+- Gặp conflict, `edit`, hook hoặc exec lỗi thì rebase dừng; banner ở Commit panel có Continue / Skip / Abort.
+  Abort đưa branch về đúng HEAD cũ.
+- Todo và message được lưu ở `.git/git-tools-rebase` (theo `git rev-parse --git-path`, chạy được với
+  worktree / submodule) và bị xoá khi rebase kết thúc.
+
+Dialog **Interactively Rebase from Here…**:
+- Mỗi dòng: action (Pick / Reword / Edit / Squash / Fixup / Drop), hash, subject, author, ngày; commit mới nhất ở trên cùng
+  như trong Log. Các dòng `label` / `reset` / `merge` / `update-ref` hiện mờ, chỉ đọc; commit chỉ được di chuyển
+  trong đoạn nằm giữa các dòng này.
+- Kéo thả hoặc Alt+↑ / Alt+↓ để đổi thứ tự; phím P / R / E / S / F / D đổi action của các commit đang chọn
+  (Ctrl+click để chọn nhiều).
+- Khung bên phải: sửa message của dòng Reword hoặc của cả nhóm Squash (mặc định là message các commit trong nhóm,
+  bỏ message của Fixup). Nhóm chỉ có Fixup giữ message của commit đầu nhóm.
+- Lỗi hiện ngay trong dialog (Squash / Fixup không có commit phía trước, message rỗng) và nút **Start Rebasing**
+  bị khoá; drop hết mọi commit chỉ là cảnh báo. **Reset** trả về todo ban đầu.
 
 **Branches (Ctrl+Shift+`)**
 - Popup giống AS: Update Project, Commit, Push, New Branch, Checkout Tag or Revision, danh sách Local/Remote
@@ -90,11 +129,11 @@ Clean Architecture, 3 tầng. Phụ thuộc chỉ hướng vào trong: `presenta
 lib/
   main.dart       # composition root: tạo các implementation của data rồi đưa cho presentation
   domain/         # thuần Dart: không import Flutter, dart:io hay data/
-    entities/     # FileChange, Commit, Branch, RepoStatus, AiConfig, ConsoleEntry, ...
-    logic/        # thuật toán thuần: diff engine, graph layout, conflict parser, line selection
+    entities/     # FileChange, Commit, Branch, RepoStatus, RebasePlan, AiConfig, ConsoleEntry, ...
+    logic/        # thuật toán thuần: diff engine, graph layout, conflict parser, line selection, rebase todo
     repositories/ # interface: GitRepository, GitService, CommitMessageGenerator, SettingsStore
-    usecases/     # CommitChanges, GenerateCommitMessage, GetSelectedLineContents
-    errors.dart   # GitException, AiException, StaleSelectionException, CommitRejected
+    usecases/     # CommitChanges, GenerateCommitMessage, GetSelectedLineContents, InteractiveRebase
+    errors.dart   # GitException, AiException, StaleSelectionException, CommitRejected, RebaseRejected
   data/           # implementation các interface của domain
     datasources/  # GitProcess (chạy git), client Claude / Gemini
     repositories/ # GitCliRepository, GitCliService, JsonFileSettingsStore (%APPDATA%/git_tools)

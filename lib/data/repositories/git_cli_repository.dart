@@ -5,7 +5,9 @@ import 'package:path/path.dart' as p;
 
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
+import '../../domain/entities/rebase.dart';
 import '../../domain/errors.dart';
+import '../../domain/logic/rebase_todo.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../datasources/git_process.dart';
 
@@ -991,26 +993,43 @@ class GitCliRepository implements GitRepository {
       git.run(['rebase', '--autostash', onto, ?branch], log: true);
 
   @override
-  Future<void> abortOperation(RepoState state) => git.run(switch (state) {
+  Future<void> abortOperation(RepoState state) async {
+    try {
+      await git.run(switch (state) {
         RepoState.merging => ['merge', '--abort'],
         RepoState.rebasing => ['rebase', '--abort'],
         RepoState.cherryPicking => ['cherry-pick', '--abort'],
         RepoState.reverting => ['revert', '--abort'],
         RepoState.normal => throw StateError('No operation in progress'),
       }, log: true);
+    } finally {
+      if (state == RepoState.rebasing) await cleanupRebaseState();
+    }
+  }
 
   @override
-  Future<void> continueOperation(RepoState state) => git.run(switch (state) {
+  Future<void> continueOperation(RepoState state) async {
+    try {
+      await git.run(switch (state) {
         RepoState.merging => ['commit', '--no-edit'],
         RepoState.rebasing => ['rebase', '--continue'],
         RepoState.cherryPicking => ['cherry-pick', '--continue'],
         RepoState.reverting => ['revert', '--continue'],
         RepoState.normal => throw StateError('No operation in progress'),
       }, log: true);
+    } finally {
+      if (state == RepoState.rebasing) await cleanupRebaseState();
+    }
+  }
 
   @override
-  Future<void> skipRebaseCommit() =>
-      git.run(['rebase', '--skip'], log: true);
+  Future<void> skipRebaseCommit() async {
+    try {
+      await git.run(['rebase', '--skip'], log: true);
+    } finally {
+      await cleanupRebaseState();
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Remote operations
@@ -1107,12 +1126,6 @@ class GitCliRepository implements GitRepository {
     await commit(message: message, paths: const [], amend: true);
   }
 
-  /// Removes [c] from the current branch history.
-  @override
-  Future<void> dropCommit(Commit c) => git.run(
-      ['rebase', '--autostash', '--onto', '${c.hash}^', c.hash],
-      log: true);
-
   @override
   Future<void> createTag(String name, String hash, {String? message}) =>
       git.run([
@@ -1125,6 +1138,165 @@ class GitCliRepository implements GitRepository {
   @override
   Future<void> deleteTag(String name) =>
       git.run(['tag', '-d', name], log: true);
+
+  // ---------------------------------------------------------------------------
+  // Interactive rebase
+  // ---------------------------------------------------------------------------
+
+  String? _stateDir;
+
+  /// Set while a preview or a rebase of this tool runs, so the state
+  /// directory is not cleaned up under it.
+  bool _rebaseBusy = false;
+
+  static List<String> _range(String? base) => [base == null ? 'HEAD' : '$base..HEAD'];
+
+  /// The preview passes `--no-autosquash` so the todo shows the real history
+  /// even with `rebase.autoSquash=true`.
+  static List<String> _rebaseArgs(String? base, bool rebaseMerges, {bool preview = false}) => [
+        'rebase', '-i', '--autostash',
+        if (preview) '--no-autosquash',
+        if (rebaseMerges) '--rebase-merges',
+        base ?? '--root',
+      ];
+
+  @override
+  Future<bool> isAncestor(String ancestor, String descendant) async =>
+      (await git.runRaw(['merge-base', '--is-ancestor', ancestor, descendant])).exitCode == 0;
+
+  @override
+  Future<List<({Commit commit, String message})>> rebaseRange(String? base) async {
+    final commits = _parseCommits(await git.run(
+        ['log', '--topo-order', '--decorate=full', '--format=$_logFormat', ..._range(base)]));
+    final messages = <String, String>{};
+    for (var rec in (await git.run(['log', '--format=%H$_fs%B$_rs', ..._range(base)])).split(_rs)) {
+      rec = rec.replaceFirst(RegExp(r'^\s+'), '');
+      final i = rec.indexOf(_fs);
+      if (i > 0) messages[rec.substring(0, i)] = rec.substring(i + 1).trim();
+    }
+    return [for (final c in commits) (commit: c, message: messages[c.hash] ?? c.subject)];
+  }
+
+  @override
+  Future<bool> rangeHasMerges(String? base) async =>
+      (await git.run(['rev-list', '--merges', '-n', '1', ..._range(base)])).trim().isNotEmpty;
+
+  @override
+  Future<int> pushedCount(String? base) async {
+    final up = await git.runRaw(['rev-parse', '--verify', '--quiet', '@{upstream}']);
+    if (up.exitCode != 0) return 0;
+    Future<int> count(List<String> args) async =>
+        int.tryParse((await git.run(['rev-list', '--count', ...args])).trim()) ?? 0;
+    return await count(_range(base)) - await count([..._range(base), '^${up.stdout.trim()}']);
+  }
+
+  @override
+  Future<String> rebaseStateDir() async {
+    if (_stateDir != null) return _stateDir!;
+    final out = (await git.run(['rev-parse', '--git-path', 'git-tools-rebase'])).trim();
+    return _stateDir = p.normalize(p.isAbsolute(out) ? out : p.join(root, out)).replaceAll('\\', '/');
+  }
+
+  /// Runs `git rebase -i` with an editor that copies the todo and then empties
+  /// it: git answers "nothing to do", removes its state and exits without
+  /// touching HEAD.
+  ///
+  /// `--autostash` would turn staged changes into unstaged ones on the way
+  /// (the stash is re-applied without `--index`), so git runs on a temporary
+  /// index made of HEAD with every entry marked assume-unchanged instead: the
+  /// clean work tree check passes and the real index, work tree and stash
+  /// list are never touched.
+  @override
+  Future<String> generateRebaseTodo(String? base, {bool rebaseMerges = false}) async {
+    final dir = await rebaseStateDir();
+    final copy = '$dir/original-todo';
+    final env = {'GIT_INDEX_FILE': '$dir/preview-index'};
+    _rebaseBusy = true;
+    try {
+      await Directory(dir).create(recursive: true);
+      await git.run(['read-tree', 'HEAD'], env: env);
+      final files = await git.run(['ls-files', '-z'], env: env);
+      if (files.isNotEmpty) {
+        await git.run(['update-index', '-z', '--assume-unchanged', '--stdin'], env: env, stdin: files);
+      }
+      final args = _rebaseArgs(base, rebaseMerges, preview: true);
+      final r = await git.runRaw(args, env: {
+        ...env,
+        'GIT_SEQUENCE_EDITOR': 'f(){ cp "\$1" ${shellQuote(copy)}; : > "\$1"; }; f',
+      });
+      final todo = File(copy);
+      if (!await todo.exists()) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+      return await todo.readAsString();
+    } finally {
+      _rebaseBusy = false;
+      await cleanupRebaseState();
+    }
+  }
+
+  @override
+  Future<RebaseOutcome> runRebaseTodo(
+    String? base, {
+    required String todo,
+    required Map<String, String> messages,
+    bool rebaseMerges = false,
+  }) async {
+    final dir = await rebaseStateDir();
+    _rebaseBusy = true;
+    try {
+      await Directory(dir).create(recursive: true);
+      await File('$dir/todo').writeAsString(todo);
+      for (final e in messages.entries) {
+        await File('$dir/${e.key}').writeAsString(e.value);
+      }
+      final args = _rebaseArgs(base, rebaseMerges);
+      // Git appends the todo path: `cp <ours> <todo>`.
+      final r = await git.runRaw(args, env: {'GIT_SEQUENCE_EDITOR': 'cp ${shellQuote('$dir/todo')} '}, log: true);
+      final output = [r.stdout.trim(), r.stderr.trim()].where((s) => s.isNotEmpty).join('\n');
+      // Stopped for a conflict, an `edit`, a failing hook or exec: the
+      // message files must survive until the rebase ends.
+      if (await repoState() == RepoState.rebasing) return RebaseOutcome(stopped: true, output: output);
+      if (r.exitCode != 0) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+      return RebaseOutcome(stopped: false, output: output);
+    } finally {
+      _rebaseBusy = false;
+      await cleanupRebaseState();
+    }
+  }
+
+  @override
+  Future<RebaseProgress?> rebaseProgress() async {
+    final dir = p.join(await gitDir(), 'rebase-merge');
+    Future<String?> read(String name) async {
+      final f = File(p.join(dir, name));
+      return await f.exists() ? (await f.readAsString()).trim() : null;
+    }
+
+    final end = int.tryParse(await read('end') ?? '');
+    if (end == null) return null;
+    final stopped = await read('stopped-sha');
+    String? subject;
+    if (stopped != null && stopped.isNotEmpty) {
+      subject = (await git.run(['log', '-1', '--format=%s', stopped], allowFailure: true)).trim();
+    }
+    return RebaseProgress(
+      done: int.tryParse(await read('msgnum') ?? '') ?? 0,
+      total: end,
+      stoppedForEdit: await File(p.join(dir, 'amend')).exists(),
+      stoppedHash: stopped == null || stopped.isEmpty ? null : stopped,
+      stoppedSubject: subject,
+    );
+  }
+
+  @override
+  Future<void> cleanupRebaseState() async {
+    if (_rebaseBusy || await repoState() != RepoState.normal) return;
+    final dir = Directory(await rebaseStateDir());
+    try {
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } on FileSystemException catch (_) {
+      // Retried on the next refresh.
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Stash

@@ -421,11 +421,16 @@
     banner.hidden = false;
     const label = { merging: 'Merging', rebasing: 'Rebasing', cherryPicking: 'Cherry-picking', reverting: 'Reverting' }[state.repoState];
     const conflicts = state.changes.filter((c) => c.type === 'conflicted').length;
+    const rb = state.repoState === 'rebasing' ? state.rebase : null;
+    const title = rb && rb.total ? `Rebasing ${rb.current}/${rb.total}` : `${label} in progress`;
+    const edit = rb && rb.stoppedForEdit && !conflicts;
     banner.append(
-      h('div', { text: conflicts ? `${label} in progress · ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : `${label} in progress · all conflicts resolved` }),
+      h('div', { text: conflicts ? `${title} · ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : edit ? title : `${title} · all conflicts resolved` }),
+      edit ? h('div.muted', { text: `Stopped at ${rb.stoppedSha || ''} ${rb.stoppedSubject || ''} for editing — amend, then Continue` }) : null,
       h('div.row', null,
         conflicts ? h('button.secondary', { text: 'Resolve…', onclick: () => post('resolve') })
           : h('button.secondary', { text: 'Continue', onclick: () => post('continue') }),
+        state.repoState === 'rebasing' ? h('button.secondary', { text: 'Skip', title: 'Skip this commit (git rebase --skip)', onclick: () => post('skip') }) : null,
         h('button.secondary', { text: 'Abort', onclick: () => post('abort') })),
     );
   }

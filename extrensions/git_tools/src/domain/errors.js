@@ -39,4 +39,7 @@ class StaleSelectionError extends Error {
 /** A commit was not started because the input breaks a rule. */
 class CommitRejected extends Error {}
 
-module.exports = { GitError, AiError, StaleSelectionError, CommitRejected };
+/** A history rewrite (interactive rebase) is not possible for the selection or the repository state. */
+class RebaseRejected extends Error {}
+
+module.exports = { GitError, AiError, StaleSelectionError, CommitRejected, RebaseRejected };

@@ -68,6 +68,19 @@
  * @property {(onto: string, branch?: string) => Promise<any>} rebase
  * @property {(state: import('./entities').RepoState) => Promise<any>} continueOperation
  * @property {(state: import('./entities').RepoState) => Promise<any>} abortOperation
+ * @property {() => Promise<any>} skipRebaseCommit
+ *
+ * @property {() => Promise<string>} rebaseStateDir Folder for the todo and message files (git rev-parse --git-path).
+ * @property {() => Promise<void>} cleanupRebaseState
+ * @property {() => Promise<string>} commentChar core.commentChar ('#' when unset or auto).
+ * @property {(ancestor: string, descendant: string) => Promise<boolean>} isAncestor
+ * @property {(hash: string) => Promise<string|null>} parentOf First parent, null for a root commit.
+ * @property {(base: string|null) => Promise<import('./entities').RangeCommit[]>} rangeCommits base..HEAD (all of HEAD when null).
+ * @property {(base: string|null) => Promise<number>} commitsOnUpstream Commits of base..HEAD already on @{u}.
+ * @property {(o: {base: string|null, rebaseMerges: boolean}) => Promise<string>} rebaseTodoPreview
+ *   The todo git generates for rebase -i, leaving the repository untouched.
+ * @property {(o: {base: string|null, rebaseMerges: boolean, todo: string, messages: Map<string, string>}) => Promise<{stopped: boolean, output: string}>} runRebaseTodo
+ * @property {() => Promise<import('./entities').RebaseProgress|null>} rebaseProgress
  *
  * @property {() => Promise<any>} fetchAll
  * @property {(remote: string, remoteBranch: string, localBranch: string) => Promise<any>} fetchInto
@@ -82,7 +95,6 @@
  * @property {(c: Commit) => Promise<any>} revert
  * @property {(hash: string, mode: import('./entities').ResetMode) => Promise<any>} reset
  * @property {() => Promise<any>} undoLastCommit
- * @property {(hash: string) => Promise<any>} dropCommit
  * @property {(name: string, hash: string, message?: string) => Promise<any>} createTag
  * @property {(name: string) => Promise<any>} deleteTag
  *

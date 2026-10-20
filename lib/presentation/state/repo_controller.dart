@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
+import '../../domain/entities/rebase.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/graph_layout.dart';
 import '../../domain/logic/line_selection.dart';
@@ -14,6 +15,7 @@ import '../../domain/repositories/git_service.dart';
 import '../../domain/usecases/commit_changes.dart';
 import '../../domain/usecases/generate_commit_message.dart';
 import '../../domain/usecases/get_selected_line_contents.dart';
+import '../../domain/usecases/interactive_rebase.dart';
 import 'app_settings.dart';
 
 enum GenerateResult { done, needsSetup, failed }
@@ -104,14 +106,19 @@ class RepoController {
     _commitChanges = CommitChanges(repo);
     _generateMessage = GenerateCommitMessage(repo, commitMessageAi);
     _selectedContents = GetSelectedLineContents(repo);
+    _rebase = InteractiveRebase(repo);
   }
 
   late final GitRepository repo;
   late final CommitChanges _commitChanges;
   late final GenerateCommitMessage _generateMessage;
   late final GetSelectedLineContents _selectedContents;
+  late final InteractiveRebase _rebase;
 
   final status = ValueNotifier<RepoStatus>(const RepoStatus());
+
+  /// Position of the rebase in progress (null when not rebasing).
+  final rebaseProgress = ValueNotifier<RebaseProgress?>(null);
   final branches = ValueNotifier<List<Branch>>(const []);
   final tags = ValueNotifier<List<Tag>>(const []);
   final remotes = ValueNotifier<List<Remote>>(const []);
@@ -219,6 +226,14 @@ class RepoController {
       final previous = status.value.state;
       status.value = s;
       _recomputeIncluded();
+      if (s.state == RepoState.rebasing) {
+        final progress = await repo.rebaseProgress();
+        if (!_disposed) rebaseProgress.value = progress;
+      } else {
+        rebaseProgress.value = null;
+        // The rebase may have ended outside this tool (e.g. in a terminal).
+        if (busy.value == null) await repo.cleanupRebaseState();
+      }
       // Prefill the prepared message when a merge / cherry-pick starts.
       if (previous == RepoState.normal &&
           s.state != RepoState.normal &&
@@ -422,6 +437,9 @@ class RepoController {
     } on GitException catch (e) {
       notify(AppNotification('$label failed', details: e.message, isError: true));
       return false;
+    } on RebaseRejected catch (e) {
+      notify(AppNotification(e.title, details: e.details, isError: true));
+      return false;
     } catch (e) {
       notify(AppNotification('$label failed', details: '$e', isError: true));
       return false;
@@ -491,6 +509,49 @@ class RepoController {
       _recomputeIncluded();
     }
     return ok;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Interactive rebase
+  // ---------------------------------------------------------------------------
+
+  /// Lets git generate the todo for rebasing the current branch from
+  /// [target]. Null (with a notification) when it cannot be rebased.
+  Future<RebasePlan?> prepareRebase(String target) async {
+    RebasePlan? plan;
+    await run('Prepare rebase', () async => plan = await _rebase.prepare(target), refresh: false);
+    return plan;
+  }
+
+  /// Runs the edited todo of [plan]. Returns false when it failed. A rebase
+  /// that stopped (conflict, edit, failing hook) is left to the banner of the
+  /// Commit panel.
+  Future<bool> runRebase(
+    RebasePlan plan,
+    List<RebaseEntry> entries, {
+    required String label,
+    required String success,
+  }) async {
+    RebaseOutcome? outcome;
+    final ok = await run(label, () async => outcome = await _rebase.start(plan, entries));
+    final out = outcome;
+    if (!ok || out == null) return false;
+    final progress = rebaseProgress.value;
+    if (!out.stopped) {
+      notify(AppNotification(success));
+    } else if (status.value.conflicts.isNotEmpty) {
+      notify(AppNotification('$label stopped: conflicts need to be resolved',
+          details: 'Resolve the conflicts, then click Continue in the Commit panel (or Abort).',
+          isError: true));
+    } else if (progress != null && progress.stoppedForEdit) {
+      notify(AppNotification('Stopped at ${progress.stoppedShort} for editing',
+          details: 'Amend the commit, then click Continue in the Commit panel.'));
+    } else {
+      final lines = out.output.trim().split('\n');
+      notify(AppNotification('$label stopped',
+          details: lines.sublist((lines.length - 6).clamp(0, lines.length)).join('\n'), isError: true));
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const { GitError } = require('../domain/errors');
 const { GitRunner, lit, pathspecs } = require('./gitRunner');
+const { shQuote } = require('../domain/logic/rebaseTodo');
 
 const FS = '\x1f';
 const RS = '\x1e';
@@ -178,6 +179,8 @@ class Repository {
     this.git = new GitRunner(root, opts);
     /** @type {string|undefined} */
     this._gitDir = undefined;
+    /** @type {string|undefined} */
+    this._rebaseStateDir = undefined;
   }
 
   get name() {
@@ -807,11 +810,6 @@ class Repository {
     return this.git.run(['reset', '--soft', 'HEAD~1'], { log: true });
   }
 
-  /** Removes the commit from the current branch history. */
-  dropCommit(hash) {
-    return this.git.run(['rebase', '--autostash', '--onto', `${hash}^`, hash], { log: true });
-  }
-
   /** Creates a tag, annotated when `message` is not empty. */
   createTag(name, hash, message = '') {
     return this.git.run(['tag', ...(message ? ['-a', '-m', message] : []), name, hash], { log: true });
@@ -863,6 +861,168 @@ class Repository {
   abortOperation(state) {
     const op = { merging: 'merge', rebasing: 'rebase', cherryPicking: 'cherry-pick', reverting: 'revert' }[state];
     return this.git.run([op, '--abort'], { log: true });
+  }
+
+  /** Skips the commit a rebase stopped at. */
+  skipRebaseCommit() {
+    return this.git.run(['rebase', '--skip'], { log: true });
+  }
+
+  // ---------------------------------------------------------------- interactive rebase
+
+  /** Absolute path of `git rev-parse --git-path <name>` (per worktree). */
+  async gitPath(name) {
+    const p = (await this.git.run(['rev-parse', '--git-path', name])).trim();
+    return path.resolve(this.root, p);
+  }
+
+  /** Folder holding the todo and message files of an interactive rebase. */
+  async rebaseStateDir() {
+    if (!this._rebaseStateDir) this._rebaseStateDir = await this.gitPath('git-tools-rebase');
+    return this._rebaseStateDir;
+  }
+
+  async cleanupRebaseState() {
+    fs.rmSync(await this.rebaseStateDir(), { recursive: true, force: true });
+  }
+
+  /** core.commentChar / core.commentString ('#' when unset or "auto"). */
+  async commentChar() {
+    const out = await this.git.run(['config', '--get-regexp', '^core\\.comment(char|string)$'], { allowFailure: true });
+    const lines = out.split('\n').filter((l) => l.trim());
+    const value = lines.length ? lines[lines.length - 1].replace(/^\S+ ?/, '') : '';
+    return !value || value === 'auto' ? '#' : value;
+  }
+
+  async isAncestor(ancestor, descendant) {
+    return (await this.git.raw(['merge-base', '--is-ancestor', ancestor, descendant])).code === 0;
+  }
+
+  /** First parent of `hash`, or null for a root commit. */
+  async parentOf(hash) {
+    const r = await this.git.raw(['rev-parse', '--verify', '--quiet', `${hash}^`]);
+    return r.code === 0 ? r.stdout.trim() : null;
+  }
+
+  /**
+   * Commits of `base..HEAD` (all of HEAD when `base` is null) with their full message.
+   * @returns {Promise<import('../domain/entities').RangeCommit[]>}
+   */
+  async rangeCommits(base) {
+    const out = await this.git.run(['log', '--topo-order', `--format=%H${FS}%P${FS}%an${FS}%at${FS}%s${FS}%B${RS}`, base ? `${base}..HEAD` : 'HEAD']);
+    return out.split(RS).map((r) => r.replace(/^\s+/, '')).filter(Boolean).map((r) => {
+      const f = r.split(FS);
+      return {
+        hash: f[0],
+        parents: f[1] ? f[1].split(' ') : [],
+        author: f[2],
+        time: parseInt(f[3], 10) * 1000,
+        subject: f[4],
+        message: f.slice(5).join(FS).replace(/\s+$/, ''),
+      };
+    });
+  }
+
+  /** Number of commits of `base..HEAD` that are already on the upstream branch (0 without one). */
+  async commitsOnUpstream(base) {
+    if ((await this.git.raw(['rev-parse', '--verify', '--quiet', '@{u}'])).code !== 0) return 0;
+    const count = async (...args) => parseInt((await this.git.run(['rev-list', '--count', ...args])).trim(), 10) || 0;
+    const range = base ? [`${base}..HEAD`] : ['HEAD'];
+    return (await count(...range)) - (await count(...range, '--not', '@{u}'));
+  }
+
+  /**
+   * The todo git generates for `rebase -i <base>`, without rewriting
+   * anything: the sequence editor copies the todo, then empties it, and git
+   * stops with "nothing to do" before touching HEAD.
+   *
+   * git runs on a temporary index made from HEAD's tree with every entry
+   * assume-unchanged: the tree looks clean, so --autostash stashes nothing
+   * and the real index, the working tree files (and their mtimes) and the
+   * stash list stay exactly as they are.
+   * @param {{base: string|null, rebaseMerges: boolean}} o
+   */
+  async rebaseTodoPreview(o) {
+    const dir = await this.rebaseStateDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const out = path.join(dir, 'original-todo');
+    const env = { GIT_INDEX_FILE: path.join(dir, 'preview-index') };
+    const editor = `f(){ cp "$1" ${shQuote(out.replace(/\\/g, '/'))}; : > "$1"; }; f`;
+    const args = ['rebase', '-i', '--autostash', '--no-autosquash', ...(o.rebaseMerges ? ['--rebase-merges'] : []), o.base || '--root'];
+    try {
+      await this.git.run(['read-tree', 'HEAD'], { env });
+      const files = await this.git.run(['ls-files', '-z'], { env });
+      if (files) await this.git.run(['update-index', '--assume-unchanged', '-z', '--stdin'], { env, stdin: files });
+      const r = await this.git.raw(args, { env: { ...env, GIT_SEQUENCE_EDITOR: editor } });
+      if (!fs.existsSync(out)) throw new GitError(args, r.code, r.stderr, r.stdout);
+      return fs.readFileSync(out, 'utf8');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Runs `rebase -i` with the given todo. Message files are written next to
+   * it and kept until the rebase ends. Returns stopped = true when git
+   * stopped (conflict, edit, failing hook or exec) and the repository is
+   * left rebasing.
+   * @param {{base: string|null, rebaseMerges: boolean, todo: string, messages: Map<string, string>}} o
+   */
+  async runRebaseTodo(o) {
+    const dir = await this.rebaseStateDir();
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    const todo = path.join(dir, 'todo');
+    fs.writeFileSync(todo, o.todo, 'utf8');
+    for (const [name, text] of o.messages) fs.writeFileSync(path.join(dir, name), text, 'utf8');
+    const args = ['rebase', '-i', '--autostash', ...(o.rebaseMerges ? ['--rebase-merges'] : []), o.base || '--root'];
+    // git appends the path of its todo file to the sequence editor command.
+    const r = await this.git.raw(args, { log: true, env: { GIT_SEQUENCE_EDITOR: `cp ${shQuote(todo.replace(/\\/g, '/'))}` } });
+    if ((await this.repoState()) === 'rebasing') {
+      return { stopped: true, output: (r.stderr || r.stdout).trim() };
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (r.code !== 0) throw new GitError(args, r.code, r.stderr, r.stdout);
+    return { stopped: false, output: '' };
+  }
+
+  /**
+   * Progress of the rebase in progress, or null.
+   * @returns {Promise<import('../domain/entities').RebaseProgress|null>}
+   */
+  async rebaseProgress() {
+    const read = (dir, name) => {
+      try {
+        return fs.readFileSync(path.join(dir, name), 'utf8').trim();
+      } catch {
+        return null;
+      }
+    };
+    const merge = await this.gitPath('rebase-merge');
+    if (fs.existsSync(merge)) {
+      const sha = read(merge, 'stopped-sha');
+      const forEdit = fs.existsSync(path.join(merge, 'amend'));
+      let subject = '';
+      if (sha && forEdit) subject = (await this.git.run(['log', '-1', '--format=%s', sha], { allowFailure: true })).trim();
+      return {
+        current: parseInt(read(merge, 'msgnum') || '0', 10) || 0,
+        total: parseInt(read(merge, 'end') || '0', 10) || 0,
+        stoppedForEdit: forEdit,
+        stoppedSha: sha ? sha.slice(0, 8) : null,
+        stoppedSubject: subject,
+      };
+    }
+    const apply = await this.gitPath('rebase-apply');
+    if (fs.existsSync(apply)) {
+      return {
+        current: parseInt(read(apply, 'next') || '0', 10) || 0,
+        total: parseInt(read(apply, 'last') || '0', 10) || 0,
+        stoppedForEdit: false,
+        stoppedSha: null,
+        stoppedSubject: '',
+      };
+    }
+    return null;
   }
 }
 

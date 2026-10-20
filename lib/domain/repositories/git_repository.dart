@@ -1,4 +1,5 @@
 import '../entities/git_models.dart';
+import '../entities/rebase.dart';
 
 /// A change noticed in the repository folder.
 enum RepoEvent {
@@ -197,11 +198,49 @@ abstract interface class GitRepository {
   Future<void> reset(String hash, ResetMode mode);
   Future<void> undoLastCommit();
   Future<void> rewordHead(String message);
-
-  /// Removes [c] from the current branch history.
-  Future<void> dropCommit(Commit c);
   Future<void> createTag(String name, String hash, {String? message});
   Future<void> deleteTag(String name);
+
+  // ---------------------------------------------------------------------------
+  // Interactive rebase
+  // ---------------------------------------------------------------------------
+
+  /// Whether [ancestor] is an ancestor of (or equal to) [descendant].
+  Future<bool> isAncestor(String ancestor, String descendant);
+
+  /// Commits of `base..HEAD` (all of HEAD when [base] is null), newest
+  /// first, with their full message.
+  Future<List<({Commit commit, String message})>> rebaseRange(String? base);
+
+  /// Whether `base..HEAD` contains merge commits.
+  Future<bool> rangeHasMerges(String? base);
+
+  /// Number of commits of `base..HEAD` reachable from the upstream of the
+  /// current branch (0 without upstream).
+  Future<int> pushedCount(String? base);
+
+  /// Directory where the todo and message files are kept
+  /// (`git rev-parse --git-path git-tools-rebase`), with forward slashes.
+  Future<String> rebaseStateDir();
+
+  /// Lets `git rebase -i` write its todo for `base..HEAD` (from the root when
+  /// [base] is null) and returns it, leaving the repository untouched.
+  Future<String> generateRebaseTodo(String? base, {bool rebaseMerges = false});
+
+  /// Writes [todo] and [messages] to the state directory and runs
+  /// `git rebase -i --autostash` with it.
+  Future<RebaseOutcome> runRebaseTodo(
+    String? base, {
+    required String todo,
+    required Map<String, String> messages,
+    bool rebaseMerges = false,
+  });
+
+  /// Position of the rebase in progress, or null.
+  Future<RebaseProgress?> rebaseProgress();
+
+  /// Deletes the state directory when no rebase is in progress.
+  Future<void> cleanupRebaseState();
 
   // ---------------------------------------------------------------------------
   // Stash

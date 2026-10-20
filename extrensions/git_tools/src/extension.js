@@ -15,6 +15,7 @@ const { AiController } = require('./presentation/aiCommands');
 const { openMergeTool } = require('./presentation/mergeTool');
 const { showSetupGuide } = require('./presentation/guide');
 const { openLineSelection } = require('./presentation/selectLines');
+const { pickAndRebase } = require('./presentation/rebaseView');
 const cmd = require('./presentation/commands');
 
 /**
@@ -213,6 +214,12 @@ async function activate(context) {
     if (m.status.state === 'normal') return vscode.window.showInformationMessage('No merge, rebase, cherry-pick or revert in progress.');
     return m.run(`Continue ${m.status.state}`, () => m.repo.continueOperation(m.status.state));
   });
+  reg('gitTools.skipRebaseCommit', async (m) => {
+    if (m.status.state !== 'rebasing') return vscode.window.showInformationMessage('No rebase in progress.');
+    const ok = await vscode.window.showWarningMessage('Skip the commit the rebase stopped at?', { modal: true, detail: 'Its changes are left out of the rewritten history.' }, 'Skip Commit');
+    if (ok) await m.run('Skip commit', () => m.repo.skipRebaseCommit());
+  });
+  reg('gitTools.interactiveRebase', (m) => pickAndRebase(context, m));
   reg('gitTools.abortOperation', async (m) => {
     if (m.status.state === 'normal') return vscode.window.showInformationMessage('No merge, rebase, cherry-pick or revert in progress.');
     const ok = await vscode.window.showWarningMessage(`Abort ${m.status.state}?`, { modal: true }, 'Abort');

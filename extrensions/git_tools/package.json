@@ -145,6 +145,17 @@
         "category": "Git Tools"
       },
       {
+        "command": "gitTools.skipRebaseCommit",
+        "title": "Skip Commit (Rebase)",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.interactiveRebase",
+        "title": "Interactive Rebase…",
+        "category": "Git Tools",
+        "icon": "$(git-pull-request)"
+      },
+      {
         "command": "gitTools.showLog",
         "title": "Show Git Log",
         "category": "Git Tools",

@@ -5,6 +5,7 @@ const vscode = require('vscode');
 const { webviewHtml } = require('./webview');
 const { openCommitDiff, openCompareWithLocal } = require('./diff');
 const cmd = require('./commands');
+const { REBASE_ACTIONS, rebaseAction } = require('./rebaseView');
 
 /**
  * Webview view "Log" in the panel: commit graph, filters and details.
@@ -19,8 +20,11 @@ class LogViewProvider {
     this.manager = manager;
     /** @type {vscode.WebviewView|null} */
     this.view = null;
+    /** Last "history can be rewritten" state sent to the webview. */
+    this._canRebase = false;
     manager.onDidChange((what) => {
       if (what === 'log' || what === 'refs') this.postLog();
+      else if (what === 'status') this.postRepoState();
     });
     manager.onDidChangeCurrent(() => this.postLog());
   }
@@ -42,6 +46,7 @@ class LogViewProvider {
   postLog() {
     if (!this.view) return;
     const m = this.manager.current;
+    this._canRebase = !!m && LogViewProvider.canRebase(m);
     this.view.webview.postMessage({
       type: 'log',
       data: m ? {
@@ -52,8 +57,23 @@ class LogViewProvider {
         loading: m.logLoading,
         filter: m.logFilter,
         branches: m.branches.map((b) => ({ name: b.name, remote: b.remote })),
-      } : { repo: null, commits: [], graph: [], head: null, loading: false, filter: {}, branches: [] },
+        canRebase: LogViewProvider.canRebase(m),
+      } : { repo: null, commits: [], graph: [], head: null, loading: false, filter: {}, branches: [], canRebase: false },
     });
+  }
+
+  /** History can be rewritten: on a branch, no operation in progress. */
+  static canRebase(m) {
+    return m.status.state === 'normal' && !!m.status.branch;
+  }
+
+  /** Enables / disables the history rewriting menu items without resending the log. */
+  postRepoState() {
+    const m = this.manager.current;
+    const canRebase = !!m && LogViewProvider.canRebase(m);
+    if (!this.view || canRebase === this._canRebase) return;
+    this._canRebase = canRebase;
+    this.view.webview.postMessage({ type: 'repoState', canRebase });
   }
 
   /** Selects a commit in the log (e.g. from another view). */
@@ -109,7 +129,12 @@ class LogViewProvider {
       }
       case 'commitAction': {
         const commits = msg.hashes.map(find).filter(Boolean);
-        if (commits.length) await cmd.commitAction(m, msg.action, commits);
+        if (!commits.length) return;
+        // Edit Commit Message of HEAD keeps the fast amend path.
+        if (REBASE_ACTIONS.has(msg.action) && !(msg.action === 'reword' && commits[0].hash === m.status.head)) {
+          return rebaseAction(this.context, m, msg.action, commits);
+        }
+        await cmd.commitAction(m, msg.action, commits);
         return;
       }
     }
