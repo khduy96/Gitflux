@@ -1,0 +1,871 @@
+// @ts-check
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { GitError } = require('../domain/errors');
+const { GitRunner, lit, pathspecs } = require('./gitRunner');
+
+const FS = '\x1f';
+const RS = '\x1e';
+
+/**
+ * @typedef {import('../domain/entities').ChangeType} ChangeType
+ * @typedef {import('../domain/entities').FileChange} FileChange
+ * @typedef {import('../domain/entities').Submodule} Submodule
+ * @typedef {import('../domain/entities').RepoState} RepoState
+ * @typedef {import('../domain/entities').Status} Status
+ * @typedef {import('../domain/entities').RefLabel} RefLabel
+ * @typedef {import('../domain/entities').Commit} Commit
+ * @typedef {import('../domain/entities').Branch} Branch
+ */
+
+const LETTER = {
+  M: 'modified', A: 'added', D: 'deleted', R: 'renamed', C: 'copied', T: 'typeChanged', U: 'conflicted',
+};
+
+const LOG_FORMAT = `%H${FS}%P${FS}%an${FS}%ae${FS}%at${FS}%cn${FS}%ct${FS}%D${FS}%s${RS}`;
+
+/** Splits into at most n fields, the last keeps the remainder. */
+function splitN(s, sep, n) {
+  const out = [];
+  let start = 0;
+  while (out.length < n - 1) {
+    const i = s.indexOf(sep, start);
+    if (i < 0) break;
+    out.push(s.slice(start, i));
+    start = i + sep.length;
+  }
+  out.push(s.slice(start));
+  return out;
+}
+
+const byPath = (a, b) => a.path.toLowerCase().localeCompare(b.path.toLowerCase());
+
+/**
+ * Submodule field of porcelain v2 ("N..." for files, "S<c><m><u>" for
+ * submodules).
+ * @returns {{newCommits: boolean, modifiedContent: boolean, untrackedContent: boolean}|undefined}
+ */
+function parseSubmoduleField(field) {
+  if (!field || field.length !== 4 || field[0] !== 'S') return undefined;
+  return { newCommits: field[1] === 'C', modifiedContent: field[2] === 'M', untrackedContent: field[3] === 'U' };
+}
+
+/** Parses `git status --porcelain=v2 -z --branch`. */
+function parseStatus(out) {
+  /** @type {Status} */
+  const s = { branch: null, head: null, upstream: null, ahead: 0, behind: 0, changes: [], state: 'normal' };
+  const parts = out.split('\0');
+  for (let i = 0; i < parts.length; i++) {
+    const e = parts[i];
+    if (!e) continue;
+    if (e.startsWith('# ')) {
+      const f = e.slice(2).split(' ');
+      if (f[0] === 'branch.oid') s.head = f[1] === '(initial)' ? null : f[1];
+      else if (f[0] === 'branch.head') s.branch = f[1] === '(detached)' ? null : f.slice(1).join(' ');
+      else if (f[0] === 'branch.upstream') s.upstream = f.slice(1).join(' ');
+      else if (f[0] === 'branch.ab') {
+        s.ahead = parseInt(f[1].slice(1), 10) || 0;
+        s.behind = parseInt(f[2].slice(1), 10) || 0;
+      }
+      continue;
+    }
+    if (e[0] === '1') {
+      const f = splitN(e, ' ', 9);
+      const [x, y] = f[1];
+      /** @type {ChangeType} */
+      let type = 'modified';
+      if (x === 'A') type = y === 'D' ? 'deleted' : 'added';
+      else if (x === 'D' || y === 'D') type = 'deleted';
+      else if (x === 'T' || y === 'T') type = 'typeChanged';
+      s.changes.push({ path: f[8], type, submodule: parseSubmoduleField(f[2]) });
+    } else if (e[0] === '2') {
+      const f = splitN(e, ' ', 10);
+      const orig = parts[++i];
+      s.changes.push({ path: f[9], oldPath: orig, type: f[8].startsWith('C') ? 'copied' : 'renamed', submodule: parseSubmoduleField(f[2]) });
+    } else if (e[0] === 'u') {
+      const f = splitN(e, ' ', 11);
+      s.changes.push({ path: f[10], type: 'conflicted', conflictCode: f[1], submodule: parseSubmoduleField(f[2]) });
+    } else if (e[0] === '?') {
+      // With --untracked-files=all git only reports a directory (trailing
+      // slash) when it is a repository of its own: a nested repository.
+      const p = e.slice(2);
+      if (p.endsWith('/')) s.changes.push({ path: p.slice(0, -1), type: 'untracked', nestedRepo: true });
+      else s.changes.push({ path: p, type: 'untracked' });
+    }
+  }
+  s.changes.sort(byPath);
+  return s;
+}
+
+/** Parses `%D` decorations produced with --decorate=full. */
+function parseRefs(d) {
+  /** @type {RefLabel[]} */
+  const refs = [];
+  if (!d.trim()) return refs;
+  for (let r of d.split(', ')) {
+    r = r.trim();
+    if (r.startsWith('HEAD -> ')) {
+      refs.push({ name: 'HEAD', kind: 'head' });
+      r = r.slice(8);
+    }
+    if (r === 'HEAD') refs.push({ name: 'HEAD', kind: 'head' });
+    else if (r.startsWith('tag: ')) refs.push({ name: r.slice(5).replace(/^refs\/tags\//, ''), kind: 'tag' });
+    else if (r.startsWith('refs/heads/')) refs.push({ name: r.slice(11), kind: 'local' });
+    else if (r.startsWith('refs/remotes/')) {
+      if (!r.endsWith('/HEAD')) refs.push({ name: r.slice(13), kind: 'remote' });
+    } else if (!r.startsWith('refs/stash')) refs.push({ name: r, kind: 'local' });
+  }
+  return refs;
+}
+
+/** @returns {Commit[]} */
+function parseCommits(out) {
+  const commits = [];
+  for (let rec of out.split(RS)) {
+    rec = rec.replace(/^\s+/, '');
+    if (!rec) continue;
+    const f = rec.split(FS);
+    if (f.length < 9) continue;
+    commits.push({
+      hash: f[0],
+      parents: f[1] ? f[1].split(' ') : [],
+      author: f[2],
+      email: f[3],
+      time: parseInt(f[4], 10) * 1000,
+      committer: f[5],
+      commitTime: parseInt(f[6], 10) * 1000,
+      refs: parseRefs(f[7]),
+      subject: f.slice(8).join(FS),
+    });
+  }
+  return commits;
+}
+
+/** Parses `--name-status -z` output. */
+function parseNameStatus(out) {
+  const parts = out.split('\0');
+  /** @type {FileChange[]} */
+  const files = [];
+  for (let i = 0; i < parts.length; i++) {
+    const s = parts[i];
+    if (!s) continue;
+    /** @type {ChangeType} */
+    const type = LETTER[s[0]] || 'modified';
+    if (type === 'renamed' || type === 'copied') {
+      const oldPath = parts[++i];
+      files.push({ path: parts[++i], oldPath, type });
+    } else {
+      files.push({ path: parts[++i], type });
+    }
+  }
+  return files.filter((f) => f.path).sort(byPath);
+}
+
+/**
+ * GitRepository (see domain/ports.js) backed by the git command line.
+ * @implements {import('../domain/ports').GitRepository}
+ */
+class Repository {
+  /**
+   * @param {string} root
+   * @param {ConstructorParameters<typeof GitRunner>[1]} [opts]
+   */
+  constructor(root, opts) {
+    this.root = root;
+    this.git = new GitRunner(root, opts);
+    /** @type {string|undefined} */
+    this._gitDir = undefined;
+  }
+
+  get name() {
+    return path.basename(this.root);
+  }
+
+  async gitDir() {
+    if (!this._gitDir) {
+      this._gitDir = path.normalize((await this.git.run(['rev-parse', '--absolute-git-dir'])).trim());
+    }
+    return this._gitDir;
+  }
+
+  // ---------------------------------------------------------------- status
+
+  /** @returns {Promise<Status>} */
+  async status() {
+    const out = await this.git.run([
+      '--no-optional-locks', 'status', '--porcelain=v2', '-z', '--branch', '--untracked-files=all',
+    ]);
+    const s = parseStatus(out);
+    s.state = await this.repoState();
+    return s;
+  }
+
+  /** @returns {Promise<RepoState>} */
+  async repoState() {
+    const dir = await this.gitDir();
+    const exists = (n) => fs.existsSync(path.join(dir, n));
+    if (exists('rebase-merge') || exists('rebase-apply')) return 'rebasing';
+    if (exists('MERGE_HEAD')) return 'merging';
+    if (exists('CHERRY_PICK_HEAD')) return 'cherryPicking';
+    if (exists('REVERT_HEAD')) return 'reverting';
+    return 'normal';
+  }
+
+  async pendingMergeMessage() {
+    const f = path.join(await this.gitDir(), 'MERGE_MSG');
+    if (!fs.existsSync(f)) return null;
+    const text = fs.readFileSync(f, 'utf8').split('\n').filter((l) => !l.startsWith('#')).join('\n').trim();
+    return text || null;
+  }
+
+  // ---------------------------------------------------------------- log
+
+  /**
+   * @param {{revisions?: string[], path?: string, limit?: number}} [o]
+   * @returns {Promise<Commit[]>}
+   */
+  async log(o = {}) {
+    const args = ['log', '--date-order', '--decorate=full', '-n', String(o.limit || 2000), `--format=${LOG_FORMAT}`];
+    if (o.revisions && o.revisions.length) args.push(...o.revisions);
+    else args.push(o.path ? 'HEAD' : '--all');
+    if (o.path) args.push('--follow', '--', lit(o.path));
+    const r = await this.git.raw(args);
+    if (r.code !== 0) {
+      if (/does not have any commits|unknown revision|bad default revision/.test(r.stderr)) return [];
+      throw new GitError(args, r.code, r.stderr, r.stdout);
+    }
+    return parseCommits(r.stdout);
+  }
+
+  /** Commits reachable from `to` but not from `from`. */
+  async commitsBetween(from, to) {
+    const r = await this.git.raw(['log', '--date-order', '--decorate=full', `--format=${LOG_FORMAT}`, `${from}..${to}`]);
+    return r.code === 0 ? parseCommits(r.stdout) : [];
+  }
+
+  /** Commits of `ref` not on `remoteRef` (or on no branch of `remote`). */
+  async outgoing(ref, remote, remoteRef) {
+    const args = ['log', '--date-order', '--decorate=full', `--format=${LOG_FORMAT}`, ref];
+    if (remoteRef) args.push(`^${remoteRef}`);
+    else args.push('--not', `--remotes=${remote}`);
+    const r = await this.git.raw(args);
+    return r.code === 0 ? parseCommits(r.stdout) : [];
+  }
+
+  async commitBody(hash) {
+    return (await this.git.run(['show', '-s', '--format=%B', hash])).trim();
+  }
+
+  /** Files changed between two revisions; null `from` = empty tree. */
+  async changedFiles(from, to) {
+    const args = ['diff-tree', '-r', '-z', '-M', '--name-status', '--no-commit-id'];
+    if (from) args.push(from);
+    else args.push('--root');
+    args.push(to);
+    return parseNameStatus(await this.git.run(args));
+  }
+
+  async branchesContaining(hash) {
+    const out = await this.git.run(['branch', '-a', '--format=%(refname:short)', '--contains', hash], { allowFailure: true });
+    return out.split('\n').map((l) => l.trim()).filter((l) => l && !l.endsWith('/HEAD'));
+  }
+
+  async refExists(ref) {
+    return (await this.git.raw(['rev-parse', '--verify', '--quiet', ref])).code === 0;
+  }
+
+  // ---------------------------------------------------------------- refs
+
+  /** @returns {Promise<Branch[]>} */
+  async branches() {
+    const out = await this.git.run([
+      'for-each-ref',
+      `--format=%(refname)${FS}%(objectname)${FS}%(upstream:short)${FS}%(upstream:track)${FS}%(HEAD)`,
+      'refs/heads', 'refs/remotes',
+    ]);
+    const count = (t, w) => {
+      const m = new RegExp(`${w} (\\d+)`).exec(t);
+      return m ? parseInt(m[1], 10) : 0;
+    };
+    return out.split('\n').filter((l) => l.trim()).map((l) => l.split(FS))
+      .filter((f) => !(f[0].startsWith('refs/remotes/') && f[0].endsWith('/HEAD')))
+      .map((f) => {
+        const remote = f[0].startsWith('refs/remotes/');
+        return {
+          name: f[0].slice(remote ? 13 : 11),
+          remote,
+          hash: f[1],
+          upstream: f[2] || null,
+          ahead: count(f[3], 'ahead'),
+          behind: count(f[3], 'behind'),
+          gone: f[3].includes('gone'),
+          current: f[4] === '*',
+        };
+      });
+  }
+
+  async tags() {
+    const out = await this.git.run([
+      'for-each-ref', '--sort=-creatordate', `--format=%(refname:short)${FS}%(objectname)${FS}%(*objectname)`, 'refs/tags',
+    ]);
+    return out.split('\n').filter((l) => l.trim()).map((l) => {
+      const f = l.split(FS);
+      return { name: f[0], hash: f[2] || f[1] };
+    });
+  }
+
+  async remotes() {
+    const out = await this.git.run(['remote', '-v']);
+    const seen = new Map();
+    for (const line of out.split('\n')) {
+      const m = /^(\S+)\s+(\S+)\s+\((fetch|push)\)/.exec(line);
+      if (m && !seen.has(m[1])) seen.set(m[1], m[2]);
+    }
+    return [...seen].map(([name, url]) => ({ name, url }));
+  }
+
+  async stashes() {
+    const out = await this.git.run(['stash', 'list', `--format=%gd${FS}%H${FS}%ct${FS}%gs`], { allowFailure: true });
+    return out.split('\n').filter((l) => l.trim()).map((l, i) => {
+      const f = l.split(FS);
+      const m = /\{(\d+)\}/.exec(f[0]);
+      return { index: m ? parseInt(m[1], 10) : i, ref: f[0], hash: f[1], time: parseInt(f[2], 10) * 1000, message: f.slice(3).join(FS) };
+    });
+  }
+
+  async stashFiles(stash) {
+    const files = await this.changedFiles(`${stash.hash}^1`, stash.hash);
+    const u = await this.git.raw(['diff-tree', '-r', '-z', '--name-status', '--no-commit-id', '--root', `${stash.hash}^3`]);
+    if (u.code === 0) files.push(...parseNameStatus(u.stdout).map((f) => ({ path: f.path, type: /** @type {ChangeType} */ ('untracked') })));
+    return files;
+  }
+
+  // ---------------------------------------------------------------- content
+
+  /**
+   * Content of `filePath` at `rev` ('' = index, 'HEAD', hash...). Null if missing.
+   * @returns {Promise<Buffer|null>}
+   */
+  async show(rev, filePath) {
+    const r = await this.git.raw(['show', `${rev}:${filePath}`]);
+    return r.code === 0 ? r.bytes : null;
+  }
+
+  /** Working tree text of `rel` ('' when the file does not exist). */
+  workingText(rel) {
+    const full = path.join(this.root, rel);
+    return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : '';
+  }
+
+  // ---------------------------------------------------------------- submodules
+
+  hasGitmodules() {
+    return fs.existsSync(path.join(this.root, '.gitmodules'));
+  }
+
+  isSubmoduleDir(rel) {
+    return fs.existsSync(path.join(this.root, rel, '.git'));
+  }
+
+  /** Commit recorded for submodule `rel` at `rev` ('' = index), or null. */
+  async gitlinkSha(rev, rel) {
+    const r = rev === ''
+      ? await this.git.raw(['ls-files', '-s', '--', lit(rel)])
+      : await this.git.raw(['ls-tree', rev, '--', lit(rel)]);
+    const line = r.stdout.trim();
+    if (r.code !== 0 || !line.startsWith('160000 ')) return null;
+    const parts = line.split(/\s+/);
+    return /^[0-9a-f]{40}$/.test(parts[1]) ? parts[1] : parts[2] || null;
+  }
+
+  /** Readable description of a submodule at a commit, for the diff editor. */
+  async submoduleText(rel, sha, extra = '') {
+    let info = '(commit not available locally: run "Update Submodules")';
+    if (this.isSubmoduleDir(rel)) {
+      const r = await new GitRunner(path.join(this.root, rel), { gitPath: this.git.gitPath })
+        .raw(['log', '-1', '--format=%s%n%an, %ad', '--date=short', sha]);
+      if (r.code === 0) info = r.stdout.trim();
+    }
+    return `Submodule ${rel}\nCommit ${sha}\n${info}\n${extra}`;
+  }
+
+  async submoduleWorkTreeText(rel) {
+    const sub = new GitRunner(path.join(this.root, rel), { gitPath: this.git.gitPath });
+    const head = (await sub.run(['rev-parse', 'HEAD'], { allowFailure: true })).trim();
+    const dirty = (await sub.run(['status', '--porcelain'], { allowFailure: true })).trim();
+    return this.submoduleText(rel, head || '(no commit)', dirty ? `\nLocal changes inside the submodule:\n${dirty}\n` : '');
+  }
+
+  /**
+   * Text of `rel` at a revision for the diff editor: file content, or a
+   * description when the path is a submodule. rev: 'WORKTREE', '' (index), commit.
+   * @returns {Promise<string|null>}
+   */
+  async contentAt(rev, rel) {
+    if (rev === 'WORKTREE') return this.isSubmoduleDir(rel) ? this.submoduleWorkTreeText(rel) : null;
+    const bytes = await this.show(rev, rel);
+    if (bytes) {
+      if (bytes.subarray(0, 8000).includes(0)) return `(binary file, ${bytes.length} bytes)`;
+      return bytes.toString('utf8');
+    }
+    const sha = await this.gitlinkSha(rev, rel);
+    return sha ? this.submoduleText(rel, sha) : null;
+  }
+
+  /** @returns {Promise<Submodule[]>} */
+  async submodules() {
+    if (!this.hasGitmodules()) return [];
+    const cfg = await this.git.run(['config', '-f', '.gitmodules', '--get-regexp', '^submodule\\..*\\.(path|url)$'], { allowFailure: true });
+    const pathOf = new Map();
+    const urlOf = new Map();
+    for (const line of cfg.split('\n')) {
+      const m = /^submodule\.(.+)\.(path|url) (.*)$/.exec(line.trim());
+      if (m) (m[2] === 'path' ? pathOf : urlOf).set(m[1], m[3]);
+    }
+    const urlByPath = new Map([...pathOf].map(([name, p]) => [p, urlOf.get(name) || '']));
+    const out = await this.git.run(['submodule', 'status', '--recursive'], { allowFailure: true });
+    const result = [];
+    for (const line of out.split('\n')) {
+      const m = /^([ +\-U])([0-9a-f]{40}) (.+?)(?: \((.*)\))?$/.exec(line);
+      if (!m) continue;
+      result.push({
+        path: m[3],
+        sha: m[2],
+        status: /** @type {any} */ ({ '-': 'uninitialized', '+': 'outOfDate', U: 'conflict' }[m[1]] || 'upToDate'),
+        url: urlByPath.get(m[3]) || '',
+        describe: m[4] || '',
+        declared: true,
+      });
+    }
+    // Declared in .gitmodules but not recorded in the parent repository
+    // (no gitlink in the index): `git submodule status` skips these.
+    const listed = new Set(result.map((s) => s.path));
+    for (const [p, url] of urlByPath) {
+      if (listed.has(p)) continue;
+      let sha = '';
+      if (this.isSubmoduleDir(p)) {
+        sha = (await new GitRunner(path.join(this.root, p), { gitPath: this.git.gitPath })
+          .run(['rev-parse', 'HEAD'], { allowFailure: true })).trim();
+      }
+      result.push({ path: p, sha, status: 'notRegistered', url, describe: '', declared: true });
+    }
+    return result.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  /**
+   * Repositories nested in this one that git does not track (reported as
+   * untracked directories), e.g. a clone inside the working tree.
+   */
+  async nestedRepositories() {
+    // `status -uall` descends into untracked folders and stops only at
+    // repositories, which it reports with a trailing slash.
+    const out = await this.git.run(['--no-optional-locks', 'status', '--porcelain=v2', '-z', '--untracked-files=all'], { allowFailure: true });
+    return parseStatus(out).changes.filter((c) => c.nestedRepo && this.isSubmoduleDir(c.path)).map((c) => c.path);
+  }
+
+  /** URL of `origin` in the repository nested at `rel`, or ''. */
+  async nestedOriginUrl(rel) {
+    const sub = new GitRunner(path.join(this.root, rel), { gitPath: this.git.gitPath });
+    return (await sub.run(['remote', 'get-url', 'origin'], { allowFailure: true })).trim();
+  }
+
+  /** Registers an existing nested repository as a submodule of this one. */
+  registerSubmodule(rel, url) {
+    return this.git.run(['submodule', 'add', '--', url, rel], { log: true });
+  }
+
+  /** Checks out the recorded commits (all submodules when `paths` is empty). */
+  updateSubmodules(paths = [], recursive = true) {
+    return this.git.run(['submodule', 'update', '--init', ...(recursive ? ['--recursive'] : []), ...(paths.length ? ['--', ...paths] : [])], { log: true });
+  }
+
+  syncSubmodules(paths = []) {
+    return this.git.run(['submodule', 'sync', '--recursive', ...(paths.length ? ['--', ...paths] : [])], { log: true });
+  }
+
+  addSubmodule(url, rel) {
+    return this.git.run(['submodule', 'add', '--', url, rel], { log: true });
+  }
+
+  /** Per file unified diff against `base`; untracked / new files as additions. */
+  async diffPerFile(changes, base) {
+    /** @type {Map<string,string>} */
+    const result = new Map();
+    const tracked = base ? changes.filter((c) => c.type !== 'untracked') : [];
+    if (tracked.length) {
+      const paths = tracked.flatMap((c) => (c.oldPath ? [c.path, c.oldPath] : [c.path])).map(lit);
+      const out = await this.git.run(['diff', '--no-color', '--no-ext-diff', '-M', base, '--', ...paths]);
+      for (const chunk of out.split(/^(?=diff --git )/m)) {
+        if (!chunk.trim()) continue;
+        const m = /^diff --git a\/.* b\/(.*)$/m.exec(chunk);
+        result.set(m ? m[1] : chunk.split('\n')[0], chunk);
+      }
+    }
+    for (const c of changes) {
+      if (base && c.type !== 'untracked') continue;
+      const full = path.join(this.root, c.path);
+      if (!fs.existsSync(full)) continue;
+      const bytes = fs.readFileSync(full);
+      if (bytes.subarray(0, 8000).includes(0)) {
+        result.set(c.path, `new binary file: ${c.path} (${bytes.length} bytes)\n`);
+        continue;
+      }
+      const text = bytes.toString('utf8');
+      result.set(c.path, `new file: ${c.path}\n${text.split('\n').map((l) => `+${l}`).join('\n')}\n`);
+    }
+    return result;
+  }
+
+  async recentSubjects(count = 15) {
+    const r = await this.git.raw(['log', `-${count}`, '--format=%s']);
+    return r.code === 0 ? r.stdout.split('\n').filter((l) => l.trim()) : [];
+  }
+
+  async lastCommitMessage() {
+    return (await this.git.run(['log', '-1', '--format=%B'])).trim();
+  }
+
+  // ---------------------------------------------------------------- commit
+
+  /**
+   * Commits only `paths` (Android Studio style, no staging area exposed).
+   * @param {{message: string, paths: string[], amend?: boolean, signOff?: boolean, partial?: boolean}} o
+   */
+  async commit(o) {
+    const msgFile = path.join(os.tmpdir(), `git_tools_msg_${Date.now()}_${process.pid}.txt`);
+    fs.writeFileSync(msgFile, o.message, 'utf8');
+    const spec = o.paths.map(lit).join('\0') + '\0';
+    const partial = o.partial !== false;
+    try {
+      if (o.paths.length) {
+        await this.git.run(['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], { stdin: spec, log: true });
+      }
+      const args = ['commit', '-F', msgFile];
+      if (o.amend) args.push('--amend');
+      if (o.signOff) args.push('--signoff');
+      if (partial && (o.paths.length || o.amend)) args.push('--only');
+      if (partial && o.paths.length) args.push('--pathspec-from-file=-', '--pathspec-file-nul');
+      await this.git.run(args, { stdin: partial && o.paths.length ? spec : undefined, log: true });
+    } finally {
+      try { fs.unlinkSync(msgFile); } catch { /* ignore */ }
+    }
+  }
+
+  /** Diff of one tracked file: HEAD → working tree. */
+  async fileDiff(filePath) {
+    return this.git.run(['diff', '--no-color', '--no-ext-diff', 'HEAD', '--', lit(filePath)]);
+  }
+
+  /**
+   * Commits through a temporary index, so only the given content is
+   * committed and the user's real index is left alone (hooks still run).
+   *   fullPaths: committed as they are in the working tree
+   *   partial:   [{path, content}] committed with exactly this content
+   * @param {{message: string, fullPaths: string[], partial: {path: string, content: string}[], amend?: boolean, signOff?: boolean}} o
+   */
+  async commitSelected(o) {
+    const dir = await this.gitDir();
+    const tmpIndex = path.join(dir, `gittools-index-${process.pid}-${Date.now()}`);
+    const msgFile = path.join(os.tmpdir(), `git_tools_msg_${Date.now()}_${process.pid}.txt`);
+    fs.writeFileSync(msgFile, o.message, 'utf8');
+    const env = { GIT_INDEX_FILE: tmpIndex };
+    const hasHead = await this.refExists('HEAD');
+    const allPaths = [...o.fullPaths, ...o.partial.map((p) => p.path)];
+    try {
+      await this.git.run(hasHead ? ['read-tree', 'HEAD'] : ['read-tree', '--empty'], { env, log: true });
+      if (o.fullPaths.length) {
+        await this.git.run(['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'],
+          { env, stdin: `${o.fullPaths.map(lit).join('\0')}\0`, log: true });
+      }
+      for (const p of o.partial) {
+        // --path applies the clean filters (e.g. CRLF → LF) like `git add`.
+        const sha = (await this.git.run(['hash-object', '-w', '--stdin', `--path=${p.path}`], { stdin: p.content })).trim();
+        const ls = hasHead ? (await this.git.run(['ls-tree', 'HEAD', '--', lit(p.path)])).trim() : '';
+        const mode = ls ? ls.split(/\s/)[0] : '100644';
+        await this.git.run(['update-index', '--add', '--cacheinfo', `${mode},${sha},${p.path}`], { env, log: true });
+      }
+      const args = ['commit', '-F', msgFile];
+      if (o.amend) args.push('--amend');
+      if (o.signOff) args.push('--signoff');
+      await this.git.run(args, { env, log: true });
+      // Sync the real index for the committed paths with the new HEAD; the
+      // unselected lines stay as unstaged changes in the working tree.
+      if (allPaths.length) {
+        await this.git.run(['reset', '-q', '--pathspec-from-file=-', '--pathspec-file-nul'],
+          { stdin: `${allPaths.map(lit).join('\0')}\0`, log: true });
+      }
+    } finally {
+      for (const f of [tmpIndex, `${tmpIndex}.lock`, msgFile]) {
+        try { fs.rmSync(f, { force: true }); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  /** Reverts tracked changes to HEAD. */
+  async rollback(changes, hasHead, deleteAdded) {
+    const all = (list) => list.flatMap((c) => (c.oldPath ? [c.path, c.oldPath] : [c.path])).map(lit);
+    // A modified submodule is rolled back by checking out the commit that the
+    // parent repository records for it.
+    const subs = changes.filter((c) => c.submodule && c.type === 'modified');
+    if (subs.length && hasHead) {
+      await this.git.run(['restore', '--source=HEAD', '--staged', '--', ...subs.map((c) => lit(c.path))], { log: true });
+      await this.updateSubmodules(subs.map((c) => c.path), false);
+    }
+    changes = changes.filter((c) => !subs.includes(c));
+    if (!changes.length) return;
+    if (!hasHead) {
+      await this.git.run(['rm', '-r', '--cached', '-q', '--', ...all(changes)], { log: true });
+      return;
+    }
+    const added = changes.filter((c) => c.type === 'added');
+    const others = changes.filter((c) => c.type !== 'added');
+    if (others.length) {
+      await this.git.run(['restore', '--source=HEAD', '--staged', '--worktree', '--', ...all(others)], { log: true });
+    }
+    if (added.length) {
+      await this.git.run(['rm', '--cached', '-q', '-f', '--', ...added.map((c) => lit(c.path))], { log: true });
+      if (deleteAdded) for (const c of added) fs.rmSync(path.join(this.root, c.path), { force: true });
+    }
+  }
+
+  async acceptSide(change, ours) {
+    const code = change.conflictCode || 'UU';
+    const deleted = ours ? code === 'DU' || code === 'DD' : code === 'UD' || code === 'DD';
+    if (deleted) {
+      await this.git.run(['rm', '-q', '--', lit(change.path)], { log: true });
+      return;
+    }
+    await this.git.run(['checkout', ours ? '--ours' : '--theirs', '--', lit(change.path)], { log: true });
+    await this.git.run(['add', '--', lit(change.path)], { log: true });
+  }
+
+  /** Stages a resolved file, writing `content` first when given. */
+  async markResolved(filePath, content) {
+    if (content !== undefined) fs.writeFileSync(path.join(this.root, filePath), content, 'utf8');
+    await this.git.run(['add', '--', lit(filePath)], { log: true });
+  }
+
+  /** Re-creates conflicted content from the index stages. */
+  async mergeFromStages(filePath) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'git_tools_merge'));
+    try {
+      const stage = async (n) => (await this.show(`:${n}`, filePath)) || Buffer.alloc(0);
+      const files = { ours: await stage(2), base: await stage(1), theirs: await stage(3) };
+      for (const [k, v] of Object.entries(files)) fs.writeFileSync(path.join(tmp, k), v);
+      const r = await this.git.raw(['merge-file', '-p', '--diff3', '-L', 'ours', '-L', 'base', '-L', 'theirs',
+        path.join(tmp, 'ours'), path.join(tmp, 'base'), path.join(tmp, 'theirs')]);
+      return r.stdout;
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  /** Starts tracking files (paths go through stdin: there can be thousands). */
+  add(paths) {
+    return this.git.run(['add', '--pathspec-from-file=-', '--pathspec-file-nul'], { stdin: pathspecs(paths), log: true });
+  }
+
+  /** Stops tracking files without deleting them. */
+  untrack(paths) {
+    return this.git.run(['rm', '--cached', '-q', '--pathspec-from-file=-', '--pathspec-file-nul'], { stdin: pathspecs(paths), log: true });
+  }
+
+  deleteFiles(paths) {
+    for (const p of paths) fs.rmSync(path.join(this.root, p), { force: true });
+  }
+
+  addToGitignore(patterns) {
+    const file = path.join(this.root, '.gitignore');
+    let content = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    if (content && !content.endsWith('\n')) content += '\n';
+    content += patterns.join('\n') + '\n';
+    fs.writeFileSync(file, content);
+  }
+
+  /** Restores `rel` as it is in commit `hash`. */
+  checkoutFile(hash, rel) {
+    return this.git.run(['checkout', hash, '--', lit(rel)], { log: true });
+  }
+
+  // ---------------------------------------------------------------- branches
+
+  checkout(ref) {
+    return this.git.run(['checkout', ref], { log: true });
+  }
+
+  checkoutTracking(localName, remoteBranch) {
+    return this.git.run(['checkout', '-b', localName, '--track', remoteBranch], { log: true });
+  }
+
+  /**
+   * Creates `name` without an upstream: branching off origin/<base> would
+   * otherwise make <base> the upstream, so a plain push would update <base>
+   * instead of publishing the new branch. The start point is kept in
+   * `branch.<name>.vscode-merge-base`.
+   * @param {string} name
+   * @param {{startPoint?: string, checkout?: boolean, fromRemote?: boolean}} [o]
+   */
+  async createBranch(name, o = {}) {
+    const args = o.checkout ? ['checkout', '--no-track', '-b', name] : ['branch', '--no-track', name];
+    if (o.startPoint) args.push(o.startPoint);
+    await this.git.run(args, { log: true });
+    if (o.fromRemote && o.startPoint) {
+      await this.git.run(['config', `branch.${name}.vscode-merge-base`, o.startPoint], { allowFailure: true });
+    }
+  }
+
+  renameBranch(oldName, newName) {
+    return this.git.run(['branch', '-m', oldName, newName], { log: true });
+  }
+
+  deleteBranch(name, force = false) {
+    return this.git.run(['branch', force ? '-D' : '-d', name], { log: true });
+  }
+
+  deleteRemoteBranch(remote, branch) {
+    return this.git.run(['push', '--progress', remote, '--delete', branch], { log: true });
+  }
+
+  merge(ref) {
+    return this.git.run(['merge', '--no-edit', ref], { log: true });
+  }
+
+  /** Rebases `branch` (the current one when omitted) onto `onto`. */
+  rebase(onto, branch) {
+    return this.git.run(['rebase', '--autostash', onto, ...(branch ? [branch] : [])], { log: true });
+  }
+
+  // ---------------------------------------------------------------- remotes
+
+  fetchAll() {
+    return this.git.run(['fetch', '--progress', '--prune', '--all'], { log: true });
+  }
+
+  /** Fetches a remote branch directly into a local branch (fast-forward only). */
+  fetchInto(remote, remoteBranch, localBranch) {
+    return this.git.run(['fetch', remote, `${remoteBranch}:${localBranch}`], { log: true });
+  }
+
+  /** @param {string} remote @param {string} branch @param {import('../domain/entities').PullMode} mode */
+  pull(remote, branch, mode) {
+    const args = ['pull', '--progress', '--no-edit'];
+    if (mode === 'ff') args.push('--ff-only');
+    else if (mode === 'rebase') args.push('--rebase', '--autostash');
+    else args.push('--no-rebase');
+    args.push(remote, branch);
+    return this.git.run(args, { log: true });
+  }
+
+  /**
+   * Pushes local `branch` to `target` on `remote`.
+   * @param {{remote: string, branch: string, target: string, force?: boolean, tags?: boolean, setUpstream?: boolean}} o
+   */
+  push(o) {
+    const args = ['push', '--progress'];
+    if (o.force) args.push('--force-with-lease');
+    if (o.tags) args.push('--follow-tags');
+    if (o.setUpstream) args.push('--set-upstream');
+    args.push(o.remote, `refs/heads/${o.branch}:refs/heads/${o.target}`);
+    return this.git.run(args, { log: true });
+  }
+
+  pushTag(remote, tag) {
+    return this.git.run(['push', '--progress', remote, `refs/tags/${tag}`], { log: true });
+  }
+
+  addRemote(name, url) {
+    return this.git.run(['remote', 'add', name, url], { log: true });
+  }
+
+  setRemoteUrl(name, url) {
+    return this.git.run(['remote', 'set-url', name, url], { log: true });
+  }
+
+  removeRemote(name) {
+    return this.git.run(['remote', 'remove', name], { log: true });
+  }
+
+  // ---------------------------------------------------------------- commits
+
+  cherryPick(c) {
+    return this.git.run(['cherry-pick', ...(c.parents.length > 1 ? ['-m', '1'] : []), c.hash], { log: true });
+  }
+
+  revert(c) {
+    return this.git.run(['revert', '--no-edit', ...(c.parents.length > 1 ? ['-m', '1'] : []), c.hash], { log: true });
+  }
+
+  /** @param {string} hash @param {import('../domain/entities').ResetMode} mode */
+  reset(hash, mode) {
+    return this.git.run(['reset', `--${mode}`, hash], { log: true });
+  }
+
+  undoLastCommit() {
+    return this.git.run(['reset', '--soft', 'HEAD~1'], { log: true });
+  }
+
+  /** Removes the commit from the current branch history. */
+  dropCommit(hash) {
+    return this.git.run(['rebase', '--autostash', '--onto', `${hash}^`, hash], { log: true });
+  }
+
+  /** Creates a tag, annotated when `message` is not empty. */
+  createTag(name, hash, message = '') {
+    return this.git.run(['tag', ...(message ? ['-a', '-m', message] : []), name, hash], { log: true });
+  }
+
+  deleteTag(name) {
+    return this.git.run(['tag', '-d', name], { log: true });
+  }
+
+  // ---------------------------------------------------------------- stash
+
+  /** @param {{message?: string, includeUntracked?: boolean, keepIndex?: boolean}} [o] */
+  stash(o = {}) {
+    const args = ['stash', 'push'];
+    if (o.includeUntracked) args.push('--include-untracked');
+    if (o.keepIndex) args.push('--keep-index');
+    if (o.message) args.push('-m', o.message);
+    return this.git.run(args, { log: true });
+  }
+
+  stashApply(ref, pop = false) {
+    return this.git.run(['stash', pop ? 'pop' : 'apply', ref], { log: true });
+  }
+
+  stashPop() {
+    return this.git.run(['stash', 'pop'], { log: true });
+  }
+
+  stashDrop(ref) {
+    return this.git.run(['stash', 'drop', ref], { log: true });
+  }
+
+  stashBranch(ref, branch) {
+    return this.git.run(['stash', 'branch', branch, ref], { log: true });
+  }
+
+  // ---------------------------------------------------------------- operations
+
+  continueOperation(state) {
+    const args = {
+      merging: ['commit', '--no-edit'],
+      rebasing: ['rebase', '--continue'],
+      cherryPicking: ['cherry-pick', '--continue'],
+      reverting: ['revert', '--continue'],
+    }[state];
+    return this.git.run(args, { log: true });
+  }
+
+  abortOperation(state) {
+    const op = { merging: 'merge', rebasing: 'rebase', cherryPicking: 'cherry-pick', reverting: 'revert' }[state];
+    return this.git.run([op, '--abort'], { log: true });
+  }
+}
+
+module.exports = {
+  Repository, parseStatus, parseCommits, parseRefs, parseNameStatus, splitN, parseSubmoduleField,
+};
