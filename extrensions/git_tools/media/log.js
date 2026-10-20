@@ -9,8 +9,11 @@
 
   const saved = vscode.getState() || {};
   let detailsWidth = saved.detailsWidth || 380;
-  let data = { commits: [], graph: [], head: null, loading: true, filter: {}, branches: [], repo: null };
+  let data = { commits: [], graph: [], head: null, loading: true, filter: {}, branches: [], repo: null, canRebase: false };
   let rows = []; // [{c, g}]
+  let byHash = new Map();
+  /** Loaded commits reachable from HEAD: the ones history rewriting can touch. */
+  let ancestors = new Set();
   let text = saved.text || '';
   let selected = new Set();
   let primary = null;
@@ -81,6 +84,7 @@
     const msg = e.data;
     if (msg.type === 'log') {
       data = msg.data;
+      computeAncestors();
       const known = new Set(data.commits.map((c) => c.hash));
       selected = new Set([...selected].filter((x) => known.has(x)));
       if (primary && !known.has(primary)) {
@@ -96,6 +100,8 @@
         details = msg.details;
         renderDetails();
       }
+    } else if (msg.type === 'repoState') {
+      data.canRebase = msg.canRebase;
     } else if (msg.type === 'select') {
       const i = rows.findIndex((r) => r.c.hash === msg.hash);
       if (i >= 0) {
@@ -118,6 +124,18 @@
         c.author.toLowerCase().includes(q) || c.email.toLowerCase().includes(q) ||
         c.refs.some((r) => r.name.toLowerCase().includes(q)))
       .map((c) => ({ c, g: null }));
+  }
+
+  function computeAncestors() {
+    byHash = new Map(data.commits.map((c) => [c.hash, c]));
+    ancestors = new Set();
+    const stack = data.head && byHash.has(data.head) ? [data.head] : [];
+    while (stack.length) {
+      const hash = stack.pop();
+      if (ancestors.has(hash)) continue;
+      ancestors.add(hash);
+      for (const p of byHash.get(hash).parents) if (byHash.has(p)) stack.push(p);
+    }
   }
 
   function select(c, ctrl, shift) {
@@ -308,10 +326,40 @@
     detailsEl.append(files, info);
   }
 
+  /**
+   * Which history rewriting actions apply to the selection. The extension
+   * checks again against git's todo before rewriting anything.
+   */
+  function rewriteState(sel, c) {
+    const single = sel.length === 1;
+    const can = !!data.canRebase;
+    const inHistory = (x) => !!x && ancestors.has(x.hash);
+    // Not a merge and not the root: a commit line of the todo with a parent in range.
+    const rewritable = (x) => inHistory(x) && x.parents.length === 1;
+    const linear = (x) => inHistory(x) && x.parents.length <= 1;
+    const parent = byHash.get(c.parents[0]);
+    const child = data.commits.find((x) => rewritable(x) && x.parents[0] === c.hash);
+    // Squash: one line of history, each selected commit the parent of the next.
+    const hashes = new Set(sel.map((x) => x.hash));
+    const tops = sel.filter((x) => !sel.some((y) => y.parents[0] === x.hash));
+    let chain = 0;
+    for (let x = tops.length === 1 ? tops[0] : null; x && hashes.has(x.hash) && linear(x); x = byHash.get(x.parents[0])) chain++;
+    return {
+      interactive: can && single && inHistory(c),
+      reword: single && (c.hash === data.head || (can && rewritable(c))),
+      fixup: can && single && rewritable(c) && linear(parent),
+      squash: can && sel.length >= 2 && chain === sel.length,
+      drop: can && sel.length > 0 && sel.every(rewritable),
+      moveUp: can && single && rewritable(c) && !!child,
+      moveDown: can && single && rewritable(c) && linear(parent),
+    };
+  }
+
   function commitMenu(x, y, c) {
     const sel = rows.filter((r) => selected.has(r.c.hash)).map((r) => r.c);
     const single = sel.length === 1;
     const isHead = c.hash === data.head;
+    const rw = rewriteState(sel, c);
     showMenu(x, y, [
       { label: 'Copy Revision Number', id: 'copy' },
       '-',
@@ -323,8 +371,14 @@
       { label: 'Revert Commit', id: 'revert' },
       { label: 'Undo Commit…', id: 'undo', disabled: !(single && isHead && c.parents.length) },
       '-',
-      { label: 'Edit Commit Message…', id: 'reword', disabled: !(single && isHead) },
-      { label: 'Drop Commit', id: 'drop', disabled: !(single && c.parents.length === 1), danger: true },
+      { label: 'Edit Commit Message…', id: 'reword', disabled: !rw.reword },
+      { label: 'Fixup into Previous', id: 'fixup', disabled: !rw.fixup },
+      { label: 'Squash Commits…', id: 'squash', disabled: !rw.squash },
+      { label: 'Drop Commits', id: 'drop', disabled: !rw.drop, danger: true },
+      '-',
+      { label: 'Move Commit Up', id: 'moveUp', disabled: !rw.moveUp },
+      { label: 'Move Commit Down', id: 'moveDown', disabled: !rw.moveDown },
+      { label: 'Interactively Rebase from Here…', id: 'interactiveRebase', disabled: !rw.interactive },
       '-',
       { label: 'New Branch…', id: 'branch', disabled: !single },
       { label: 'New Tag…', id: 'tag', disabled: !single },

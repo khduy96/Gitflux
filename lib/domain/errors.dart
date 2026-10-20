@@ -50,3 +50,15 @@ class CommitRejected implements Exception {
   @override
   String toString() => details == null ? title : '$title: $details';
 }
+
+/// An interactive rebase cannot be started (wrong repository state, invalid
+/// todo, commit outside the current branch, ...).
+class RebaseRejected implements Exception {
+  RebaseRejected(this.title, {this.details});
+
+  final String title;
+  final String? details;
+
+  @override
+  String toString() => details == null ? title : '$title: $details';
+}

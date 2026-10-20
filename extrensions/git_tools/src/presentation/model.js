@@ -6,6 +6,7 @@ const path = require('path');
 const { GitError, CommitRejected } = require('../domain/errors');
 const { layoutGraph } = require('../domain/logic/graph');
 const { CommitChanges } = require('../domain/usecases/commitChanges');
+const { InteractiveRebase } = require('../domain/usecases/interactiveRebase');
 const { selectedLineContents } = require('../domain/usecases/selectedLineContents');
 
 /** @typedef {import('../domain/ports').GitService} GitService */
@@ -23,8 +24,11 @@ class RepoModel {
     this.output = output;
     this.repo = git.open(root, { log: (line, kind) => this.log(line, kind) });
     this.commitChanges = new CommitChanges(this.repo);
+    this.interactiveRebase = new InteractiveRebase(this.repo);
     /** @type {import('../domain/entities').Status} */
     this.status = { branch: null, head: null, upstream: null, ahead: 0, behind: 0, changes: [], state: 'normal' };
+    /** Progress of the rebase in progress (Commit view banner). @type {import('../domain/entities').RebaseProgress|null} */
+    this.rebaseProgress = null;
     /** @type {import('../domain/entities').Branch[]} */
     this.branches = [];
     /** @type {{name: string, hash: string}[]} */
@@ -199,6 +203,13 @@ class RepoModel {
     try {
       const previous = this.status.state;
       this.status = await this.repo.status();
+      if (this.status.state === 'rebasing') {
+        this.rebaseProgress = await this.repo.rebaseProgress().catch(() => null);
+      } else {
+        this.rebaseProgress = null;
+        // Todo and message files of an interactive rebase that has ended.
+        if (!this.busy) await this.repo.cleanupRebaseState().catch(() => {});
+      }
       const paths = new Set(this.status.changes.map((c) => c.path));
       for (const p of [...this.excludedTracked]) if (!paths.has(p)) this.excludedTracked.delete(p);
       for (const p of [...this.includedUntracked]) if (!paths.has(p)) this.includedUntracked.delete(p);

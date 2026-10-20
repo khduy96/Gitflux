@@ -20,6 +20,9 @@
  * @typedef {{index: number, ref: string, hash: string, time: number, message: string}} Stash
  * @typedef {'soft'|'mixed'|'hard'|'keep'} ResetMode
  * @typedef {'merge'|'rebase'|'ff'} PullMode
+ * @typedef {{hash: string, parents: string[], author: string, time: number, subject: string, message: string}} RangeCommit
+ *   A commit to rewrite, with its full message.
+ * @typedef {{current: number, total: number, stoppedForEdit: boolean, stoppedSha: string|null, stoppedSubject: string}} RebaseProgress
  * @typedef {{signature: string, excluded: Set<string>, total: number}} LineSelection
  * @typedef {'none'|'claude'|'gemini'} AiProvider
  * @typedef {{provider: 'claude'|'gemini', apiKey: string, model: string, language?: string, instructions?: string}} AiConfig

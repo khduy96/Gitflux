@@ -626,16 +626,11 @@ async function commitAction(m, action, commits) {
       if (ok) await m.run('Undo commit', () => m.repo.undoLastCommit(), { success: 'Commit undone' });
       return;
     }
-    case 'reword': {
+    case 'reword': { // HEAD; older commits go through the interactive rebase (rebaseView.js)
       const current = await m.repo.lastCommitMessage();
       const msg = await vscode.window.showInputBox({ title: 'Edit Commit Message', value: current, validateInput: (v) => (v.trim() ? null : 'Message cannot be empty') });
       if (!msg || msg.trim() === current) return;
       return m.run('Edit commit message', () => m.repo.commit({ message: msg.trim(), paths: [], amend: true }), { success: 'Commit message updated' });
-    }
-    case 'drop': {
-      const ok = await vscode.window.showWarningMessage(`Drop commit ${short} "${c.subject}"?`, { modal: true, detail: 'This rewrites the history of the current branch.' }, 'Drop');
-      if (ok) await m.run('Drop commit', () => m.repo.dropCommit(c.hash), { success: `Dropped ${short}` });
-      return;
     }
     case 'branch':
       return newBranch(m, c.hash, short);

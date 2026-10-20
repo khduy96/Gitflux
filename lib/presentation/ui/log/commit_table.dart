@@ -104,25 +104,8 @@ class _CommitTableState extends State<CommitTable> {
       ctrl.selectedCommit.value = c;
     }
     final selected = _selectedCommits(rows);
-    final single = selected.length == 1;
     final isHead = c.hash == ctrl.status.value.headHash;
-    final r = await showContextMenu<String>(context, pos, [
-      menuItem('copy', 'Copy Revision Number', icon: Icons.copy, shortcut: 'Ctrl+Alt+Shift+C'),
-      const PopupMenuDivider(height: 8),
-      menuItem('cherry', 'Cherry-Pick', icon: Icons.local_florist_outlined),
-      menuItem('checkout', 'Checkout Revision \'${c.shortHash}\'', icon: Icons.login, enabled: single),
-      menuItem('compare', 'Compare with Local', icon: Icons.compare_arrows, enabled: single),
-      const PopupMenuDivider(height: 8),
-      menuItem('reset', 'Reset Current Branch to Here…', icon: Icons.restore, enabled: single),
-      menuItem('revert', 'Revert Commit', icon: Icons.undo),
-      menuItem('undo', 'Undo Commit…', icon: Icons.settings_backup_restore, enabled: single && isHead && c.parents.isNotEmpty),
-      const PopupMenuDivider(height: 8),
-      menuItem('reword', 'Edit Commit Message…', icon: Icons.edit_outlined, enabled: single && isHead),
-      menuItem('drop', 'Drop Commit', icon: Icons.delete_outline, enabled: single && !c.isMerge && c.parents.isNotEmpty),
-      const PopupMenuDivider(height: 8),
-      menuItem('branch', 'New Branch…', icon: Icons.call_split, enabled: single),
-      menuItem('tag', 'New Tag…', icon: Icons.sell_outlined, enabled: single),
-    ]);
+    final r = await showContextMenu<String>(context, pos, _menuItems(c, selected, rows, isHead: isHead));
     if (r == null || !mounted) return;
     switch (r) {
       case 'copy':
@@ -140,14 +123,82 @@ class _CommitTableState extends State<CommitTable> {
       case 'undo':
         await undoCommit(context, ctrl);
       case 'reword':
-        await editHeadMessage(context, ctrl);
+        await editCommitMessage(context, ctrl, c);
+      case 'fixup':
+        await fixupIntoPreviousAction(context, ctrl, c);
+      case 'squash':
+        await squashCommitsAction(context, ctrl, selected);
       case 'drop':
-        await dropCommitAction(context, ctrl, c);
+        await dropCommitsAction(context, ctrl, selected);
+      case 'up' || 'down':
+        await moveCommitAction(context, ctrl, c, up: r == 'up');
+      case 'rebase':
+        await interactiveRebaseAction(context, ctrl, c);
       case 'branch':
         await newBranchDialog(context, ctrl, startPoint: c.hash, startLabel: c.shortHash);
       case 'tag':
         await newTagDialog(context, ctrl, c);
     }
+  }
+
+  /// Commits of the current branch (HEAD and its ancestors among the loaded
+  /// commits). Empty when history cannot be rewritten (detached HEAD or an
+  /// operation in progress).
+  Set<String> _branchCommits() {
+    final s = ctrl.status.value;
+    if (s.detached || s.headHash == null || s.state != RepoState.normal) return const {};
+    final byHash = {for (final c in ctrl.commits.value) c.hash: c};
+    final result = <String>{};
+    final stack = [s.headHash!];
+    while (stack.isNotEmpty) {
+      final h = stack.removeLast();
+      final c = byHash[h];
+      if (c == null || !result.add(h)) continue;
+      stack.addAll(c.parents);
+    }
+    return result;
+  }
+
+  List<PopupMenuEntry<String>> _menuItems(Commit c, List<Commit> selected, List<(Commit, GraphRow?)> rows,
+      {required bool isHead}) {
+    final single = selected.length == 1;
+    final branch = _branchCommits();
+    final byHash = {for (final x in ctrl.commits.value) x.hash: x};
+    // A plain commit of the current branch: a pick line of the rebase todo.
+    bool rewritable(Commit x) => branch.contains(x.hash) && !x.isMerge;
+    final parent = c.parents.isEmpty ? null : byHash[c.parents.first];
+    final hasPrevious = rewritable(c) && parent != null && rewritable(parent);
+    final hasNext = rewritable(c) &&
+        branch.any((h) => byHash[h]!.parents.length == 1 && byHash[h]!.parents.first == c.hash);
+    final hashes = rows.map((r) => r.$1.hash).toList();
+    final idx = [for (final x in selected) hashes.indexOf(x.hash)]..sort();
+    final contiguous = idx.isNotEmpty && idx.last - idx.first == idx.length - 1;
+    return [
+      menuItem('copy', 'Copy Revision Number', icon: Icons.copy, shortcut: 'Ctrl+Alt+Shift+C'),
+      const PopupMenuDivider(height: 8),
+      menuItem('cherry', 'Cherry-Pick', icon: Icons.local_florist_outlined),
+      menuItem('checkout', 'Checkout Revision \'${c.shortHash}\'', icon: Icons.login, enabled: single),
+      menuItem('compare', 'Compare with Local', icon: Icons.compare_arrows, enabled: single),
+      const PopupMenuDivider(height: 8),
+      menuItem('reset', 'Reset Current Branch to Here…', icon: Icons.restore, enabled: single),
+      menuItem('revert', 'Revert Commit', icon: Icons.undo),
+      menuItem('undo', 'Undo Commit…', icon: Icons.settings_backup_restore, enabled: single && isHead && c.parents.isNotEmpty),
+      const PopupMenuDivider(height: 8),
+      menuItem('reword', 'Edit Commit Message…', icon: Icons.edit_outlined,
+          enabled: single && (isHead || (rewritable(c) && c.parents.isNotEmpty))),
+      menuItem('fixup', 'Fixup into Previous', icon: Icons.merge_type, enabled: single && hasPrevious),
+      menuItem('squash', 'Squash Commits…', icon: Icons.compress,
+          enabled: selected.length >= 2 && contiguous && selected.every(rewritable)),
+      menuItem('drop', single ? 'Drop Commit' : 'Drop Commits', icon: Icons.delete_outline,
+          enabled: selected.every((x) => rewritable(x) && x.parents.isNotEmpty)),
+      menuItem('up', 'Move Commit Up', icon: Icons.arrow_upward, enabled: single && hasNext),
+      menuItem('down', 'Move Commit Down', icon: Icons.arrow_downward, enabled: single && hasPrevious),
+      menuItem('rebase', 'Interactively Rebase from Here…', icon: Icons.low_priority,
+          enabled: single && branch.contains(c.hash)),
+      const PopupMenuDivider(height: 8),
+      menuItem('branch', 'New Branch…', icon: Icons.call_split, enabled: single),
+      menuItem('tag', 'New Tag…', icon: Icons.sell_outlined, enabled: single),
+    ];
   }
 
   @override

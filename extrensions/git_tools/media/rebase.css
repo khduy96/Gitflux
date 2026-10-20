@@ -1,0 +1,125 @@
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100vh;
+  padding: 10px 14px;
+}
+#top { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.hint { font-size: .92em; }
+.spacer { flex: 1; }
+
+#notice { display: flex; flex-direction: column; gap: 4px; }
+.warn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  background: var(--vscode-inputValidation-warningBackground, rgba(204,167,0,.12));
+  border: 1px solid var(--vscode-inputValidation-warningBorder, rgba(204,167,0,.5));
+}
+.warn button { padding: 1px 10px; }
+
+#main { flex: 1; display: flex; gap: 10px; min-height: 0; }
+
+/* Todo rows, oldest commit first. */
+#list {
+  flex: 3;
+  overflow: auto;
+  outline: none;
+  border: 1px solid var(--gt-border);
+  background: var(--vscode-editor-background);
+}
+#list:focus { border-color: var(--vscode-focusBorder); }
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 8px;
+  white-space: nowrap;
+  cursor: default;
+  border-top: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+}
+.row:hover:not(.header) { background: var(--gt-hover); }
+.row.selected { background: var(--gt-inactive-selected); }
+#list:focus .row.selected { color: var(--gt-selected-fg); background: var(--gt-selected); }
+.row.header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--gt-muted);
+  font-size: .92em;
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-sideBar-background));
+  border-bottom: 1px solid var(--gt-border);
+}
+.row .action { width: 86px; flex-shrink: 0; }
+.row .hash { width: 70px; flex-shrink: 0; }
+.row .subject { flex: 1; min-width: 80px; }
+.row .author { width: 120px; flex-shrink: 0; }
+.row .date { width: 120px; flex-shrink: 0; color: var(--gt-muted); }
+.row .hash.mono { color: var(--gt-muted); }
+
+select.action {
+  width: 100%;
+  font: inherit;
+  color: var(--vscode-dropdown-foreground);
+  background: var(--vscode-dropdown-background);
+  border: 1px solid var(--vscode-dropdown-border, transparent);
+  border-radius: 2px;
+  padding: 1px 2px;
+}
+
+.row.commit { cursor: grab; }
+.row.a-drop .subject, .row.a-drop .hash { text-decoration: line-through; opacity: .6; }
+.row.a-squash .subject, .row.a-fixup .subject { padding-left: 12px; }
+.row.a-reword .badge, .row .badge { color: var(--gt-modified); }
+.row.invalid { box-shadow: inset 3px 0 0 var(--vscode-errorForeground); }
+.row.drop-before { border-top-color: var(--vscode-focusBorder); }
+.row.drop-after { border-bottom-color: var(--vscode-focusBorder); }
+
+/* Merge structure (label / reset / merge / update-ref): read-only. */
+.row.structural { opacity: .6; font-style: italic; }
+.row.structural .verb { color: var(--gt-muted); }
+.row.structural .text { flex: 1; }
+
+/* Message editor / commit message. */
+#side {
+  flex: 2;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+#side .title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+#side .note { font-size: .92em; }
+div.message {
+  flex: 1;
+  overflow: auto;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  border: 1px solid var(--gt-border);
+  color: var(--gt-muted);
+}
+textarea.message {
+  flex: 1;
+  min-height: 120px;
+  resize: none;
+  white-space: pre-wrap;
+}
+
+#problems { display: flex; flex-direction: column; gap: 2px; }
+.error { color: var(--vscode-errorForeground); }
+.warning { color: var(--vscode-editorWarning-foreground, #cca700); }
+
+#bottom { display: flex; align-items: center; gap: 8px; }
+.buttons { display: flex; gap: 6px; }
+
+/* Commit message dialog. */
+body.dialog #app { max-width: 820px; }
+body.dialog textarea.message { flex: 1; }
+body.dialog .error { min-height: 1.3em; }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../domain/entities/git_models.dart';
+import '../../../domain/entities/rebase.dart';
 import '../../state/app_settings.dart';
 import '../../state/repo_controller.dart';
 import '../actions.dart';
@@ -701,7 +702,12 @@ class _StateBanner extends StatelessWidget {
   final RepoStatus status;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ValueListenableBuilder<RebaseProgress?>(
+        valueListenable: controller.rebaseProgress,
+        builder: (context, progress, _) => _build(context, progress),
+      );
+
+  Widget _build(BuildContext context, RebaseProgress? progress) {
     final s = status.state;
     final label = switch (s) {
       RepoState.merging => 'Merging',
@@ -710,6 +716,10 @@ class _StateBanner extends StatelessWidget {
       RepoState.reverting => 'Reverting',
       RepoState.normal => '',
     };
+    final step = s == RepoState.rebasing && progress != null && progress.total > 0
+        ? ' ${progress.done}/${progress.total}'
+        : '';
+    final editStop = s == RepoState.rebasing && progress != null && progress.stoppedForEdit;
     final conflicts = status.conflicts.length;
     return Container(
       margin: const EdgeInsets.fromLTRB(8, 0, 8, 6),
@@ -728,12 +738,22 @@ class _StateBanner extends StatelessWidget {
             Expanded(
               child: Text(
                 conflicts > 0
-                    ? '$label in progress · $conflicts conflict${conflicts == 1 ? '' : 's'}'
-                    : '$label in progress · all conflicts resolved',
+                    ? '$label$step in progress · $conflicts conflict${conflicts == 1 ? '' : 's'}'
+                    : editStop
+                        ? '$label$step in progress'
+                        : '$label$step in progress · all conflicts resolved',
                 style: const TextStyle(fontSize: 12.5),
               ),
             ),
           ]),
+          if (editStop) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Stopped at ${progress.stoppedShort ?? ''} ${progress.stoppedSubject ?? ''} for editing — '
+              'amend, then Continue',
+              style: const TextStyle(fontSize: 12, color: AppColors.textDim),
+            ),
+          ],
           const SizedBox(height: 6),
           Wrap(
             spacing: 6,

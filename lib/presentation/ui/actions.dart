@@ -4,10 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../domain/entities/git_models.dart';
+import '../../domain/entities/rebase.dart';
 import '../../domain/errors.dart';
+import '../../domain/logic/rebase_todo.dart';
 import '../state/repo_controller.dart';
 import 'common.dart';
 import 'dialogs/basic_dialogs.dart';
+import 'dialogs/interactive_rebase_dialog.dart';
 
 void showInExplorer(String root, String relPath) {
   final full = p.normalize(p.join(root, relPath));
@@ -543,18 +546,112 @@ Future<void> undoCommit(BuildContext context, RepoController ctrl) async {
   }
 }
 
-Future<void> dropCommitAction(
-    BuildContext context, RepoController ctrl, Commit c) async {
+// -----------------------------------------------------------------------------
+// Interactive rebase
+// -----------------------------------------------------------------------------
+
+/// Prepares a rebase from [target], lets [edit] change the todo (null
+/// cancels) and runs it after confirming the rewrite of pushed commits.
+Future<void> _rebaseWith(
+  BuildContext context,
+  RepoController ctrl,
+  String target, {
+  required String label,
+  required String success,
+  required Future<List<RebaseEntry>?> Function(RebasePlan plan) edit,
+  bool confirmPushed = true,
+}) async {
+  final plan = await ctrl.prepareRebase(target);
+  if (plan == null || !context.mounted) return;
+  final List<RebaseEntry>? entries;
+  try {
+    entries = await edit(plan);
+  } on RebaseRejected catch (e) {
+    ctrl.notify(AppNotification(e.title, details: e.details, isError: true));
+    return;
+  }
+  if (entries == null || !context.mounted) return;
+  if (confirmPushed && !await confirmRewritePushed(context, plan)) return;
+  await ctrl.runRebase(plan, entries, label: label, success: success);
+}
+
+Future<void> interactiveRebaseAction(BuildContext context, RepoController ctrl, Commit c) => _rebaseWith(
+      context,
+      ctrl,
+      c.hash,
+      label: 'Interactive rebase',
+      success: 'Rebased ${_current(ctrl)}',
+      // The dialog shows the warning and confirms itself.
+      confirmPushed: false,
+      edit: (plan) => showInteractiveRebaseDialog(context, plan),
+    );
+
+/// Edits the message of any commit of the current branch: HEAD is amended
+/// directly, older commits are reworded with an interactive rebase.
+Future<void> editCommitMessage(BuildContext context, RepoController ctrl, Commit c) async {
+  if (c.hash == ctrl.status.value.headHash) return editHeadMessage(context, ctrl);
+  await _rebaseWith(context, ctrl, c.hash,
+      label: 'Edit commit message',
+      success: 'Commit message of ${c.shortHash} updated', edit: (plan) async {
+    final entry = plan.commits.where((e) => e.hash == c.hash).firstOrNull;
+    if (entry == null) throw RebaseRejected('Cannot edit the message of a merge commit');
+    final msg = await showInput(context,
+        title: 'Edit Commit Message of ${c.shortHash}',
+        label: 'Commit message:',
+        initial: entry.message,
+        multiline: true,
+        validator: (v) => v.trim().isEmpty ? 'Message cannot be empty' : null);
+    if (msg == null || msg.trim() == entry.message.trim()) return null;
+    return rewordCommit(plan.entries, c.hash, msg.trim());
+  });
+}
+
+/// Squashes [commits] (newest first, consecutive) into one commit.
+Future<void> squashCommitsAction(BuildContext context, RepoController ctrl, List<Commit> commits) =>
+    _rebaseWith(context, ctrl, commits.last.hash,
+        label: 'Squash commits', success: 'Squashed ${commits.length} commits', edit: (plan) async {
+      final hashes = commits.map((c) => c.hash).toSet();
+      final group = plan.commits.where((e) => hashes.contains(e.hash)).toList();
+      // Validates that they are consecutive before asking for the message.
+      squashCommits(plan.entries, hashes, '');
+      final msg = await showInput(context,
+          title: 'Squash ${commits.length} Commits',
+          label: 'Message of the combined commit:',
+          initial: group.map((e) => e.message.trim()).join('\n\n'),
+          confirmLabel: 'Squash',
+          multiline: true,
+          validator: (v) => v.trim().isEmpty ? 'Message cannot be empty' : null);
+      return msg == null ? null : squashCommits(plan.entries, hashes, msg.trim());
+    });
+
+/// Melds [c] into its parent, keeping the parent's message.
+Future<void> fixupIntoPreviousAction(BuildContext context, RepoController ctrl, Commit c) =>
+    _rebaseWith(context, ctrl, c.parents.first,
+        label: 'Fixup ${c.shortHash}',
+        success: 'Melded ${c.shortHash} into ${RepoController.shortRef(c.parents.first)}',
+        edit: (plan) async => fixupCommit(plan.entries, c.hash));
+
+/// Swaps [c] with the commit above it (newer, [up]) or below it.
+Future<void> moveCommitAction(BuildContext context, RepoController ctrl, Commit c, {required bool up}) =>
+    _rebaseWith(context, ctrl, up ? c.hash : c.parents.first,
+        label: 'Move commit ${up ? 'up' : 'down'}',
+        success: 'Moved ${c.shortHash} ${up ? 'up' : 'down'}',
+        edit: (plan) async => moveCommit(plan.entries, c.hash, up ? 1 : -1));
+
+/// Removes [commits] (newest first) from the current branch.
+Future<void> dropCommitsAction(BuildContext context, RepoController ctrl, List<Commit> commits) async {
+  final single = commits.length == 1;
   final ok = await showConfirm(context,
-      title: 'Drop Commit',
-      message: 'Drop commit ${c.shortHash} "${c.subject}" from ${_current(ctrl)}?\n'
-          'This rewrites history of the current branch.',
+      title: single ? 'Drop Commit' : 'Drop Commits',
+      message: '${single ? 'Drop commit ${commits.first.shortHash} "${commits.first.subject}"' : 'Drop ${commits.length} commits'}'
+          ' from ${_current(ctrl)}?\nThis rewrites history of the current branch.',
       confirmLabel: 'Drop',
       destructive: true);
-  if (ok) {
-    await ctrl.run('Drop commit', () => ctrl.repo.dropCommit(c),
-        success: 'Dropped commit ${c.shortHash}');
-  }
+  if (!ok || !context.mounted) return;
+  await _rebaseWith(context, ctrl, commits.last.hash,
+      label: single ? 'Drop commit' : 'Drop commits',
+      success: single ? 'Dropped commit ${commits.first.shortHash}' : 'Dropped ${commits.length} commits',
+      edit: (plan) async => dropCommits(plan.entries, commits.map((c) => c.hash)));
 }
 
 Future<void> cherryPickAction(RepoController ctrl, List<Commit> commits) async {

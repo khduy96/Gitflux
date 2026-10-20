@@ -8,6 +8,7 @@ Extension cho VS Code mang Git tool window kiểu Android Studio vào VS Code:
 - Push / Update Project.
 - Stash.
 - Merge tool 3 cột.
+- **Interactive rebase**: sửa message commit cũ, squash, fixup, đổi thứ tự, drop nhiều commit.
 - **AI tự viết commit message** bằng Claude hoặc Google Gemini.
 
 Phiên bản: 0.4.2 · Yêu cầu: VS Code **1.90 trở lên** và **Git** đã cài (lệnh `git` chạy được trong terminal).
@@ -24,7 +25,7 @@ Phiên bản: 0.4.2 · Yêu cầu: VS Code **1.90 trở lên** và **Git** đã 
 6. [Branches](#6-branches)
 7. [Push, Update Project, Fetch](#7-push-update-project-fetch)
 8. [Stash](#8-stash) · [Submodules](#8b-submodules-gitmodules)
-9. [Merge, rebase và giải quyết conflict](#9-merge-rebase-và-giải-quyết-conflict)
+9. [Merge, rebase và giải quyết conflict](#9-merge-rebase-và-giải-quyết-conflict) · [Interactive rebase](#9b-interactive-rebase-sửa-lịch-sử-commit)
 10. [AI commit message](#10-ai-commit-message)
 11. [Cài đặt (Settings)](#11-cài-đặt-settings)
 12. [Danh sách lệnh](#12-danh-sách-lệnh)
@@ -251,9 +252,15 @@ View **Log** gồm 3 phần:
 | Reset Current Branch to Here… | Chọn chế độ **Soft / Mixed / Hard / Keep**. Hard hỏi xác nhận lại |
 | Revert Commit | Tạo commit đảo ngược |
 | Undo Commit… | Chỉ với commit HEAD. Huỷ commit nhưng giữ thay đổi trong working tree |
-| Edit Commit Message… | Chỉ với commit HEAD |
-| Drop Commit | Xoá commit khỏi lịch sử branch hiện tại (rebase) |
+| Edit Commit Message… | Commit HEAD: sửa nhanh bằng amend. Commit cũ hơn trong lịch sử của branch hiện tại (trừ commit gốc và merge commit): mở ô soạn message nhiều dòng rồi chạy interactive rebase |
+| Fixup into Previous | Gộp commit vào commit ngay trước nó, giữ message của commit trước |
+| Squash Commits… | Chọn từ 2 commit **liền nhau** trở lên. Gộp thành một commit; ô soạn message được điền sẵn message của các commit, nối bằng một dòng trống |
+| Drop Commits | Xoá một hoặc nhiều commit (chọn nhiều bằng `Ctrl+Click`) khỏi lịch sử branch hiện tại. Hỏi xác nhận trước |
+| Move Commit Up / Move Commit Down | Đổi chỗ commit với commit mới hơn / cũ hơn ngay cạnh nó |
+| Interactively Rebase from Here… | Mở panel **Interactive Rebase** cho commit đó và mọi commit mới hơn, xem [mục 9b](#9b-interactive-rebase-sửa-lịch-sử-commit) |
 | New Branch… / New Tag… | Tạo branch hoặc tag tại commit đó |
+
+Các lệnh sửa lịch sử (từ Edit Commit Message… tới Interactively Rebase from Here…) bị **làm mờ** khi không áp dụng được: commit không nằm trong lịch sử của HEAD, HEAD đang detached, hoặc đang có merge / rebase dở.
 
 ### Menu chuột phải trên file trong chi tiết commit
 
@@ -374,7 +381,10 @@ Khi đang merge / rebase / cherry-pick / revert, view Commit hiện banner kiể
 
 - **Resolve…** khi còn conflict.
 - **Continue** khi đã giải quyết hết. Với merge, Continue tạo merge commit bằng message mặc định của git.
+- **Skip** (chỉ khi rebase) — bỏ qua commit đang dừng (`git rebase --skip`), có hỏi xác nhận.
 - **Abort**.
+
+Khi rebase, banner hiện tiến độ, ví dụ **"Rebasing 2/5"**. Nếu rebase dừng ở commit đánh dấu `edit`, banner ghi thêm *"Stopped at 1a2b3c4d Thêm API for editing — amend, then Continue"*: sửa file, tick **Amend** rồi Commit, sau đó bấm **Continue**.
 
 Trong lúc merge, ô message được điền sẵn message mặc định của git (`Merge branch '…'`). Bạn sửa message rồi bấm **Commit** cũng được.
 
@@ -394,6 +404,42 @@ Mở bằng link **Resolve** ở nhóm Merge Conflicts, hoặc lệnh **Git Tool
 - **Open in Editor** — sửa marker trực tiếp trong editor, sau đó chọn **Mark as Resolved**.
 
 > Khi **rebase**, git đảo vai trò hai phía: bên trái là *Upstream* (branch bạn đang rebase lên), bên phải là *Your commit*. Merge tool ghi rõ nhãn này.
+
+---
+
+## 9b. Interactive rebase (sửa lịch sử commit)
+
+Giống dialog *Interactively Rebase from Here* của Android Studio. Mở bằng: Log ▸ chuột phải commit cũ nhất muốn sửa ▸ **Interactively Rebase from Here…**, hoặc lệnh **Git Tools: Interactive Rebase…** rồi chọn commit.
+
+Panel **Interactive Rebase** liệt kê commit đó và mọi commit mới hơn trên branch hiện tại, **commit mới nhất ở trên cùng** (giống Log):
+
+- Mỗi dòng gồm: hành động (dropdown), hash, message, tác giả, thời gian.
+- Hành động:
+
+  | Hành động | Phím | Ý nghĩa |
+  |---|---|---|
+  | pick | `P` | Giữ nguyên commit |
+  | reword | `R` | Giữ commit, sửa message |
+  | edit | `E` | Dừng sau commit này để bạn sửa (amend) |
+  | squash | `S` | Gộp vào commit cũ hơn ngay phía dưới, nối message |
+  | fixup | `F` | Gộp vào commit cũ hơn ngay phía dưới, giữ message của commit đó |
+  | drop | `D` | Bỏ commit |
+
+- Đổi thứ tự: **kéo thả** dòng, hoặc `Alt+↑` (lên = mới hơn) / `Alt+↓` (xuống = cũ hơn), cùng nghĩa với Move Commit Up / Down trong Log. Dòng *squash* / *fixup* có dấu ↓ để chỉ commit phía dưới mà nó được gộp vào. Chọn nhiều dòng (`Ctrl+Click`, `Shift+Click`) rồi bấm phím để đặt cùng một hành động.
+- Bên phải là **ô soạn message**: của commit đang *reword*, hoặc của cả nhóm *squash* (mặc định là message các commit trong nhóm nối bằng dòng trống, bỏ message của commit *fixup*). Nút ↺ trả về message mặc định. Với commit khác, ô này chỉ hiện message để tham khảo.
+- Lỗi hiện ngay dưới danh sách và nút **Start Rebasing** bị khoá cho tới khi sửa xong. Ví dụ: squash / fixup ở commit cũ nhất (không có commit nào phía dưới để gộp vào), message rỗng. Drop tất cả commit thì được, nhưng có cảnh báo.
+- Nút **Reset** trả về thứ tự và hành động ban đầu; **Cancel** đóng panel mà không làm gì.
+
+Cách hoạt động:
+
+- Danh sách lấy từ chính todo mà `git rebase -i` tạo ra: extension chạy rebase "thử" trên một index tạm rồi dừng lại ngay, **không đổi gì** trong repo (HEAD, index, file trong working tree kể cả thời gian sửa, stash). Thứ tự gửi cho git vẫn là cũ trước, mới sau; panel chỉ hiển thị đảo ngược. Sau đó extension chạy `git rebase -i --autostash` với todo bạn đã sửa. Thay đổi chưa commit được tự stash rồi trả lại sau khi rebase.
+- Message mới được ghi bằng `git commit --amend`, nên **git hooks** (`pre-commit`, `commit-msg`…) vẫn chạy. Hook từ chối thì rebase dừng lại ở trạng thái đang rebase.
+- **Merge commit:** nếu trong khoảng có merge commit, extension dùng `--rebase-merges` để giữ nguyên cấu trúc nhánh. Các dòng `label`, `reset`, `merge`, `update-ref` hiện mờ và chỉ đọc. Bạn chỉ đổi được thứ tự commit **giữa hai dòng như vậy**, không kéo commit qua chúng. Merge commit giữ nguyên (không reword / drop được).
+- **Commit đã push:** nếu một trong các commit bị sửa đã có trên upstream (`@{u}`), panel và hộp thoại xác nhận báo rằng sau đó bạn sẽ phải **force push** (Push… ▸ Force Push). Bạn vẫn có thể tiếp tục.
+- **Khi rebase dừng** (conflict, commit `edit`, hook hoặc lệnh lỗi): repo ở trạng thái đang rebase, banner trong view Commit hiện tiến độ và các nút Continue / Skip / Abort (xem [mục 9](#9-merge-rebase-và-giải-quyết-conflict)). **Abort** đưa branch về đúng trạng thái trước khi rebase.
+- Điều kiện: phải đang ở trên một branch (không detached HEAD) và không có merge / rebase / cherry-pick dở.
+
+Các lệnh nhanh trong menu Log (**Edit Commit Message…**, **Fixup into Previous**, **Squash Commits…**, **Move Commit Up / Down**, **Drop Commits**) dùng cùng cơ chế này, chỉ là không mở panel.
 
 ---
 
@@ -471,7 +517,8 @@ Mở Command Palette (`Ctrl+Shift+P`) và gõ `Git Tools`:
 | Push… / Update Project / Pull… / Fetch | Đồng bộ với remote |
 | Branches… / New Branch… / Checkout Tag or Revision… | Quản lý branch |
 | Stash Changes… | Tạo stash |
-| Resolve Conflicts… / Continue Merge / Rebase / Abort Merge / Rebase | Xử lý merge, rebase |
+| Resolve Conflicts… / Continue Merge / Rebase / Abort Merge / Rebase / Skip Commit (Rebase) | Xử lý merge, rebase |
+| Interactive Rebase… | Chọn commit cũ nhất rồi mở panel Interactive Rebase |
 | Show Git Log / Show History for Current File | Xem lịch sử |
 | Manage Remotes… | Thêm, sửa URL, xoá remote |
 | Select Repository… / Open Repository… / Reopen Closed Repositories | Chọn, thêm hoặc hiện lại repository |
@@ -504,7 +551,9 @@ Extension không gán phím tắt mặc định để tránh trùng phím của 
 
 ## 14. Giới hạn hiện tại
 
-- Chưa có interactive rebase (squash / reorder nhiều commit) và shelve.
+- Chưa có shelve.
+- Interactive rebase giữ nguyên merge commit (không reword / drop / đổi chỗ merge commit được).
+- `--autostash` của git trả lại thay đổi chưa commit nhưng không giữ phân biệt đã stage / chưa stage: sau khi rebase, mọi thay đổi đều ở trạng thái chưa stage (bước xem trước todo không đụng tới index).
 - Diff khi click file trong view Commit luôn so với `HEAD`, không tách riêng phần đã stage và chưa stage.
 - Nút ✨ trên Source Control của VS Code dùng danh sách file đang tick của Git Tools, không dùng danh sách *Staged Changes* của VS Code.
 - API key lưu riêng trên từng máy, không đồng bộ.
@@ -525,8 +574,9 @@ git_tools/
 │  │  ├─ ports.js          hợp đồng tầng data phải đáp ứng: GitRepository, GitService, CommitMessageAi
 │  │  ├─ errors.js         GitError, AiError, StaleSelectionError, CommitRejected
 │  │  ├─ prompt.js         system prompt + dựng prompt sinh commit message
-│  │  ├─ logic/            graph.js (xếp làn đồ thị), conflicts.js (conflict marker), lineSelection.js (chọn từng dòng)
-│  │  └─ usecases/         commitChanges.js, generateCommitMessage.js, selectedLineContents.js
+│  │  ├─ logic/            graph.js (xếp làn đồ thị), conflicts.js (conflict marker), lineSelection.js (chọn từng dòng),
+│  │  │                    rebaseTodo.js (đọc / kiểm tra / dựng todo của interactive rebase)
+│  │  └─ usecases/         commitChanges.js, generateCommitMessage.js, selectedLineContents.js, interactiveRebase.js
 │  ├─ data/                implementation của ports
 │  │  ├─ gitRunner.js      chạy lệnh git
 │  │  ├─ gitRepository.js  Repository: thao tác git + phân tích output (status, log, branch…)
@@ -542,6 +592,7 @@ git_tools/
 │     ├─ repositoriesView.js view Source Control Repositories (media/repos.*)
 │     ├─ mergeTool.js      merge tool 3 cột   (media/merge.*)
 │     ├─ selectLines.js    panel Commit Lines  (media/lines.*)
+│     ├─ rebaseView.js     panel Interactive Rebase, ô soạn message, lệnh sửa lịch sử trong Log (media/rebase.*)
 │     ├─ diff.js           nội dung file theo revision cho diff editor
 │     ├─ guide.js          trang Setup Guide  (media/guide.*)
 │     └─ webview.js        khung HTML chung cho webview
@@ -559,7 +610,7 @@ Quy tắc:
 - Chạy test (cần Node 18 trở lên và git):
 
   ```bash
-  node --test test/core.test.js test/lineSelection.test.js test/submodule.test.js test/branchUpstream.test.js test/usecases.test.js
+  node --test test/core.test.js test/lineSelection.test.js test/submodule.test.js test/branchUpstream.test.js test/usecases.test.js test/rebaseTodo.test.js test/interactiveRebase.test.js
   ```
 
 - Đóng gói lại file `.vsix` (cần Node và Internet ở lần chạy đầu):
