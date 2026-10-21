@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "active": "20260415-093000-c0ffee",
+  "lists": [
+    {
+      "id": "default",
+      "name": "Changes",
+      "comment": "",
+      "files": [
+        "a.txt"
+      ]
+    },
+    {
+      "id": "20260415-093000-c0ffee",
+      "name": "Feature Y",
+      "comment": "Draft from VS Code\n\nBody line.",
+      "files": [
+        "b.txt",
+        "sub/c.txt"
+      ],
+      "readOnly": false,
+      "createdBy": {
+        "app": "git-tools-vscode",
+        "version": "0.9.0"
+      }
+    },
+    {
+      "id": "20260416-120000-abcdef",
+      "name": "Empty one",
+      "comment": "",
+      "files": []
+    }
+  ],
+  "lastWriter": "vscode"
+}
