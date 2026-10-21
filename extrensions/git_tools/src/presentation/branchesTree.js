@@ -50,9 +50,9 @@ class BranchesTreeProvider {
 
     return [
       { item: head },
-      this.group('Local', 'folder', local.map((b) => this.branchNode(b, b.name)), true),
+      this.group('Local', 'folder', this.branchNodes(local), true, local.length),
       this.group('Remote', 'cloud', [...byRemote].map(([r, list]) =>
-        this.group(r, 'cloud', list.map((b) => this.branchNode(b, b.name.slice(r.length + 1))), false)), true),
+        this.group(r, 'cloud', this.branchNodes(list, r.length + 1), false, list.length)), true),
       this.group('Tags', 'tag', m.tags.map((t) => this.tagNode(t)), false),
       this.group('Stashes', 'archive', m.stashes.map((st) => this.stashNode(st)), false),
       this.reflogNode(),
@@ -87,13 +87,41 @@ class BranchesTreeProvider {
     return { item, submodule: s, parent: m };
   }
 
-  group(label, icon, children, expanded) {
+  group(label, icon, children, expanded, count = children.length) {
     const item = new vscode.TreeItem(label,
       expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed);
     item.iconPath = new vscode.ThemeIcon(icon);
-    item.description = String(children.length);
+    item.description = String(count);
     item.contextValue = 'group';
     return { item, children };
+  }
+
+  /**
+   * Branches nested into folders by the `/` in their names
+   * (feature/a, feature/b → feature ▸ a, b), folders first. A folder holding
+   * the current branch starts expanded.
+   * @param {import('../domain/entities').Branch[]} list
+   * @param {number} skip leading characters of each name already shown by the parents
+   */
+  branchNodes(list, skip = 0) {
+    const folders = new Map();
+    const leaves = [];
+    for (const b of list) {
+      const rest = b.name.slice(skip);
+      const i = rest.indexOf('/');
+      if (i < 0) {
+        leaves.push(this.branchNode(b, rest));
+        continue;
+      }
+      const dir = rest.slice(0, i);
+      if (!folders.has(dir)) folders.set(dir, []);
+      folders.get(dir).push(b);
+    }
+    return [
+      ...[...folders].map(([dir, sub]) => this.group(dir, 'folder',
+        this.branchNodes(sub, skip + dir.length + 1), sub.some((b) => b.current), sub.length)),
+      ...leaves,
+    ];
   }
 
   /** @param {import('../domain/entities').Branch} b */

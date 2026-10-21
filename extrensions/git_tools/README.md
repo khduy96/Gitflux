@@ -341,6 +341,7 @@ Dùng trong popup hoặc khi chuột phải trong cây Branches:
 **Smart Checkout:** nếu checkout bị chặn vì thay đổi chưa commit sẽ bị ghi đè, extension đề nghị **Smart Checkout**: stash thay đổi, checkout, rồi trả lại thay đổi.
 
 Trong cây Branches còn có:
+- Branch Local / Remote được gom thành thư mục theo tiền tố trước dấu `/`: `feature/login`, `feature/cart` → **feature** ▸ `login`, `cart`. Thư mục chứa branch hiện tại tự mở sẵn.
 - Mục **Tags**: Checkout, New Branch, Merge, Push Tag, Delete Tag.
 - Mục **Stashes**: xem [mục 8](#8-stash).
 - Mục **Reflog**: mở panel Reflog, xem [mục 5](#reflog).
