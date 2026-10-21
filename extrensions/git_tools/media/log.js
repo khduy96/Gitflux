@@ -701,6 +701,7 @@
       { label: 'Copy Revision Number', id: 'copy' },
       '-',
       { label: 'Cherry-Pick', id: 'cherryPick' },
+      { label: 'Create Patch…', id: 'createPatch' },
       { label: `Checkout Revision '${c.hash.slice(0, 8)}'`, id: 'checkout', disabled: !single },
       { label: 'Compare with Local', id: 'compare', disabled: !single },
       { label: 'Compare Commits', id: 'compareCommits', disabled: sel.length !== 2 },

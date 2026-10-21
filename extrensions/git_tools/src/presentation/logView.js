@@ -6,6 +6,7 @@ const { webviewHtml } = require('./webview');
 const { openCommitDiff, openCompareWithLocal } = require('./diff');
 const cmd = require('./commands');
 const { REBASE_ACTIONS, rebaseAction } = require('./rebaseView');
+const { createPatchFromCommits } = require('./patches');
 const { isDay } = require('../domain/logic/history');
 
 /** Log filter fields the webview may change. */
@@ -213,6 +214,7 @@ class LogViewProvider {
       case 'commitAction': {
         const commits = msg.hashes.map(find).filter(Boolean);
         if (!commits.length) return;
+        if (msg.action === 'createPatch') return createPatchFromCommits(m, commits);
         // Edit Commit Message of HEAD keeps the fast amend path.
         if (REBASE_ACTIONS.has(msg.action) && !(msg.action === 'reword' && commits[0].hash === m.status.head)) {
           return rebaseAction(this.context, m, msg.action, commits);

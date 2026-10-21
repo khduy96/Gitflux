@@ -6,10 +6,12 @@ import 'package:path/path.dart' as p;
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
 import '../../domain/entities/log_query.dart';
+import '../../domain/entities/patch.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/entities/reflog.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/log_filters.dart';
+import '../../domain/logic/patch_parser.dart';
 import '../../domain/logic/rebase_todo.dart';
 import '../../domain/logic/reflog_parser.dart';
 import '../../domain/repositories/git_repository.dart';
@@ -54,7 +56,8 @@ class GitCliRepository implements GitRepository {
           rel == '.git/packed-refs' ||
           rel == '.git/FETCH_HEAD' ||
           rel == '.git/MERGE_HEAD' ||
-          rel.startsWith('.git/rebase-')) {
+          rel.startsWith('.git/rebase-') ||
+          rel.startsWith('.git/git-tools/shelf')) {
         return RepoEvent.refs;
       }
       if (rel != '.git/index') return null;
@@ -181,6 +184,8 @@ class GitCliRepository implements GitRepository {
     bool exists(String name) =>
         FileSystemEntity.typeSync(p.join(dir, name)) !=
         FileSystemEntityType.notFound;
+    // `git am` keeps its state in rebase-apply too, marked by `applying`.
+    if (exists('rebase-apply/applying')) return RepoState.applyingMailbox;
     if (exists('rebase-merge') || exists('rebase-apply')) {
       return RepoState.rebasing;
     }
@@ -589,6 +594,14 @@ class GitCliRepository implements GitRepository {
         // A submodule is stored as a commit id (gitlink), not as a file.
         final sha = await _gitlinkSha(hash, path);
         return sha == null ? null : utf8.encode(await _submoduleText(path, sha));
+      case PatchedRev(:final base, :final patch):
+        return _withTempIndex(base, (env) async {
+          final args = ['apply', '--cached', '--binary', patch];
+          final r = await git.runRaw(args, env: env);
+          if (r.exitCode != 0) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+          final show = await git.runRaw(['show', ':$path'], env: env);
+          return show.exitCode == 0 ? show.stdoutBytes : null;
+        });
     }
   }
 
@@ -1059,6 +1072,7 @@ class GitCliRepository implements GitRepository {
         RepoState.rebasing => ['rebase', '--abort'],
         RepoState.cherryPicking => ['cherry-pick', '--abort'],
         RepoState.reverting => ['revert', '--abort'],
+        RepoState.applyingMailbox => ['am', '--abort'],
         RepoState.normal => throw StateError('No operation in progress'),
       }, log: true);
     } finally {
@@ -1074,6 +1088,7 @@ class GitCliRepository implements GitRepository {
         RepoState.rebasing => ['rebase', '--continue'],
         RepoState.cherryPicking => ['cherry-pick', '--continue'],
         RepoState.reverting => ['revert', '--continue'],
+        RepoState.applyingMailbox => ['am', '--continue'],
         RepoState.normal => throw StateError('No operation in progress'),
       }, log: true);
     } finally {
@@ -1089,6 +1104,9 @@ class GitCliRepository implements GitRepository {
       await cleanupRebaseState();
     }
   }
+
+  @override
+  Future<void> skipMailboxPatch() => git.run(['am', '--skip'], log: true);
 
   // ---------------------------------------------------------------------------
   // Remote operations
@@ -1331,7 +1349,7 @@ class GitCliRepository implements GitRepository {
     }
 
     final end = int.tryParse(await read('end') ?? '');
-    if (end == null) return null;
+    if (end == null) return _mailboxProgress();
     final stopped = await read('stopped-sha');
     String? subject;
     if (stopped != null && stopped.isNotEmpty) {
@@ -1344,6 +1362,23 @@ class GitCliRepository implements GitRepository {
       stoppedHash: stopped == null || stopped.isEmpty ? null : stopped,
       stoppedSubject: subject,
     );
+  }
+
+  /// Patch `git am` stopped on: `rebase-apply/next` of `rebase-apply/last`,
+  /// with the subject of that patch.
+  Future<RebaseProgress?> _mailboxProgress() async {
+    final dir = p.join(await gitDir(), 'rebase-apply');
+    if (!await File(p.join(dir, 'applying')).exists()) return null;
+    Future<String?> read(String name) async {
+      final f = File(p.join(dir, name));
+      return await f.exists() ? (await f.readAsString()).trim() : null;
+    }
+
+    final last = int.tryParse(await read('last') ?? '');
+    final next = int.tryParse(await read('next') ?? '');
+    if (last == null || next == null) return null;
+    final subject = (await read('final-commit'))?.split('\n').first;
+    return RebaseProgress(done: next, total: last, stoppedSubject: subject);
   }
 
   @override
@@ -1393,6 +1428,184 @@ class GitCliRepository implements GitRepository {
   @override
   Future<void> stashBranch(Stash s, String branch) =>
       git.run(['stash', 'branch', branch, s.ref], log: true);
+
+  // ---------------------------------------------------------------------------
+  // Patches
+  // ---------------------------------------------------------------------------
+
+  /// Diff options giving a patch git can apply whatever the diff settings of
+  /// the user (prefixes, external diff, textconv, relative paths).
+  static const _patchArgs = [
+    '--binary', '--full-index', '-M', '--no-color', '--no-ext-diff', '--no-textconv',
+    '--no-relative', '--src-prefix=a/', '--dst-prefix=b/',
+  ];
+
+  String? _commonDir;
+
+  @override
+  Future<String> commonDir() async {
+    if (_commonDir != null) return _commonDir!;
+    final out = (await git.run(['rev-parse', '--git-common-dir'])).trim();
+    return _commonDir = p.normalize(p.isAbsolute(out) ? out : p.join(root, out));
+  }
+
+  /// Runs [action] with `GIT_INDEX_FILE` set to a temporary index made from
+  /// [base], or copied from the real index when [base] is null.
+  Future<T> _withTempIndex<T>(String? base, Future<T> Function(Map<String, String> env) action) async {
+    final tmp = p.join(await gitDir(), 'gittools-index-$pid-${DateTime.now().microsecondsSinceEpoch}');
+    final env = {'GIT_INDEX_FILE': tmp};
+    try {
+      if (base != null) {
+        await git.run(['read-tree', base], env: env);
+      } else {
+        final out = (await git.run(['rev-parse', '--git-path', 'index'])).trim();
+        final real = File(p.isAbsolute(out) ? out : p.join(root, out));
+        if (await real.exists()) {
+          await real.copy(tmp);
+        } else {
+          await git.run(['read-tree', '--empty'], env: env);
+        }
+      }
+      return await action(env);
+    } finally {
+      for (final f in [tmp, '$tmp.lock']) {
+        try {
+          final file = File(f);
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Writes [patch] to a temporary file for the duration of [action].
+  Future<T> _withPatchFile<T>(List<int> patch, Future<T> Function(String path) action) async {
+    final f = File(p.join(Directory.systemTemp.path,
+        'git_tools_patch_${pid}_${DateTime.now().microsecondsSinceEpoch}.patch'));
+    await f.writeAsBytes(patch);
+    try {
+      return await action(f.path);
+    } finally {
+      try {
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
+  }
+
+  /// `git add -A` of [paths] into a temporary index made from [base] takes
+  /// modified, deleted and untracked files alike; the diff of that index
+  /// against [base] is the patch.
+  @override
+  Future<WorkingTreePatch> diffWorkingTree(String base, List<String> paths) => _withTempIndex(base, (env) async {
+        // `git add` fails on a path that is neither on disk nor in the index
+        // (e.g. a staged new file deleted since).
+        final missing = [
+          for (final path in paths)
+            if (FileSystemEntity.typeSync(p.join(root, path), followLinks: false) == FileSystemEntityType.notFound) path,
+        ];
+        final inBase = missing.isEmpty
+            ? const <String>{}
+            : (await git.run(['ls-files', '-z', '--', ...missing.map(lit)], env: env)).split('\x00').toSet();
+        final add = paths.where((path) => !missing.contains(path) || inBase.contains(path)).toList();
+        if (add.isNotEmpty) {
+          await git.run(['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'],
+              env: env, stdin: _pathspecs(add), log: true);
+        }
+        final args = ['diff', '--cached', ..._patchArgs, base, '--'];
+        final r = await git.runRaw(args, env: env);
+        if (r.exitCode != 0) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+        final names = await git.run(['diff', '--cached', '-z', '-M', '--name-status', '--no-relative', base, '--'], env: env);
+        return (patch: r.stdoutBytes, files: _parseNameStatusZ(names));
+      });
+
+  /// One `git format-patch -1` per commit, concatenated in topological order.
+  @override
+  Future<List<int>> formatPatch(List<String> hashes) async {
+    final wanted = hashes.toSet();
+    final order = (await git.run(['rev-list', '--topo-order', '--reverse', '--no-merges', ...hashes]))
+        .split('\n')
+        .map((l) => l.trim())
+        .where(wanted.contains)
+        .toList();
+    final out = <int>[];
+    for (final hash in order) {
+      final args = [
+        'format-patch', '-1', '--stdout', '--binary', '--no-attach', '--no-thread',
+        '--src-prefix=a/', '--dst-prefix=b/', hash,
+      ];
+      final r = await git.runRaw(args);
+      if (r.exitCode != 0) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+      out.addAll(r.stdoutBytes);
+    }
+    return out;
+  }
+
+  @override
+  Future<String> patchStats(List<int> patch) =>
+      _withPatchFile(patch, (file) => git.run(['apply', '--numstat', '--summary', file]));
+
+  static final _conflictLine = RegExp(r"^Applied patch to '(.*)' with conflicts\.$", multiLine: true);
+
+  /// Runs on a copy of the index that takes the working tree content of the
+  /// tracked files: local changes of a patched file are merged as "ours"
+  /// instead of making git refuse it ("does not match index"), and the real
+  /// index keeps the user's staging. A file the patch creates that already
+  /// exists untracked goes to the copy too, so git merges both versions
+  /// (add/add conflict) instead of refusing the patch. Only the unmerged
+  /// entries of conflicts are copied to the real index.
+  @override
+  Future<PatchApplyResult> applyPatch(List<int> patch, {bool check = false}) =>
+      _withPatchFile(patch, (file) => _withTempIndex(null, (env) async {
+            await git.run(['add', '-u'], env: env);
+            final created = [
+              for (final f in parsePatchStats(await git.run(['apply', '--numstat', '--summary', file])))
+                if (f.type == ChangeType.added &&
+                    FileSystemEntity.typeSync(p.join(root, f.path), followLinks: false) == FileSystemEntityType.file)
+                  f.path,
+            ];
+            if (created.isNotEmpty) {
+              await git.run(['add', '-f', '--pathspec-from-file=-', '--pathspec-file-nul'],
+                  env: env, stdin: _pathspecs(created));
+            }
+            final args = ['apply', '--3way', '--binary', if (check) '--check', file];
+            final r = await git.runRaw(args, env: env, log: !check);
+            final output = [r.stdout.trim(), r.stderr.trim()].where((s) => s.isNotEmpty).join('\n');
+            if (check) {
+              if (r.exitCode != 0) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+              return PatchApplyResult(
+                  conflicts: [for (final m in _conflictLine.allMatches(output)) m.group(1)!], output: output);
+            }
+            final entries = (await git.run(['ls-files', '-u', '-z'], env: env))
+                .split('\x00')
+                .where((e) => e.isNotEmpty)
+                .toList();
+            if (r.exitCode != 0 && entries.isEmpty) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+            final conflicts = {for (final e in entries) e.substring(e.indexOf('\t') + 1)}.toList()..sort();
+            if (conflicts.isNotEmpty) {
+              // A mode 0 line removes the stage 0 entry before the stages.
+              final zero = '0' * entries.first.split(' ')[1].length;
+              await git.run(
+                ['update-index', '-z', '--index-info'],
+                stdin: [for (final c in conflicts) '0 $zero\t$c', ...entries].map((e) => '$e\x00').join(),
+                log: true,
+              );
+            }
+            return PatchApplyResult(conflicts: conflicts, output: output);
+          }));
+
+  @override
+  Future<bool> applyMailbox(List<int> patch) => _withPatchFile(patch, (file) async {
+        final args = ['am', '--3way', file];
+        final r = await git.runRaw(args, log: true);
+        if (r.exitCode == 0) return true;
+        if (await repoState() == RepoState.applyingMailbox) return false;
+        throw GitException(args, r.exitCode, r.stderr, r.stdout);
+      });
+
+  @override
+  Future<void> updateRef(String ref, String hash) => git.run(['update-ref', ref, hash]);
+
+  @override
+  Future<void> deleteRef(String ref) => git.run(['update-ref', '-d', ref]);
 
   // ---------------------------------------------------------------------------
   // Conflicts

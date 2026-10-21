@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { GitRunner } = require('./gitRunner');
 const { Repository } = require('./gitRepository');
+const { ShelfStore } = require('./shelfStore');
 
 /** Folders never scanned for repositories. */
 const SCAN_SKIP = new Set(['node_modules', '.dart_tool', 'build', '.gradle', '.idea', '.vscode', 'Pods', 'dist', 'out', '.git']);
@@ -32,6 +33,11 @@ class GitCliService {
   /** @param {string} root @param {{log?: import('../domain/ports').GitLog}} [o] */
   open(root, o = {}) {
     return new Repository(root, { gitPath: this.gitPath(), log: o.log });
+  }
+
+  /** @param {import('../domain/ports').GitRepository} repo a Repository from open() */
+  shelfStore(repo) {
+    return new ShelfStore(/** @type {Repository} */ (repo));
   }
 
   isRepository(dir) {

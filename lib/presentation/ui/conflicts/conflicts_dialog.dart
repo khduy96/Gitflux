@@ -14,6 +14,9 @@ import '../dialogs/basic_dialogs.dart';
   if (s.state == RepoState.rebasing) {
     return ('Upstream (rebasing onto)', 'Your commit');
   }
+  if (s.state == RepoState.applyingMailbox) {
+    return ('Yours (${s.branch ?? 'HEAD'})', 'Theirs (patch)');
+  }
   return ('Yours (${s.branch ?? 'HEAD'})', 'Theirs (incoming)');
 }
 

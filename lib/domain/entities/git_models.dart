@@ -168,7 +168,28 @@ class FileChange {
   int get hashCode => Object.hash(path, type);
 }
 
-enum RepoState { normal, merging, rebasing, cherryPicking, reverting }
+enum RepoState {
+  normal,
+  merging,
+  rebasing,
+  cherryPicking,
+  reverting,
+
+  /// `git am` stopped on a patch of a mailbox.
+  applyingMailbox,
+}
+
+extension RepoStateLabel on RepoState {
+  /// Name of the operation in progress, e.g. "Finish or abort the merge".
+  String get operation => switch (this) {
+        RepoState.merging => 'merge',
+        RepoState.rebasing => 'rebase',
+        RepoState.cherryPicking => 'cherry-pick',
+        RepoState.reverting => 'revert',
+        RepoState.applyingMailbox => 'patch application (git am)',
+        RepoState.normal => '',
+      };
+}
 
 enum ResetMode { soft, mixed, hard, keep }
 
@@ -340,6 +361,16 @@ class EmptyRev extends Revision {
   const EmptyRev();
 }
 
+/// Content of commit [base] with the patch file [patch] applied (a shelved
+/// version of a file).
+class PatchedRev extends Revision {
+  const PatchedRev(this.base, this.patch);
+  final String base;
+
+  /// Absolute path of the patch file.
+  final String patch;
+}
+
 /// What to show in the diff viewer.
 class DiffRequest {
   const DiffRequest({
@@ -367,6 +398,7 @@ class DiffRequest {
         IndexRev() => 'idx',
         CommitRev(:final hash) => hash,
         EmptyRev() => 'empty',
+        PatchedRev(:final base, :final patch) => '$base+$patch',
       };
 }
 

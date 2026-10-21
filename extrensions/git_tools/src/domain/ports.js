@@ -9,6 +9,8 @@
  * @typedef {import('./entities').FileChange} FileChange
  * @typedef {import('./entities').Commit} Commit
  * @typedef {import('./entities').Stash} Stash
+ * @typedef {import('./entities').Shelf} Shelf
+ * @typedef {import('./entities').ShelfFile} ShelfFile
  *
  * @typedef {(line: string, kind: 'command'|'output'|'error'|'info') => void} GitLog
  *
@@ -116,13 +118,42 @@
  * @property {(ref: string) => Promise<any>} stashDrop
  * @property {(ref: string, branch: string) => Promise<any>} stashBranch
  *
+ * @property {(paths: string[], base: string|null) => Promise<{patch: Buffer, files: ShelfFile[]}>} buildPatch
+ *   Patch (git diff --binary --full-index -M) of the working tree content of `paths` against `base`, built in a
+ *   temporary index (new and deleted files included). Null `base` = empty tree.
+ * @property {(files: ShelfFile[], base: string) => Promise<void>} discardChanges
+ *   Reverts files to `base` in the index and working tree; new files are deleted.
+ * @property {(patch: Buffer) => Promise<import('./entities').PatchFile[]>} patchFiles git apply --numstat --summary.
+ * @property {(patch: Buffer, targets: string[]) => Promise<import('./entities').PatchCheck>} checkPatch git apply --check --3way.
+ * @property {(patch: Buffer, targets: string[]) => Promise<{conflicted: string[], output: string}>} applyPatch
+ *   git apply --3way on the working tree, the index of clean targets left as it was; throws when refused.
+ * @property {(patch: Buffer) => Promise<{stopped: boolean, output: string}>} applyMailbox git am --3way.
+ * @property {(hashes: string[]) => Promise<Buffer>} formatPatch git format-patch --stdout of each commit, in order.
+ * @property {(base: string, patch: Buffer, paths: string[]) => Promise<Map<string, {mode: string, sha: string}>>} patchedEntries
+ *   Blobs of `paths` once `patch` is applied to `base` (temporary index).
+ * @property {(sha: string) => Promise<Buffer>} blob
+ * @property {(base: string, patch: Buffer, removePaths: string[]) => Promise<{patch: Buffer, files: ShelfFile[]}>} removeFromPatch
+ * @property {() => Promise<string[]>} unmergedPaths
+ * @property {() => Promise<any>} skipMailboxPatch git am --skip.
+ *
  * @property {(change: FileChange, ours: boolean) => Promise<void>} acceptSide
  * @property {(rel: string) => Promise<string>} mergeFromStages Conflicted content rebuilt from the index stages.
  * @property {(rel: string, content?: string) => Promise<void>} markResolved Writes `content` first when given.
  *
+ * @typedef {object} ShelfStore Shelved changes of one repository (format shared with the Flutter app).
+ * @property {() => Promise<Shelf[]>} list Newest first.
+ * @property {(id: string) => Promise<Shelf|null>} get
+ * @property {(o: {name: string, created: Date, base: string, branch: string|null, files: ShelfFile[], patch: Buffer}) => Promise<Shelf>} create
+ *   Also creates the ref keeping `base` alive.
+ * @property {(id: string) => Promise<Buffer>} readPatch
+ * @property {(id: string, name: string) => Promise<void>} rename
+ * @property {(id: string, o: {files: ShelfFile[], patch: Buffer}) => Promise<void>} update
+ * @property {(id: string) => Promise<void>} remove Deletes the folder and the ref.
+ *
  * @typedef {object} GitService Git operations not bound to an opened repository.
  * @property {(dir: string) => Promise<string|null>} findRoot Top level of the repository containing `dir`.
  * @property {(root: string, o?: {log?: GitLog}) => GitRepository} open
+ * @property {(repo: GitRepository) => ShelfStore} shelfStore Shelves of a repository opened by open().
  * @property {(dir: string, depth: number) => string[]} scan Folders below `dir` (up to `depth` levels) that hold a repository.
  * @property {(dir: string) => boolean} isRepository
  *

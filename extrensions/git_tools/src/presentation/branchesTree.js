@@ -2,9 +2,12 @@
 'use strict';
 
 const vscode = require('vscode');
+const path = require('path');
+const { STATUS_WORD } = require('./shelf');
 
 /**
- * Tree of HEAD, local / remote branches, tags, stashes and the reflog.
+ * Tree of HEAD, local / remote branches, tags, stashes, the shelf and the
+ * reflog.
  */
 class BranchesTreeProvider {
   /** @param {import('./model').RepoManager} manager */
@@ -12,10 +15,19 @@ class BranchesTreeProvider {
     this.manager = manager;
     this._onDidChange = new vscode.EventEmitter();
     this.onDidChangeTreeData = this._onDidChange.event;
+    /** Root nodes, kept until the tree changes so that reveal() finds the same objects. */
+    this._roots = null;
+    /** @type {vscode.TreeView<any>|null} */
+    this.view = null;
     manager.onDidChange((what) => {
-      if (what === 'refs' || what === 'status') this._onDidChange.fire(undefined);
+      if (what === 'refs' || what === 'status') this.changed();
     });
-    manager.onDidChangeCurrent(() => this._onDidChange.fire(undefined));
+    manager.onDidChangeCurrent(() => this.changed());
+  }
+
+  changed() {
+    this._roots = null;
+    this._onDidChange.fire(undefined);
   }
 
   getTreeItem(el) {
@@ -25,8 +37,25 @@ class BranchesTreeProvider {
   getChildren(el) {
     const m = this.manager.current;
     if (!m) return [];
-    if (!el) return this.roots(m);
+    if (!el) {
+      if (!this._roots) this._roots = this.roots(m);
+      return this._roots;
+    }
     return el.children || [];
+  }
+
+  getParent(el) {
+    return el.parent;
+  }
+
+  /** Command "Show Shelf": focuses the tree and expands the Shelf node. */
+  async revealShelf() {
+    await vscode.commands.executeCommand('gitTools.branches.focus');
+    const m = this.manager.current;
+    if (!m || !this.view) return;
+    const node = this.getChildren().find((n) => n.kind === 'shelf');
+    if (node) await this.view.reveal(node, { expand: true, select: true, focus: true });
+    if (!m.shelves.length) vscode.window.setStatusBarMessage('The shelf is empty: use "Shelve Changes…" in the Commit view', 5000);
   }
 
   /** @param {import('./model').RepoModel} m */
@@ -55,6 +84,7 @@ class BranchesTreeProvider {
         this.group(r, 'cloud', this.branchNodes(list, r.length + 1), false, list.length)), true),
       this.group('Tags', 'tag', m.tags.map((t) => this.tagNode(t)), false),
       this.group('Stashes', 'archive', m.stashes.map((st) => this.stashNode(st)), false),
+      this.shelfGroup(m),
       this.reflogNode(),
       ...(m.repo.hasGitmodules() || m.submodules.length
         ? [{ ...this.group('Submodules', 'repo', m.submodules.map((s) => this.submoduleNode(m, s)), true), kind: 'submodules' }]
@@ -160,6 +190,52 @@ class BranchesTreeProvider {
     return { item };
   }
 
+  /**
+   * Shelf: shelves (newest first) ▸ shelved files.
+   * @param {import('./model').RepoModel} m
+   */
+  shelfGroup(m) {
+    const node = { ...this.group('Shelf', 'inbox', [], false, m.shelves.length), kind: 'shelf' };
+    node.item.id = 'gitTools.shelf';
+    node.item.contextValue = 'shelfGroup';
+    node.item.tooltip = 'Changes put aside with "Shelve Changes…" (Commit view), file by file, outside the stash';
+    node.children = m.shelves.map((s) => this.shelfNode(s, node));
+    return node;
+  }
+
+  /** @param {import('../domain/entities').Shelf} s */
+  shelfNode(s, parent) {
+    const item = new vscode.TreeItem(s.name, vscode.TreeItemCollapsibleState.Collapsed);
+    item.id = `gitTools.shelf/${s.id}`;
+    item.iconPath = new vscode.ThemeIcon('package');
+    const n = s.files.length;
+    item.description = [relativeTime(s.created), `${n} file${n === 1 ? '' : 's'}`, s.branch || ''].filter(Boolean).join(' · ');
+    item.tooltip = `${s.name}
+Created ${s.created ? new Date(s.created).toLocaleString() : '?'}
+` +
+      `${s.branch ? `Branch ${s.branch}
+` : ''}Base ${s.base.slice(0, 10)}
+${n} file${n === 1 ? '' : 's'}`;
+    item.contextValue = 'shelf';
+    const node = { item, shelf: s, parent, children: [] };
+    node.children = s.files.map((f) => this.shelfFileNode(s, f, node));
+    return node;
+  }
+
+  /** @param {import('../domain/entities').Shelf} s @param {import('../domain/entities').ShelfFile} f */
+  shelfFileNode(s, f, parent) {
+    const item = new vscode.TreeItem(path.posix.basename(f.path), vscode.TreeItemCollapsibleState.None);
+    item.id = `gitTools.shelf/${s.id}/${f.path}`;
+    // File icon of the theme; the status letter in the description.
+    item.resourceUri = vscode.Uri.from({ scheme: 'gittools-shelf-item', path: `/${f.path}` });
+    const dir = path.posix.dirname(f.path);
+    item.description = `${f.status}${f.oldPath ? ` ← ${f.oldPath}` : dir === '.' ? '' : ` · ${dir}`}`;
+    item.tooltip = `${STATUS_WORD[f.status]}: ${f.path}${f.oldPath ? ` (from ${f.oldPath})` : ''}`;
+    item.contextValue = 'shelfFile';
+    item.command = { command: 'gitTools.shelf.showDiff', title: 'Show Diff', arguments: [{ shelf: s, file: f }] };
+    return { item, shelf: s, file: f, parent };
+  }
+
   stashNode(st) {
     const item = new vscode.TreeItem(st.message, vscode.TreeItemCollapsibleState.None);
     item.iconPath = new vscode.ThemeIcon('archive');
@@ -169,6 +245,18 @@ class BranchesTreeProvider {
     item.command = { command: 'gitTools.stash.showFiles', title: 'Show Changes', arguments: [{ stash: st }] };
     return { item, stash: st };
   }
+}
+
+/** "5 minutes ago", "3 days ago"… */
+function relativeTime(ms, now = Date.now()) {
+  if (!ms) return '';
+  let n = Math.max(0, Math.round((now - ms) / 1000));
+  const steps = [[60, 'second'], [60, 'minute'], [24, 'hour'], [30, 'day'], [12, 'month'], [Infinity, 'year']];
+  for (const [size, unit] of steps) {
+    if (n < size) return unit === 'second' && n < 10 ? 'just now' : `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+    n = Math.floor(n / size);
+  }
+  return '';
 }
 
 /**

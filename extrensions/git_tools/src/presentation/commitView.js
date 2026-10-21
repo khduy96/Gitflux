@@ -6,6 +6,8 @@ const path = require('path');
 const { webviewHtml } = require('./webview');
 const { openLocalDiff } = require('./diff');
 const cmd = require('./commands');
+const { shelveChanges } = require('./shelf');
+const { createPatch } = require('./patches');
 const { describeSubmodule } = require('../domain/entities');
 
 /**
@@ -163,6 +165,11 @@ class CommitViewProvider {
         return m.setIncluded(changes.map((c) => c.path), action === 'include');
       case 'rollback':
         return cmd.rollback(m, changes);
+      case 'shelve':
+        return shelveChanges(m, changes);
+      case 'createPatch':
+      case 'copyPatch':
+        return createPatch(m, changes, action === 'copyPatch');
       case 'delete':
         return cmd.deleteUntracked(m, changes);
       case 'ignore':

@@ -11,6 +11,7 @@ const STATE_LABEL = {
   rebasing: 'REBASING',
   cherryPicking: 'CHERRY-PICKING',
   reverting: 'REVERTING',
+  applyingMailbox: 'APPLYING PATCHES',
 };
 
 /** Commands run for the row actions (they accept {model} as argument). */

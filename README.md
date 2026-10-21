@@ -24,8 +24,11 @@ flutter build windows --release
   - Commit đi qua một index tạm, nên index thật và git hooks không bị ảnh hưởng.
   - Chỉ áp dụng cho file *modified* và không dùng khi đang merge / rebase.
 - Show History, Annotate (git blame), Copy Path, Show in Explorer
-- Banner Merging / Rebasing / Cherry-picking với Continue / Skip / Abort; khi rebase hiện tiến độ
-  (`Rebasing 2/5`) và commit đang dừng để sửa (`Stopped at … for editing — amend, then Continue`)
+- **Shelve Changes…** và **Create Patch…** (chuột phải file, thư mục hoặc nhóm; nút Shelve trên thanh công cụ
+  lấy các file đang tick) — xem mục **Shelve** và **Patch** bên dưới
+- Banner Merging / Rebasing / Cherry-picking / Applying patch với Continue / Skip / Abort; khi rebase hiện tiến độ
+  (`Rebasing 2/5`) và commit đang dừng để sửa (`Stopped at … for editing — amend, then Continue`);
+  khi `git am` dừng hiện `Applying patch 1/3` và tiêu đề patch
 
 **AI commit message (✨ cạnh ô commit message)**
 - Sinh commit message từ diff của các file đã tick (khi Amend thì gồm cả thay đổi của commit trước),
@@ -58,6 +61,55 @@ flutter build windows --release
 - Console: toàn bộ lệnh git đã chạy và output, có ô chạy lệnh git tuỳ ý
 - Stashes: Pop / Apply / Drop / Clear / Unstash as Branch, xem file và diff trong stash
 - Reflog: lịch sử HEAD đã trỏ tới đâu, để lấy lại commit bị mất (xem mục **Reflog** bên dưới)
+- Shelf: các shelf đã cất (xem mục **Shelve** bên dưới)
+- Menu commit có thêm **Create Patch…** (chọn 1..n commit, xem mục **Patch**)
+
+**Shelve (cất thay đổi theo từng file, như "Shelve Changes" của Android Studio)**
+- Khác stash: chỉ cất đúng các file được chọn, có tên, danh sách riêng không đụng tới stash của git,
+  và unshelve được từng phần (chỉ một số file).
+- Mở bằng chuột phải file / thư mục / nhóm trong Commit panel ▸ **Shelve Changes…**, nút Shelve trên thanh công cụ
+  của Commit panel (các file đang tick), hoặc menu Git ▸ **Shelve Changes…**.
+- Dialog: tên (mặc định là dòng đầu của commit message, hoặc `Changes from yyyy-MM-dd HH:mm`), danh sách file
+  (file đã chọn được tick sẵn), tuỳ chọn **Keep changes in working tree** (mặc định tắt).
+- Sau khi cất (trừ khi Keep), đúng các file đó được trả về HEAD: file sửa / xoá được khôi phục, file mới bị xoá
+  (file đã `git add` thì cũng bỏ khỏi index). File khác và index của chúng không bị đụng tới.
+- Không cho shelve khi đang merge / rebase / cherry-pick / revert / `git am`. File chỉ chọn một số dòng
+  (Select Lines to Commit) được shelve **nguyên file**. Submodule và repo lồng nhau bị bỏ qua (có thông báo).
+  Phần đã stage của file được shelve không được giữ riêng: khi unshelve, thay đổi nằm ở working tree.
+- Tab **Shelf** của Git tool window (menu Git ▸ **Show Shelf**): shelf mới nhất ở trên, mỗi shelf có tên, thời gian
+  tương đối (rê chuột để xem giờ chính xác), số file, branch lúc cất. Bấm shelf để mở danh sách file; bấm file để
+  xem diff `base` ↔ nội dung đã cất (chỉ đọc), double-click mở tab cố định.
+- Chuột phải shelf: **Unshelve…**, **Apply (keep in shelf)**, **Rename…**, **Delete…** (có xác nhận),
+  **Create Patch…** (lưu patch của shelf ra file), **Copy as Patch**. Chuột phải file: **Unshelve This File**, **Show Diff**.
+- **Unshelve…**: chọn file (mặc định tất cả), tuỳ chọn **Remove successfully applied files from shelf** (mặc định bật).
+  Patch được áp bằng `git apply --3way`, nên vẫn chạy khi HEAD đã đổi hoặc file đang có thay đổi chưa commit
+  (đã stage hay chưa): thay đổi được trộn 3-way. File bị conflict có conflict marker và vào nhóm Merge Conflicts
+  để giải quyết như bình thường, đồng thời **vẫn nằm trong shelf**; file áp sạch thì bị bỏ khỏi shelf (nếu bật tuỳ chọn).
+  File mới trong shelf trùng tên với một file chưa track đang có thì thành conflict add/add (cả hai nội dung nằm trong file).
+  Index giữ nguyên cho các file áp sạch (những gì bạn đã stage vẫn còn). Nếu git từ chối hẳn patch thì không có gì
+  thay đổi và thông báo hiện stderr của git. Shelf hết file thì tự bị xoá.
+- Lưu trữ (chung định dạng với extension VS Code, nên shelf tạo bên này mở được bên kia):
+  `$(git rev-parse --git-common-dir)/git-tools/shelf/<id>/` với `id` = `yyyyMMdd-HHmmss-<6 hex>` (giờ UTC), gồm
+  `shelf.json` (`version`, `name`, `created` ISO-8601 UTC, `base` = HEAD lúc cất, `branch`, `files` [`path`, `oldPath`,
+  `status` M/A/D/R]) và `changes.patch` (`git diff --binary --full-index -M` so với `base`, kể cả file mới; ghi đúng
+  từng byte git xuất ra). Commit `base` được giữ bằng ref `refs/git-tools/shelf/<id>` (xoá cùng shelf), nên shelf vẫn
+  dùng được sau khi rebase / amend / `git gc`. Thư mục này nằm trong `.git` nên dùng chung cho các worktree và không bị track.
+- Patch được tạo qua một index tạm (`GIT_INDEX_FILE`, `read-tree base` rồi `git add -A -- <file>`), không đụng index thật.
+
+**Patch**
+- **Create Patch…** trong Commit panel (file đang chọn / tick, thư mục, nhóm): patch so với HEAD gồm cả file mới và file
+  nhị phân (`git diff --binary`, qua index tạm); **Save Patch…** (tên mặc định `<branch>.patch`) hoặc
+  **Copy Patch to Clipboard**.
+- **Create Patch…** trong Log (chọn 1..n commit): `git format-patch --stdout` của từng commit, nối theo thứ tự topo
+  (cũ trước) thành một file mailbox. Merge commit bị bỏ qua.
+- Menu Git ▸ **Apply Patch…** (chọn file) và **Apply Patch from Clipboard**:
+  - Tự nhận dạng mailbox của `git format-patch` (dòng đầu `From <hash> ` / header `Subject:`).
+  - Xem trước: danh sách file với trạng thái và số dòng +/− (`git apply --numstat --summary`), kết quả
+    `git apply --check --3way` (áp sạch / có conflict ở file nào / không áp được kèm lỗi của git).
+  - Mailbox: **Apply as commits (git am --3way)** (mặc định) hoặc **Apply changes only**; diff thường: áp vào
+    working tree bằng `git apply --3way` (giống Unshelve: trộn với thay đổi cục bộ, index giữ nguyên).
+  - Conflict: giải quyết như bình thường. Với `git am`, repo ở trạng thái "Applying patch": banner ở Commit panel có
+    **Continue** (`am --continue`), **Skip Patch** (`am --skip`), **Abort** (`am --abort`).
 
 **Lọc Log (thanh filter phía trên danh sách commit)**
 - Ô tìm kiếm có 2 chế độ (bấm icon kính lúp để chọn):
@@ -163,19 +215,21 @@ Clean Architecture, 3 tầng. Phụ thuộc chỉ hướng vào trong: `presenta
 lib/
   main.dart       # composition root: tạo các implementation của data rồi đưa cho presentation
   domain/         # thuần Dart: không import Flutter, dart:io hay data/
-    entities/     # FileChange, Commit, Branch, RepoStatus, RebasePlan, ReflogEntry, LogQuery, AiConfig, ...
+    entities/     # FileChange, Commit, Branch, RepoStatus, RebasePlan, ReflogEntry, LogQuery, AiConfig, Shelf, PatchFile, ...
     logic/        # thuật toán thuần: diff engine, graph layout, conflict parser, line selection, rebase todo,
-                  # parse reflog, filter log (author, ngày)
-    repositories/ # interface: GitRepository, GitService, CommitMessageGenerator, SettingsStore
-    usecases/     # CommitChanges, GenerateCommitMessage, GetSelectedLineContents, InteractiveRebase, CompareCommits
-    errors.dart   # GitException, AiException, StaleSelectionException, CommitRejected, RebaseRejected
+                  # parse reflog, filter log (author, ngày), định dạng shelf.json, parse / lọc patch
+    repositories/ # interface: GitRepository, GitService, ShelfRepository, CommitMessageGenerator, SettingsStore
+    usecases/     # CommitChanges, GenerateCommitMessage, GetSelectedLineContents, InteractiveRebase, CompareCommits,
+                  # ShelveChanges, UnshelveChanges, CreatePatch, ApplyPatch
+    errors.dart   # GitException, AiException, StaleSelectionException, CommitRejected, RebaseRejected,
+                  # ShelfRejected, PatchRejected
   data/           # implementation các interface của domain
     datasources/  # GitProcess (chạy git), client Claude / Gemini
-    repositories/ # GitCliRepository, GitCliService, JsonFileSettingsStore (%APPDATA%/git_tools)
+    repositories/ # GitCliRepository, GitCliService, FileShelfRepository, JsonFileSettingsStore (%APPDATA%/git_tools)
   presentation/
     app.dart, app_scope.dart  # widget gốc + InheritedWidget cấp GitService / AI cho UI
     state/        # RepoController (state + gọi use case), LogFilter, AppSettings
-    ui/           # commit/, diff/, log/, branches/, conflicts/, dialogs/, console/, workspace_page.dart
+    ui/           # commit/, diff/, log/, shelf/, branches/, conflicts/, dialogs/, console/, workspace_page.dart
 test/             # unit test domain/use case (repo giả) + test tích hợp chạy git thật trên repo tạm
 ```
 

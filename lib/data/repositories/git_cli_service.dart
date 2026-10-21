@@ -5,7 +5,9 @@ import 'package:path/path.dart' as p;
 import '../../domain/entities/console_entry.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../../domain/repositories/git_service.dart';
+import '../../domain/repositories/shelf_repository.dart';
 import '../datasources/git_process.dart';
+import 'file_shelf_repository.dart';
 import 'git_cli_repository.dart';
 
 /// [GitService] backed by the git command line.
@@ -54,4 +56,7 @@ class GitCliService implements GitService {
   @override
   GitRepository open(String root, {void Function(ConsoleEntry)? onConsole}) =>
       GitCliRepository(root, onConsole: onConsole);
+
+  @override
+  ShelfRepository shelves(GitRepository repo) => FileShelfRepository(repo);
 }

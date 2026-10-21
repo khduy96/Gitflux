@@ -1,7 +1,7 @@
 // Commit view: changes tree with checkboxes, commit message and buttons.
 (() => {
   const vscode = acquireVsCodeApi();
-  const { h, showMenu, basename, dirname } = gt;
+  const { h, fill, showMenu, basename, dirname } = gt;
 
   const saved = vscode.getState() || {};
   let state = null;
@@ -268,6 +268,7 @@
           persist();
           render();
         },
+        oncontextmenu: (e) => nodeMenu(e, g.files),
       },
       h('span.chev', { text: isCollapsed ? '▸' : '▾' }),
       g.checkable ? h('input', {
@@ -320,6 +321,7 @@
           persist();
           render();
         },
+        oncontextmenu: (e) => nodeMenu(e, files),
       },
       h('span.chev', { text: isCollapsed ? '▸' : '▾' }),
       g.checkable ? checkbox(files) : null,
@@ -419,18 +421,22 @@
       return;
     }
     banner.hidden = false;
-    const label = { merging: 'Merging', rebasing: 'Rebasing', cherryPicking: 'Cherry-picking', reverting: 'Reverting' }[state.repoState];
+    const label = {
+      merging: 'Merging', rebasing: 'Rebasing', cherryPicking: 'Cherry-picking', reverting: 'Reverting', applyingMailbox: 'Applying patches',
+    }[state.repoState];
     const conflicts = state.changes.filter((c) => c.type === 'conflicted').length;
-    const rb = state.repoState === 'rebasing' ? state.rebase : null;
-    const title = rb && rb.total ? `Rebasing ${rb.current}/${rb.total}` : `${label} in progress`;
+    const am = state.repoState === 'applyingMailbox';
+    const rb = state.repoState === 'rebasing' || am ? state.rebase : null;
+    const title = rb && rb.total ? `${am ? 'Applying patch' : 'Rebasing'} ${rb.current}/${rb.total}` : `${label} in progress`;
     const edit = rb && rb.stoppedForEdit && !conflicts;
-    banner.append(
+    fill(banner,
       h('div', { text: conflicts ? `${title} · ${conflicts} conflict${conflicts === 1 ? '' : 's'}` : edit ? title : `${title} · all conflicts resolved` }),
       edit ? h('div.muted', { text: `Stopped at ${rb.stoppedSha || ''} ${rb.stoppedSubject || ''} for editing — amend, then Continue` }) : null,
       h('div.row', null,
         conflicts ? h('button.secondary', { text: 'Resolve…', onclick: () => post('resolve') })
           : h('button.secondary', { text: 'Continue', onclick: () => post('continue') }),
         state.repoState === 'rebasing' ? h('button.secondary', { text: 'Skip', title: 'Skip this commit (git rebase --skip)', onclick: () => post('skip') }) : null,
+        am ? h('button.secondary', { text: 'Skip', title: 'Skip this patch (git am --skip)', onclick: () => post('skip') }) : null,
         h('button.secondary', { text: 'Abort', onclick: () => post('abort') })),
     );
   }
@@ -469,11 +475,40 @@
     if (allUntracked) {
       items.push({ label: 'Delete…', id: 'delete', danger: true }, { label: 'Add to .gitignore', id: 'ignore' });
     }
+    items.push('-', ...patchItems(sel));
     items.push('-',
       { label: 'Show History', id: 'history', disabled: !single || single.type === 'untracked' },
       { label: 'Copy Path', id: 'copy' },
       { label: 'Reveal in Explorer View', id: 'reveal', disabled: !single || single.type === 'deleted' });
     showMenu(x, y, items, (action) => post('menu', { action, paths: sel.map((c) => c.path) }));
+  }
+
+  /** Shelve / patch items for a set of changes (files, a folder or a group). */
+  function patchItems(changes) {
+    // Conflicted files, submodules and nested repositories are never shelved.
+    const none = !changes.some((c) => c.type !== 'conflicted' && !c.nestedRepo && (c.submoduleInfo === null || c.submoduleInfo === undefined));
+    return [
+      { label: 'Shelve Changes…', id: 'shelve', disabled: none || state.repoState !== 'normal' },
+      { label: 'Create Patch…', id: 'createPatch', disabled: none },
+      { label: 'Copy as Patch to Clipboard', id: 'copyPatch', disabled: none },
+    ];
+  }
+
+  /** Context menu of a folder or a group: acts on every file below it. */
+  function nodeMenu(e, files) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!files.length) return;
+    const paths = files.map((c) => c.path);
+    const checkable = files.filter((c) => c.type !== 'conflicted');
+    showMenu(e.clientX, e.clientY, [
+      { label: 'Include in Commit', id: 'include', disabled: !checkable.length },
+      { label: 'Exclude from Commit', id: 'exclude', disabled: !checkable.length },
+      '-',
+      ...patchItems(files),
+      '-',
+      { label: 'Rollback…', id: 'rollback', disabled: !files.some((c) => c.type !== 'untracked' && c.type !== 'conflicted') },
+    ], (action) => post('menu', { action, paths }));
   }
 
   post('ready');

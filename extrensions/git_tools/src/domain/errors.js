@@ -42,4 +42,10 @@ class CommitRejected extends Error {}
 /** A history rewrite (interactive rebase) is not possible for the selection or the repository state. */
 class RebaseRejected extends Error {}
 
-module.exports = { GitError, AiError, StaleSelectionError, CommitRejected, RebaseRejected };
+/** Shelving or unshelving is not possible for the selection or the repository state. */
+class ShelfRejected extends Error {}
+
+/** A patch cannot be created or applied (nothing to export, not a patch…). */
+class PatchRejected extends Error {}
+
+module.exports = { GitError, AiError, StaleSelectionError, CommitRejected, RebaseRejected, ShelfRejected, PatchRejected };

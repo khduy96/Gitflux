@@ -1,5 +1,6 @@
 import '../entities/console_entry.dart';
 import 'git_repository.dart';
+import 'shelf_repository.dart';
 
 /// Git operations that are not bound to an opened repository.
 abstract interface class GitService {
@@ -22,4 +23,7 @@ abstract interface class GitService {
 
   /// The repository whose work tree is [root].
   GitRepository open(String root, {void Function(ConsoleEntry)? onConsole});
+
+  /// The shelves of [repo].
+  ShelfRepository shelves(GitRepository repo);
 }
