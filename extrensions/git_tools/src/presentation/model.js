@@ -3,12 +3,14 @@
 
 const vscode = require('vscode');
 const path = require('path');
-const { GitError, CommitRejected } = require('../domain/errors');
+const { GitError, CommitRejected, ShelfRejected, PatchRejected } = require('../domain/errors');
 const { layoutGraph } = require('../domain/logic/graph');
 const { emptyLogFilter, hasCommitFilter, logQuery, authorPatterns, buildAuthorList } = require('../domain/logic/history');
 const { CommitChanges } = require('../domain/usecases/commitChanges');
 const { InteractiveRebase } = require('../domain/usecases/interactiveRebase');
 const { selectedLineContents } = require('../domain/usecases/selectedLineContents');
+const { ShelveChanges } = require('../domain/usecases/shelveChanges');
+const { Patches } = require('../domain/usecases/patches');
 
 /** @typedef {import('../domain/ports').GitService} GitService */
 
@@ -26,6 +28,9 @@ class RepoModel {
     this.repo = git.open(root, { log: (line, kind) => this.log(line, kind) });
     this.commitChanges = new CommitChanges(this.repo);
     this.interactiveRebase = new InteractiveRebase(this.repo);
+    this.shelfStore = git.shelfStore(this.repo);
+    this.shelve = new ShelveChanges(this.repo, this.shelfStore);
+    this.patches = new Patches(this.repo);
     /** @type {import('../domain/entities').Status} */
     this.status = { branch: null, head: null, upstream: null, ahead: 0, behind: 0, changes: [], state: 'normal' };
     /** Progress of the rebase in progress (Commit view banner). @type {import('../domain/entities').RebaseProgress|null} */
@@ -40,6 +45,8 @@ class RepoModel {
     this.stashes = [];
     /** @type {import('../domain/entities').Submodule[]} */
     this.submodules = [];
+    /** Newest first. @type {import('../domain/entities').Shelf[]} */
+    this.shelves = [];
     /** @type {import('../domain/entities').Commit[]} */
     this.commits = [];
     /** @type {ReturnType<typeof layoutGraph>} */
@@ -139,7 +146,9 @@ class RepoModel {
       if (rel.startsWith('..')) return;
       if (rel === '.git' || rel.startsWith('.git/')) {
         if (rel.endsWith('.lock') || rel.startsWith('.git/objects') || rel.startsWith('.git/logs')) return;
-        if (rel.startsWith('.git/refs') || /^\.git\/(HEAD|packed-refs|FETCH_HEAD|MERGE_HEAD|ORIG_HEAD)$/.test(rel) || rel.startsWith('.git/rebase-')) {
+        // .git/git-tools/shelf: shelves changed here or by the Flutter app.
+        if (rel.startsWith('.git/refs') || /^\.git\/(HEAD|packed-refs|FETCH_HEAD|MERGE_HEAD|ORIG_HEAD)$/.test(rel) || rel.startsWith('.git/rebase-') ||
+            rel.startsWith('.git/git-tools/shelf/')) {
           this._refsDirty = true;
         } else if (rel !== '.git/index') {
           return;
@@ -207,7 +216,7 @@ class RepoModel {
     try {
       const previous = this.status.state;
       this.status = await this.repo.status();
-      if (this.status.state === 'rebasing') {
+      if (this.status.state === 'rebasing' || this.status.state === 'applyingMailbox') {
         this.rebaseProgress = await this.repo.rebaseProgress().catch(() => null);
       } else {
         this.rebaseProgress = null;
@@ -243,10 +252,11 @@ class RepoModel {
 
   async refreshRefs() {
     try {
-      const [branches, tags, remotes, stashes, submodules] = await Promise.all([
+      const [branches, tags, remotes, stashes, submodules, shelves] = await Promise.all([
         this.repo.branches(), this.repo.tags(), this.repo.remotes(), this.repo.stashes(), this.repo.submodules(),
+        this.shelfStore.list().catch(() => []),
       ]);
-      Object.assign(this, { branches, tags, remotes, stashes, submodules });
+      Object.assign(this, { branches, tags, remotes, stashes, submodules, shelves });
       this.fire('refs');
     } catch (e) {
       this.log(`refs failed: ${e.message}`, 'error');
@@ -378,6 +388,12 @@ class RepoModel {
       if (o.success) vscode.window.setStatusBarMessage(`$(check) ${o.success}`, 4000);
       return true;
     } catch (e) {
+      // A rule the action broke, found once it ran (not a failure of git).
+      if (e instanceof ShelfRejected || e instanceof PatchRejected) {
+        this.log(`${label}: ${e.message}`, 'info');
+        vscode.window.showWarningMessage(e.message);
+        return false;
+      }
       const details = e instanceof GitError ? e.message : String(e && e.message ? e.message : e);
       this.log(`${label} failed: ${details}`, 'error');
       vscode.window.showErrorMessage(`${label} failed: ${details.split('\n').slice(0, 6).join(' ')}`, 'Show Console')

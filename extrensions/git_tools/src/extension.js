@@ -17,7 +17,12 @@ const { showSetupGuide } = require('./presentation/guide');
 const { openLineSelection } = require('./presentation/selectLines');
 const { pickAndRebase } = require('./presentation/rebaseView');
 const { ReflogPanel } = require('./presentation/reflogView');
+const shelfUi = require('./presentation/shelf');
+const patchUi = require('./presentation/patches');
 const cmd = require('./presentation/commands');
+
+const NO_OPERATION = 'No merge, rebase, cherry-pick, revert or patch application in progress.';
+const OPERATION_LABEL = { applyingMailbox: 'patch application (git am)' };
 
 /**
  * Entry point and composition root: the only module that knows the data
@@ -32,6 +37,7 @@ async function activate(context) {
   const commitView = new CommitViewProvider(context, manager, ai);
   const logView = new LogViewProvider(context, manager);
   const branches = new BranchesTreeProvider(manager);
+  branches.view = vscode.window.createTreeView('gitTools.branches', { treeDataProvider: branches });
   const statusBar = new BranchStatusBar(manager);
 
   context.subscriptions.push(
@@ -39,9 +45,10 @@ async function activate(context) {
     statusBar,
     { dispose: () => manager.dispose() },
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, new RevisionContentProvider(manager)),
+    vscode.workspace.registerTextDocumentContentProvider(shelfUi.SHELF_SCHEME, new shelfUi.ShelfContentProvider(manager)),
     vscode.window.registerWebviewViewProvider('gitTools.commit', commitView, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.window.registerWebviewViewProvider('gitTools.log', logView, { webviewOptions: { retainContextWhenHidden: true } }),
-    vscode.window.registerTreeDataProvider('gitTools.branches', branches),
+    branches.view,
     vscode.window.registerWebviewViewProvider('gitTools.repositories', new RepositoriesViewProvider(context, manager)),
     vscode.workspace.onDidChangeWorkspaceFolders(() => manager.discover()),
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -216,19 +223,25 @@ async function activate(context) {
   reg('gitTools.manageRemotes', (m) => cmd.manageRemotes(m));
   reg('gitTools.resolveConflicts', (m) => cmd.resolveConflicts(m, (model, change) => openMergeTool(context, model, change)));
   reg('gitTools.continueOperation', (m) => {
-    if (m.status.state === 'normal') return vscode.window.showInformationMessage('No merge, rebase, cherry-pick or revert in progress.');
-    return m.run(`Continue ${m.status.state}`, () => m.repo.continueOperation(m.status.state));
+    if (m.status.state === 'normal') return vscode.window.showInformationMessage(NO_OPERATION);
+    return m.run(`Continue ${OPERATION_LABEL[m.status.state] || m.status.state}`, () => m.repo.continueOperation(m.status.state));
   });
   reg('gitTools.skipRebaseCommit', async (m) => {
+    if (m.status.state === 'applyingMailbox') {
+      const ok = await vscode.window.showWarningMessage('Skip the patch git am stopped at?', { modal: true, detail: 'Its changes are not applied.' }, 'Skip Patch');
+      if (ok) await m.run('Skip patch', () => m.repo.skipMailboxPatch());
+      return;
+    }
     if (m.status.state !== 'rebasing') return vscode.window.showInformationMessage('No rebase in progress.');
     const ok = await vscode.window.showWarningMessage('Skip the commit the rebase stopped at?', { modal: true, detail: 'Its changes are left out of the rewritten history.' }, 'Skip Commit');
     if (ok) await m.run('Skip commit', () => m.repo.skipRebaseCommit());
   });
   reg('gitTools.interactiveRebase', (m) => pickAndRebase(context, m));
   reg('gitTools.abortOperation', async (m) => {
-    if (m.status.state === 'normal') return vscode.window.showInformationMessage('No merge, rebase, cherry-pick or revert in progress.');
-    const ok = await vscode.window.showWarningMessage(`Abort ${m.status.state}?`, { modal: true }, 'Abort');
-    if (ok) await m.run(`Abort ${m.status.state}`, () => m.repo.abortOperation(m.status.state));
+    if (m.status.state === 'normal') return vscode.window.showInformationMessage(NO_OPERATION);
+    const label = OPERATION_LABEL[m.status.state] || m.status.state;
+    const ok = await vscode.window.showWarningMessage(`Abort ${label}?`, { modal: true }, 'Abort');
+    if (ok) await m.run(`Abort ${label}`, () => m.repo.abortOperation(m.status.state));
   });
   reg('gitTools.fileHistory', async (m, uri) => {
     const target = uri instanceof vscode.Uri ? uri : vscode.window.activeTextEditor?.document.uri;
@@ -280,6 +293,37 @@ async function activate(context) {
   reg('gitTools.stash.drop', (m, node) => node && node.stash && cmd.stashDrop(m, node.stash));
   reg('gitTools.stash.branch', (m, node) => node && node.stash && cmd.stashBranch(m, node.stash));
   reg('gitTools.stash.showFiles', (m, node) => node && node.stash && cmd.stashShowFiles(m, node.stash));
+
+  // Shelve and patches. From the Commit view title: the ticked files.
+  reg('gitTools.shelveChanges', (m) => shelfUi.shelveChanges(m, m.includedChanges()));
+  reg('gitTools.showShelf', async (m) => {
+    if (m !== manager.current) await manager.setCurrent(m);
+    await branches.revealShelf();
+  });
+  reg('gitTools.createPatch', (m) => patchUi.createPatch(m, m.includedChanges(), false));
+  reg('gitTools.copyPatch', (m) => patchUi.createPatch(m, m.includedChanges(), true));
+  reg('gitTools.applyPatch', (m) => patchUi.applyPatch(m, false));
+  reg('gitTools.applyPatchFromClipboard', (m) => patchUi.applyPatch(m, true));
+  // Items of the Branches tree ▸ Shelf: {shelf} and {shelf, file}, read again (the tree may be behind).
+  const shelfCmd = (id, fn) => reg(id, async (m, node) => {
+    if (!node || !node.shelf) return;
+    const shelf = await m.shelfStore.get(node.shelf.id);
+    if (!shelf) {
+      await m.refreshRefs();
+      return vscode.window.showWarningMessage(`The shelf "${node.shelf.name}" no longer exists.`);
+    }
+    const file = node.file && shelf.files.find((f) => f.path === node.file.path);
+    if (node.file && !file) return vscode.window.showWarningMessage(`${node.file.path} is no longer in the shelf.`);
+    return fn(m, shelf, file);
+  });
+  shelfCmd('gitTools.shelf.unshelve', (m, s) => shelfUi.unshelveDialog(m, s));
+  shelfCmd('gitTools.shelf.apply', (m, s) => shelfUi.unshelve(m, s, null, false));
+  shelfCmd('gitTools.shelf.rename', (m, s) => shelfUi.renameShelf(m, s));
+  shelfCmd('gitTools.shelf.delete', (m, s) => shelfUi.deleteShelf(m, s));
+  shelfCmd('gitTools.shelf.createPatch', (m, s) => shelfUi.shelfPatch(m, s, false));
+  shelfCmd('gitTools.shelf.copyPatch', (m, s) => shelfUi.shelfPatch(m, s, true));
+  shelfCmd('gitTools.shelf.unshelveFile', (m, s, f) => f && shelfUi.unshelve(m, s, [f.path], true));
+  shelfCmd('gitTools.shelf.showDiff', (m, s, f) => f && shelfUi.openShelfDiff(m, s, f));
 
   // AI commit messages.
   regFree('gitTools.ai.generate', (arg) => {

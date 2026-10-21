@@ -62,3 +62,27 @@ class RebaseRejected implements Exception {
   @override
   String toString() => details == null ? title : '$title: $details';
 }
+
+/// Changes cannot be shelved or unshelved now (operation in progress,
+/// unresolved conflicts, nothing to shelve, ...).
+class ShelfRejected implements Exception {
+  ShelfRejected(this.title, {this.details});
+
+  final String title;
+  final String? details;
+
+  @override
+  String toString() => details == null ? title : '$title: $details';
+}
+
+/// A patch cannot be created or applied (wrong repository state, empty
+/// patch, merge commits only, ...).
+class PatchRejected implements Exception {
+  PatchRejected(this.title, {this.details});
+
+  final String title;
+  final String? details;
+
+  @override
+  String toString() => details == null ? title : '$title: $details';
+}

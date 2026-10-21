@@ -1,6 +1,7 @@
 // @ts-check
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -8,6 +9,8 @@ const { GitError } = require('../domain/errors');
 const { GitRunner, lit, pathspecs } = require('./gitRunner');
 const { shQuote } = require('../domain/logic/rebaseTodo');
 const { escapeBasicRegex, splitReflogSubject } = require('../domain/logic/history');
+const { shelfStatus } = require('../domain/logic/shelf');
+const { parsePatchStat, appliedWithConflicts } = require('../domain/logic/patch');
 
 const FS = '\x1f';
 const RS = '\x1e';
@@ -210,6 +213,8 @@ class Repository {
     this._gitDir = undefined;
     /** @type {string|undefined} */
     this._rebaseStateDir = undefined;
+    /** @type {string|undefined} */
+    this._commonDir = undefined;
   }
 
   get name() {
@@ -239,6 +244,8 @@ class Repository {
   async repoState() {
     const dir = await this.gitDir();
     const exists = (n) => fs.existsSync(path.join(dir, n));
+    // git am and rebase share rebase-apply; "applying" marks git am.
+    if (exists('rebase-apply/applying')) return 'applyingMailbox';
     if (exists('rebase-merge') || exists('rebase-apply')) return 'rebasing';
     if (exists('MERGE_HEAD')) return 'merging';
     if (exists('CHERRY_PICK_HEAD')) return 'cherryPicking';
@@ -972,6 +979,376 @@ class Repository {
     return this.git.run(['stash', 'branch', branch, ref], { log: true });
   }
 
+  // ---------------------------------------------------------------- patches (shelf, create / apply patch)
+
+  /** Folder shared by all worktrees (git rev-parse --git-common-dir). */
+  async commonDir() {
+    if (!this._commonDir) {
+      this._commonDir = path.resolve(this.root, (await this.git.run(['rev-parse', '--git-common-dir'])).trim());
+    }
+    return this._commonDir;
+  }
+
+  /** A new temporary file name in the git folder; the caller removes the file. */
+  async tempFile(kind) {
+    return path.join(await this.gitDir(), `gittools-${kind}-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
+  }
+
+  /**
+   * Runs `fn` with a temporary index (GIT_INDEX_FILE) read from `base` (empty
+   * when null): the real index is never touched. Removed afterwards.
+   * @template T
+   * @param {string|null} base
+   * @param {(env: Record<string, string>) => Promise<T>} fn
+   * @returns {Promise<T>}
+   */
+  async withTempIndex(base, fn) {
+    const file = await this.tempFile('index');
+    const env = { GIT_INDEX_FILE: file };
+    try {
+      await this.git.run(base ? ['read-tree', base] : ['read-tree', '--empty'], { env });
+      return await fn(env);
+    } finally {
+      for (const f of [file, `${file}.lock`]) fs.rmSync(f, { force: true });
+    }
+  }
+
+  /**
+   * Writes `patch` to a temporary file for `fn` (git apply / am read files).
+   * @template T
+   * @param {Buffer} patch
+   * @param {(file: string) => Promise<T>} fn
+   * @returns {Promise<T>}
+   */
+  async withPatchFile(patch, fn) {
+    const file = `${await this.tempFile('patch')}.patch`;
+    fs.writeFileSync(file, patch);
+    try {
+      return await fn(file);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  }
+
+  /** The empty tree in this repository's hash format. */
+  async emptyTree() {
+    return (await this.git.run(['mktree'], { stdin: '' })).trim();
+  }
+
+  /**
+   * Which of `paths` exist in the working tree or at `rev` ('' = index):
+   * `git add` fails on a path that is in neither.
+   * @param {string[]} paths
+   * @param {string|null} rev
+   * @param {Record<string, string>} [env]
+   */
+  async presentPaths(paths, rev, env) {
+    const onDisk = (p) => {
+      try {
+        fs.lstatSync(path.join(this.root, p));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const missing = paths.filter((p) => !onDisk(p));
+    if (!missing.length || rev === null) {
+      const gone = new Set(missing);
+      return paths.filter((p) => !gone.has(p));
+    }
+    const out = await this.git.run(['cat-file', '--batch-check'], { env, stdin: missing.map((p) => `${rev}:${p}\n`).join('') });
+    const lines = out.split('\n');
+    const gone = new Set(missing.filter((p, i) => !lines[i] || lines[i].endsWith(' missing')));
+    return paths.filter((p) => !gone.has(p));
+  }
+
+  /**
+   * Patch of a temporary index against `base` (empty tree when null) with
+   * the files it touches. Explicit options so that diff settings (external
+   * diff, no prefix, textconv, relative) cannot change the output.
+   * @param {Record<string, string>} env
+   * @param {string|null} base
+   * @returns {Promise<{patch: Buffer, files: import('../domain/entities').ShelfFile[]}>}
+   */
+  async indexPatch(env, base) {
+    const tree = base || await this.emptyTree();
+    const args = ['diff', '--cached', '--binary', '--full-index', '-M', '--no-ext-diff', '--no-textconv', '--no-color',
+      '--no-relative', '--src-prefix=a/', '--dst-prefix=b/', tree, '--'];
+    const r = await this.git.raw(args, { env });
+    if (r.code !== 0) throw new GitError(args, r.code, r.stderr, r.stdout);
+    const names = await this.git.run(['diff', '--cached', '--name-status', '-z', '-M', '--no-relative', tree, '--'], { env });
+    const files = parseNameStatus(names).map((f) => ({ path: f.path, oldPath: f.oldPath || null, status: shelfStatus(f.type) }));
+    return { patch: r.bytes, files };
+  }
+
+  /**
+   * Patch of the working tree content of `paths` (new and deleted files
+   * included) against `base`, built in a temporary index: the real index
+   * and the working tree are left alone.
+   * @param {string[]} paths
+   * @param {string|null} base commit, null for a repository without commits
+   */
+  async buildPatch(paths, base) {
+    return this.withTempIndex(base, async (env) => {
+      const present = await this.presentPaths(paths, base);
+      if (present.length) {
+        await this.git.run(['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], { env, stdin: pathspecs(present) });
+      }
+      return this.indexPatch(env, base);
+    });
+  }
+
+  /**
+   * Reverts shelved files to `base` (HEAD) in the index and the working
+   * tree: modified and deleted files are restored, new files are removed
+   * from the index and deleted (both sides of a rename). Other paths are
+   * not touched.
+   * @param {import('../domain/entities').ShelfFile[]} files
+   * @param {string} base
+   */
+  async discardChanges(files, base) {
+    const restore = [];
+    const remove = [];
+    for (const f of files) {
+      if (f.status === 'A' || f.status === 'R') remove.push(f.path);
+      else restore.push(f.path);
+      if (f.status === 'R' && f.oldPath) restore.push(f.oldPath);
+    }
+    if (restore.length) {
+      await this.git.run(['restore', `--source=${base}`, '--staged', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'],
+        { stdin: pathspecs(restore), log: true });
+    }
+    if (remove.length) {
+      await this.git.run(['rm', '--cached', '-q', '-f', '--ignore-unmatch', '--pathspec-from-file=-', '--pathspec-file-nul'],
+        { stdin: pathspecs(remove), log: true });
+      for (const p of remove) {
+        fs.rmSync(path.join(this.root, p), { force: true });
+        this.removeEmptyFolders(p);
+      }
+    }
+  }
+
+  /** Removes the folders of `rel` left empty, up to the repository root. */
+  removeEmptyFolders(rel) {
+    let dir = path.dirname(path.join(this.root, rel));
+    while (dir.length > this.root.length && dir.startsWith(this.root)) {
+      try {
+        if (fs.readdirSync(dir).length) return;
+        fs.rmdirSync(dir);
+      } catch {
+        return;
+      }
+      dir = path.dirname(dir);
+    }
+  }
+
+  /**
+   * Index entries ("mode sha stage\tpath", ls-files -s) of `paths`.
+   * @param {string[]} paths
+   * @returns {Promise<Map<string, string[]>>}
+   */
+  async indexEntries(paths) {
+    const wanted = new Set(paths);
+    /** @type {Map<string, string[]>} */
+    const entries = new Map();
+    const out = await this.git.run(['ls-files', '-s', '-z']);
+    for (const rec of out.split('\0')) {
+      const tab = rec.indexOf('\t');
+      if (tab < 0) continue;
+      const p = rec.slice(tab + 1);
+      if (!wanted.has(p)) continue;
+      if (!entries.has(p)) entries.set(p, []);
+      entries.get(p).push(rec);
+    }
+    return entries;
+  }
+
+  /** Paths with unmerged index entries (conflicts). */
+  async unmergedPaths() {
+    const out = await this.git.run(['ls-files', '-u', '-z']);
+    return [...new Set(out.split('\0').filter((r) => r.includes('\t')).map((r) => r.slice(r.indexOf('\t') + 1)))];
+  }
+
+  /**
+   * Puts back the index entries recorded by indexEntries(): paths that were
+   * not in the index are removed from it again.
+   * @param {string[]} paths
+   * @param {Map<string, string[]>} before
+   */
+  async restoreIndexEntries(paths, before) {
+    const absent = paths.filter((p) => !before.has(p));
+    const present = paths.filter((p) => before.has(p));
+    if (absent.length) {
+      await this.git.run(['rm', '--cached', '-q', '-f', '--ignore-unmatch', '--pathspec-from-file=-', '--pathspec-file-nul'],
+        { stdin: pathspecs(absent) });
+    }
+    if (present.length) {
+      await this.git.run(['update-index', '-z', '--index-info'], { stdin: present.flatMap((p) => before.get(p)).map((r) => `${r}\0`).join('') });
+    }
+  }
+
+  /**
+   * Stages the working tree content of `targets` (they must match the index
+   * for git apply --3way) in the index of `env` (the real one by default).
+   * @param {string[]} targets
+   * @param {Record<string, string>} [env]
+   */
+  async stageForApply(targets, env) {
+    const present = await this.presentPaths(targets, '', env);
+    if (present.length) {
+      await this.git.run(['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], { env, stdin: pathspecs(present) });
+    }
+  }
+
+  /**
+   * Files of a patch (git apply --numstat --summary).
+   * @param {Buffer} patch
+   * @returns {Promise<import('../domain/entities').PatchFile[]>}
+   */
+  async patchFiles(patch) {
+    return this.withPatchFile(patch, async (file) => parsePatchStat(
+      await this.git.run(['apply', '--numstat', '--summary', '-z', file])));
+  }
+
+  /**
+   * `git apply --check --3way` on a copy of the index where `targets` are
+   * staged as they are in the working tree, like applyPatch() does.
+   * @param {Buffer} patch
+   * @param {string[]} targets paths the patch touches
+   * @returns {Promise<import('../domain/entities').PatchCheck>}
+   */
+  async checkPatch(patch, targets) {
+    const index = await this.gitPath('index');
+    const copy = await this.tempFile('index');
+    const env = { GIT_INDEX_FILE: copy };
+    try {
+      if (fs.existsSync(index)) fs.copyFileSync(index, copy);
+      await this.stageForApply(targets, env);
+      return await this.withPatchFile(patch, async (file) => {
+        const r = await this.git.raw(['apply', '--check', '--3way', '--binary', file], { env });
+        if (r.code !== 0) return { conflicts: [], error: r.stderr.trim() || `git apply exited with code ${r.code}` };
+        return { conflicts: appliedWithConflicts(r.stderr), error: null };
+      });
+    } finally {
+      for (const f of [copy, `${copy}.lock`]) fs.rmSync(f, { force: true });
+    }
+  }
+
+  /**
+   * Applies a patch to the working tree with `git apply --3way`. Files that
+   * merge with conflicts get conflict markers and unmerged index entries;
+   * for every other target the index is put back as it was, so the user's
+   * staging does not change. Throws (changing nothing) when git refuses the
+   * patch.
+   * @param {Buffer} patch
+   * @param {string[]} targets paths the patch touches (both sides of renames)
+   * @returns {Promise<{conflicted: string[], output: string}>}
+   */
+  async applyPatch(patch, targets) {
+    return this.withPatchFile(patch, async (file) => {
+      const before = await this.indexEntries(targets);
+      // --3way implies --index: a target with unstaged changes would be refused.
+      await this.stageForApply(targets);
+      const args = ['apply', '--3way', '--binary', file];
+      let r;
+      let unmerged = new Set();
+      try {
+        r = await this.git.raw(args, { log: true });
+      } finally {
+        unmerged = new Set(await this.unmergedPaths());
+        await this.restoreIndexEntries(targets.filter((p) => !unmerged.has(p)), before);
+      }
+      const conflicted = targets.filter((p) => unmerged.has(p));
+      if (r.code !== 0 && !conflicted.length) throw new GitError(args, r.code, r.stderr, r.stdout);
+      return { conflicted, output: r.stderr.trim() };
+    });
+  }
+
+  /**
+   * Applies a mailbox (git format-patch output) as commits with
+   * `git am --3way`. stopped = git am stopped at a patch (conflict) and the
+   * repository is left applying it.
+   * @param {Buffer} patch
+   */
+  async applyMailbox(patch) {
+    return this.withPatchFile(patch, async (file) => {
+      const args = ['am', '--3way', file];
+      const r = await this.git.raw(args, { log: true });
+      if ((await this.repoState()) === 'applyingMailbox') return { stopped: true, output: (r.stderr || r.stdout).trim() };
+      if (r.code !== 0) throw new GitError(args, r.code, r.stderr, r.stdout);
+      return { stopped: false, output: '' };
+    });
+  }
+
+  /**
+   * One mailbox with the given commits, in the given order
+   * (git format-patch --stdout). Merge commits produce nothing.
+   * @param {string[]} hashes
+   */
+  async formatPatch(hashes) {
+    const parts = [];
+    for (const h of hashes) {
+      const args = ['format-patch', '--stdout', '--binary', '-1', h];
+      const r = await this.git.raw(args);
+      if (r.code !== 0) throw new GitError(args, r.code, r.stderr, r.stdout);
+      parts.push(r.bytes);
+    }
+    return Buffer.concat(parts);
+  }
+
+  /**
+   * Index entries ({mode, sha}) of `paths` once `patch` is applied to
+   * `base`, without touching the working tree or the real index.
+   * @param {string} base
+   * @param {Buffer} patch
+   * @param {string[]} paths
+   * @returns {Promise<Map<string, {mode: string, sha: string}>>}
+   */
+  async patchedEntries(base, patch, paths) {
+    return this.withTempIndex(base, (env) => this.withPatchFile(patch, async (file) => {
+      await this.git.run(['apply', '--cached', '--binary', file], { env });
+      const wanted = new Set(paths);
+      /** @type {Map<string, {mode: string, sha: string}>} */
+      const result = new Map();
+      for (const rec of (await this.git.run(['ls-files', '-s', '-z'], { env })).split('\0')) {
+        const m = /^(\d+) ([0-9a-f]+) \d\t(.*)$/s.exec(rec);
+        if (m && wanted.has(m[3])) result.set(m[3], { mode: m[1], sha: m[2] });
+      }
+      return result;
+    }));
+  }
+
+  /** Content of a blob. @param {string} sha */
+  async blob(sha) {
+    return (await this.git.raw(['cat-file', 'blob', sha])).bytes;
+  }
+
+  /**
+   * The patch without the files at `removePaths`: applied to `base` in a
+   * temporary index, those paths reset to `base`, and diffed again.
+   * @param {string} base
+   * @param {Buffer} patch
+   * @param {string[]} removePaths both sides of renames
+   */
+  async removeFromPatch(base, patch, removePaths) {
+    return this.withTempIndex(base, (env) => this.withPatchFile(patch, async (file) => {
+      await this.git.run(['apply', '--cached', '--binary', file], { env });
+      if (removePaths.length) {
+        await this.git.run(['reset', '-q', base, '--pathspec-from-file=-', '--pathspec-file-nul'], { env, stdin: pathspecs(removePaths) });
+      }
+      return this.indexPatch(env, base);
+    }));
+  }
+
+  /** Creates or moves a ref (e.g. refs/git-tools/shelf/<id>). */
+  setRef(ref, hash) {
+    return this.git.run(['update-ref', ref, hash]);
+  }
+
+  deleteRef(ref) {
+    return this.git.run(['update-ref', '-d', ref], { allowFailure: true });
+  }
+
   // ---------------------------------------------------------------- operations
 
   continueOperation(state) {
@@ -980,18 +1357,24 @@ class Repository {
       rebasing: ['rebase', '--continue'],
       cherryPicking: ['cherry-pick', '--continue'],
       reverting: ['revert', '--continue'],
+      applyingMailbox: ['am', '--continue'],
     }[state];
     return this.git.run(args, { log: true });
   }
 
   abortOperation(state) {
-    const op = { merging: 'merge', rebasing: 'rebase', cherryPicking: 'cherry-pick', reverting: 'revert' }[state];
+    const op = { merging: 'merge', rebasing: 'rebase', cherryPicking: 'cherry-pick', reverting: 'revert', applyingMailbox: 'am' }[state];
     return this.git.run([op, '--abort'], { log: true });
   }
 
   /** Skips the commit a rebase stopped at. */
   skipRebaseCommit() {
     return this.git.run(['rebase', '--skip'], { log: true });
+  }
+
+  /** Skips the patch git am stopped at. */
+  skipMailboxPatch() {
+    return this.git.run(['am', '--skip'], { log: true });
   }
 
   // ---------------------------------------------------------------- interactive rebase

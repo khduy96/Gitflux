@@ -1,7 +1,7 @@
 {
   "name": "git-tools-as",
   "displayName": "Git Tools (Android Studio style)",
-  "description": "Android Studio style Git tool window for VS Code: commit panel with checkboxes, log with branch graph, branches popup, push/pull dialogs, stashes and AI commit messages (Claude / Gemini).",
+  "description": "Android Studio style Git tool window for VS Code: commit panel with checkboxes, log with branch graph, branches popup, push/pull dialogs, stashes, shelf, patches and AI commit messages (Claude / Gemini).",
   "version": "0.4.6",
   "publisher": "local",
   "license": "UNLICENSED",
@@ -127,6 +127,40 @@
         "title": "Stash Changes…",
         "category": "Git Tools",
         "icon": "$(archive)"
+      },
+      {
+        "command": "gitTools.shelveChanges",
+        "title": "Shelve Changes…",
+        "category": "Git Tools",
+        "icon": "$(inbox)"
+      },
+      {
+        "command": "gitTools.showShelf",
+        "title": "Show Shelf",
+        "category": "Git Tools",
+        "icon": "$(inbox)"
+      },
+      {
+        "command": "gitTools.createPatch",
+        "title": "Create Patch from Ticked Files…",
+        "category": "Git Tools",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "gitTools.copyPatch",
+        "title": "Copy Patch of Ticked Files to Clipboard",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.applyPatch",
+        "title": "Apply Patch…",
+        "category": "Git Tools",
+        "icon": "$(diff-added)"
+      },
+      {
+        "command": "gitTools.applyPatchFromClipboard",
+        "title": "Apply Patch from Clipboard",
+        "category": "Git Tools"
       },
       {
         "command": "gitTools.resolveConflicts",
@@ -364,6 +398,49 @@
         "category": "Git Tools"
       },
       {
+        "command": "gitTools.shelf.unshelve",
+        "title": "Unshelve…",
+        "category": "Git Tools",
+        "icon": "$(desktop-download)"
+      },
+      {
+        "command": "gitTools.shelf.apply",
+        "title": "Apply (Keep in Shelf)",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.shelf.rename",
+        "title": "Rename…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.shelf.delete",
+        "title": "Delete…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.shelf.createPatch",
+        "title": "Create Patch…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.shelf.copyPatch",
+        "title": "Copy as Patch",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.shelf.unshelveFile",
+        "title": "Unshelve This File",
+        "category": "Git Tools",
+        "icon": "$(desktop-download)"
+      },
+      {
+        "command": "gitTools.shelf.showDiff",
+        "title": "Show Diff",
+        "category": "Git Tools",
+        "icon": "$(diff)"
+      },
+      {
         "command": "gitTools.selectLines",
         "title": "Select Lines to Commit…",
         "category": "Git Tools",
@@ -433,19 +510,24 @@
           "group": "navigation@2"
         },
         {
-          "command": "gitTools.refresh",
+          "command": "gitTools.shelveChanges",
           "when": "view == gitTools.commit",
           "group": "navigation@3"
         },
         {
+          "command": "gitTools.refresh",
+          "when": "view == gitTools.commit",
+          "group": "navigation@4"
+        },
+        {
           "command": "gitTools.commit.groupByDirectory",
           "when": "view == gitTools.commit && gitTools.commitGroupBy != directory",
-          "group": "navigation@4"
+          "group": "navigation@5"
         },
         {
           "command": "gitTools.commit.groupByNone",
           "when": "view == gitTools.commit && gitTools.commitGroupBy == directory",
-          "group": "navigation@4"
+          "group": "navigation@5"
         },
         {
           "command": "gitTools.repo.open",
@@ -478,19 +560,44 @@
           "group": "1_remote@3"
         },
         {
+          "command": "gitTools.createPatch",
+          "when": "view == gitTools.commit",
+          "group": "2_patch@1"
+        },
+        {
+          "command": "gitTools.copyPatch",
+          "when": "view == gitTools.commit",
+          "group": "2_patch@2"
+        },
+        {
+          "command": "gitTools.applyPatch",
+          "when": "view == gitTools.commit",
+          "group": "2_patch@3"
+        },
+        {
+          "command": "gitTools.applyPatchFromClipboard",
+          "when": "view == gitTools.commit",
+          "group": "2_patch@4"
+        },
+        {
+          "command": "gitTools.showShelf",
+          "when": "view == gitTools.commit",
+          "group": "2_patch@5"
+        },
+        {
           "command": "gitTools.selectRepository",
           "when": "view == gitTools.commit",
-          "group": "2_repo@1"
+          "group": "3_repo@1"
         },
         {
           "command": "gitTools.ai.configure",
           "when": "view == gitTools.commit",
-          "group": "3_ai@1"
+          "group": "4_ai@1"
         },
         {
           "command": "gitTools.ai.setupGuide",
           "when": "view == gitTools.commit",
-          "group": "3_ai@2"
+          "group": "4_ai@2"
         },
         {
           "command": "gitTools.newBranch",
@@ -511,6 +618,21 @@
           "command": "gitTools.showReflog",
           "when": "view == gitTools.branches",
           "group": "1_history@1"
+        },
+        {
+          "command": "gitTools.showShelf",
+          "when": "view == gitTools.branches",
+          "group": "1_history@2"
+        },
+        {
+          "command": "gitTools.applyPatch",
+          "when": "view == gitTools.branches",
+          "group": "2_patch@1"
+        },
+        {
+          "command": "gitTools.applyPatchFromClipboard",
+          "when": "view == gitTools.branches",
+          "group": "2_patch@2"
         },
         {
           "command": "gitTools.fileHistory",
@@ -638,6 +760,66 @@
           "command": "gitTools.stash.drop",
           "when": "view == gitTools.branches && viewItem == stash",
           "group": "2@2"
+        },
+        {
+          "command": "gitTools.shelf.unshelve",
+          "when": "view == gitTools.branches && viewItem == shelf",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitTools.shelf.unshelve",
+          "when": "view == gitTools.branches && viewItem == shelf",
+          "group": "1@1"
+        },
+        {
+          "command": "gitTools.shelf.apply",
+          "when": "view == gitTools.branches && viewItem == shelf",
+          "group": "1@2"
+        },
+        {
+          "command": "gitTools.shelf.createPatch",
+          "when": "view == gitTools.branches && viewItem == shelf",
+          "group": "2@1"
+        },
+        {
+          "command": "gitTools.shelf.copyPatch",
+          "when": "view == gitTools.branches && viewItem == shelf",
+          "group": "2@2"
+        },
+        {
+          "command": "gitTools.shelf.rename",
+          "when": "view == gitTools.branches && viewItem == shelf",
+          "group": "3@1"
+        },
+        {
+          "command": "gitTools.shelf.delete",
+          "when": "view == gitTools.branches && viewItem == shelf",
+          "group": "3@2"
+        },
+        {
+          "command": "gitTools.shelf.unshelveFile",
+          "when": "view == gitTools.branches && viewItem == shelfFile",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitTools.shelf.unshelveFile",
+          "when": "view == gitTools.branches && viewItem == shelfFile",
+          "group": "1@1"
+        },
+        {
+          "command": "gitTools.shelf.showDiff",
+          "when": "view == gitTools.branches && viewItem == shelfFile",
+          "group": "1@2"
+        },
+        {
+          "command": "gitTools.applyPatch",
+          "when": "view == gitTools.branches && viewItem == shelfGroup",
+          "group": "1@1"
+        },
+        {
+          "command": "gitTools.applyPatchFromClipboard",
+          "when": "view == gitTools.branches && viewItem == shelfGroup",
+          "group": "1@2"
         },
         {
           "command": "gitTools.submodule.open",
@@ -819,6 +1001,38 @@
         },
         {
           "command": "gitTools.stash.showFiles",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.shelf.unshelve",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.shelf.apply",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.shelf.rename",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.shelf.delete",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.shelf.createPatch",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.shelf.copyPatch",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.shelf.unshelveFile",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.shelf.showDiff",
           "when": "false"
         },
         {

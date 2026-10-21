@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../../domain/entities/git_models.dart';
+import '../../domain/entities/shelf.dart';
 import '../state/app_settings.dart';
 import '../state/repo_controller.dart';
 import 'actions.dart';
@@ -19,11 +20,14 @@ import 'dialogs/ai_setup_guide.dart';
 import 'dialogs/basic_dialogs.dart';
 import 'dialogs/pull_dialog.dart';
 import 'dialogs/push_dialog.dart';
+import 'dialogs/patch_dialogs.dart';
 import 'dialogs/remotes_dialog.dart';
+import 'dialogs/shelve_dialogs.dart';
 import 'dialogs/stash_dialogs.dart';
 import 'log/compare_commits_view.dart';
 import 'log/log_panel.dart';
 import 'log/reflog_panel.dart';
+import 'shelf/shelf_panel.dart';
 import 'widgets/split_view.dart';
 
 class WorkspacePage extends StatefulWidget {
@@ -210,6 +214,11 @@ class _WorkspacePageState extends State<WorkspacePage> {
       const PopupMenuDivider(height: 8),
       menuItem('stash', 'Stash Changes…', icon: Icons.inventory_2_outlined),
       menuItem('unstash', 'Unstash Changes…', icon: Icons.unarchive_outlined),
+      menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined),
+      menuItem('shelf', 'Show Shelf', icon: Icons.shelves),
+      const PopupMenuDivider(height: 8),
+      menuItem('applyPatch', 'Apply Patch…', icon: Icons.file_open_outlined),
+      menuItem('applyClipboard', 'Apply Patch from Clipboard', icon: Icons.content_paste_go),
       const PopupMenuDivider(height: 8),
       menuItem('remotes', 'Manage Remotes…', icon: Icons.cloud_outlined),
       menuItem('ai', 'AI Commit Message Settings…', icon: Icons.auto_awesome),
@@ -241,6 +250,14 @@ class _WorkspacePageState extends State<WorkspacePage> {
         showStashDialog(context, ctrl);
       case 'unstash':
         ctrl.bottomTab.value = 2;
+      case 'shelve':
+        showShelveDialog(context, ctrl, ctrl.includedChanges);
+      case 'shelf':
+        ctrl.showShelf();
+      case 'applyPatch':
+        showApplyPatchDialog(context, ctrl);
+      case 'applyClipboard':
+        showApplyPatchDialog(context, ctrl, fromClipboard: true);
       case 'remotes':
         showRemotesDialog(context, ctrl);
       case 'ai':
@@ -640,6 +657,11 @@ class _WorkspacePageState extends State<WorkspacePage> {
                   builder: (_, s, _) => _BottomTab(
                       s.isEmpty ? 'Stashes' : 'Stashes (${s.length})', tab == 2, () => ctrl.bottomTab.value = 2),
                 ),
+                ValueListenableBuilder<List<Shelf>>(
+                  valueListenable: ctrl.shelves,
+                  builder: (_, s, _) => _BottomTab(
+                      s.isEmpty ? 'Shelf' : 'Shelf (${s.length})', tab == RepoController.shelfTab, ctrl.showShelf),
+                ),
                 _BottomTab('Reflog', tab == RepoController.reflogTab, ctrl.showReflog),
                 const Spacer(),
                 ToolButton(
@@ -658,6 +680,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
                   ConsolePanel(controller: ctrl),
                   StashesPanel(controller: ctrl),
                   ReflogPanel(controller: ctrl),
+                  ShelfPanel(controller: ctrl),
                 ],
               ),
             ),

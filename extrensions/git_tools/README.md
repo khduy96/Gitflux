@@ -8,6 +8,8 @@ Extension cho VS Code mang Git tool window kiểu Android Studio vào VS Code:
 - Popup **Branches**.
 - Push / Update Project.
 - Stash.
+- **Shelve** (cất thay đổi theo từng file, kiểu Android Studio) và mục **Shelf**.
+- **Create Patch / Apply Patch**: xuất thay đổi hoặc commit ra file patch, áp dụng patch (kể cả `git am`).
 - Merge tool 3 cột.
 - **Interactive rebase**: sửa message commit cũ, squash, fixup, đổi thứ tự, drop nhiều commit.
 - **AI tự viết commit message** bằng Claude hoặc Google Gemini.
@@ -25,7 +27,7 @@ Phiên bản: 0.4.2 · Yêu cầu: VS Code **1.90 trở lên** và **Git** đã 
 5. [Log và lịch sử commit](#5-log-và-lịch-sử-commit)
 6. [Branches](#6-branches)
 7. [Push, Update Project, Fetch](#7-push-update-project-fetch)
-8. [Stash](#8-stash) · [Submodules](#8b-submodules-gitmodules)
+8. [Stash](#8-stash) · [Submodules](#8b-submodules-gitmodules) · [Shelve và Shelf](#8c-shelve-và-shelf) · [Patch](#8d-create-patch--apply-patch)
 9. [Merge, rebase và giải quyết conflict](#9-merge-rebase-và-giải-quyết-conflict) · [Interactive rebase](#9b-interactive-rebase-sửa-lịch-sử-commit)
 10. [AI commit message](#10-ai-commit-message)
 11. [Cài đặt (Settings)](#11-cài-đặt-settings)
@@ -83,7 +85,7 @@ code --uninstall-extension local.git-tools-as
 |---|---|---|
 | Activity bar ▸ **Git Tools** ▸ **Source Control Repositories** | Danh sách mọi repository trong workspace, kể cả repo con. Repo đang chọn có dấu ✓ | Danh sách repository / VCS roots |
 | Activity bar ▸ **Git Tools** ▸ **Commit** | Danh sách thay đổi, ô commit message, nút Commit | Commit tool window (Alt+0) |
-| Activity bar ▸ **Git Tools** ▸ **Branches** | HEAD, Local, Remote, Tags, Stashes, Reflog | Cây branch trong Git tool window |
+| Activity bar ▸ **Git Tools** ▸ **Branches** | HEAD, Local, Remote, Tags, Stashes, Shelf, Reflog | Cây branch trong Git tool window |
 | Panel dưới ▸ **Git Tools** ▸ **Log** | Lịch sử commit có đồ thị nhánh | Git ▸ Log (Alt+9) |
 | Thanh trạng thái, góc trái: `⑂ main 2↑ 1↓` | Branch hiện tại, số commit chưa push ↑ và chưa pull ↓. Bấm vào để mở popup Branches | Branch widget |
 | Output ▸ **Git Tools** | Mọi lệnh git đã chạy kèm kết quả | Tab Console |
@@ -167,21 +169,28 @@ Nút trên thanh tiêu đề view Commit dùng để chuyển cách hiển thị
 - Resolve Conflicts…
 - Include in Commit / Exclude from Commit
 - Rollback… — đưa file về trạng thái HEAD. Với file mới thêm, bạn được chọn giữ hay xoá bản trên đĩa.
+- Shelve Changes… / Create Patch… / Copy as Patch to Clipboard — xem [mục 8c](#8c-shelve-và-shelf) và [mục 8d](#8d-create-patch--apply-patch).
 - Delete… và Add to .gitignore — chỉ có với file chưa được theo dõi.
 - Show History — mở Log lọc theo file.
 - Copy Path
 - Reveal in Explorer View
 
+Chuột phải **dòng thư mục** (khi Group by Directory) hoặc **dòng nhóm** (Changes, Unversioned Files) cũng có menu: Include / Exclude, Shelve Changes…, Create Patch…, Copy as Patch to Clipboard, Rollback…, áp dụng cho mọi file bên dưới.
+
 ### Thanh tiêu đề view Commit
 
 - **✨** — sinh commit message bằng AI (xem [mục 10](#10-ai-commit-message)).
 - **Stash Changes…**
+- **Shelve Changes…** — shelve các file đang tick.
 - **⟳ Refresh**
 - **Group by Directory / Group by: None** — xem mục Group by ở trên.
 - Trong menu `…`:
   - Update Project
   - Push
   - Fetch
+  - Create Patch from Ticked Files… / Copy Patch of Ticked Files to Clipboard
+  - Apply Patch… / Apply Patch from Clipboard
+  - Show Shelf
   - Select Repository
   - AI Commit Message: Configure / Setup Guide
 
@@ -255,6 +264,7 @@ View **Log** gồm 3 phần:
 |---|---|
 | Copy Revision Number | Copy hash (nhiều commit thì cách nhau bằng dấu cách) |
 | Cherry-Pick | Áp dụng commit đã chọn vào branch hiện tại, theo thứ tự cũ đến mới |
+| Create Patch… | Xuất 1 hoặc nhiều commit đã chọn thành **một** file patch dạng mailbox (`git format-patch --stdout`), cũ trước mới sau. Merge commit bị bỏ qua. Xem [mục 8d](#8d-create-patch--apply-patch) |
 | Checkout Revision | Checkout commit (detached HEAD) |
 | Compare with Local | Liệt kê commit hai phía và các file khác nhau giữa commit đó và HEAD |
 | Compare Commits | Chọn đúng **2 commit** (`Ctrl+Click`), không cần commit này là tổ tiên của commit kia. Mở danh sách file khác nhau (`git diff --name-status -M`, có nhận biết đổi tên) với chữ trạng thái **M / A / D / R**; tiêu đề là `<commit cũ hơn> ↔ <commit mới hơn>` (theo ngày commit). Chọn file để mở diff trong trình so sánh của VS Code; danh sách vẫn mở để xem tiếp file khác. Nút ⇄ **Swap Sides** đổi hai bên |
@@ -344,6 +354,7 @@ Trong cây Branches còn có:
 - Branch Local / Remote được gom thành thư mục theo tiền tố trước dấu `/`: `feature/login`, `feature/cart` → **feature** ▸ `login`, `cart`. Thư mục chứa branch hiện tại tự mở sẵn.
 - Mục **Tags**: Checkout, New Branch, Merge, Push Tag, Delete Tag.
 - Mục **Stashes**: xem [mục 8](#8-stash).
+- Mục **Shelf**: xem [mục 8c](#8c-shelve-và-shelf).
 - Mục **Reflog**: mở panel Reflog, xem [mục 5](#reflog).
 
 ---
@@ -411,13 +422,69 @@ Extension nhận biết submodule ở mọi nơi:
 
 ---
 
+## 8c. Shelve và Shelf
+
+**Shelve khác stash ở chỗ nào?** Shelve làm việc **theo file**: chỉ cất những file bạn chọn, mỗi lần cất là một mục có tên riêng trong danh sách **Shelf** (không dính tới stack `git stash`), và lấy lại được **từng file một**.
+
+### Shelve Changes
+
+- Chuột phải file (hoặc dòng thư mục / dòng nhóm) trong view Commit ▸ **Shelve Changes…**; hoặc nút **Shelve Changes…** trên thanh tiêu đề view Commit (áp dụng cho các file đang tick); hoặc Command Palette ▸ **Git Tools: Shelve Changes…**.
+- Hộp thoại gồm 2 bước:
+  1. **Tên shelf** — mặc định là dòng đầu của commit message đang gõ, nếu trống thì `Changes from <yyyy-MM-dd HH:mm>`.
+  2. **Danh sách file** — các file bạn đã chọn được tick sẵn, các file thay đổi khác cũng có trong danh sách để tick thêm. Ô **Keep changes in working tree** (mặc định tắt): bật nếu chỉ muốn lưu một bản sao vào shelf mà không đụng tới file.
+- Sau khi lưu shelf, nếu không chọn *Keep*, các file đã shelve được **đưa về HEAD**: file sửa / xoá được khôi phục từ HEAD, file mới (kể cả file chưa theo dõi) bị xoá và gỡ khỏi index. File khác và phần index của chúng giữ nguyên.
+- Không shelve được khi đang merge / rebase / cherry-pick / revert / `git am` (có thông báo), hoặc khi repo chưa có commit nào.
+- File đang chọn từng dòng (`3/7 lines`) được shelve **cả file**, không chỉ các dòng đã chọn.
+- Submodule, repo con và file đang conflict bị bỏ qua (có thông báo).
+
+### Shelf
+
+- Cây **Branches** ▸ mục **Shelf** (ngay sau Stashes), hoặc Command Palette ▸ **Git Tools: Show Shelf**.
+- Mỗi shelf hiện tên, thời gian tương đối (rê chuột để xem ngày giờ chính xác), số file và branch lúc shelve. Shelf mới nhất ở trên. Mở shelf để xem danh sách file.
+- Click một file: mở diff **chỉ đọc** giữa file ở commit gốc của shelf và nội dung đã shelve.
+- Chuột phải shelf:
+  - **Unshelve…** — chọn file (mặc định tick hết) và ô **Remove successfully applied files from shelf** (mặc định bật).
+  - **Apply (Keep in Shelf)** — áp dụng mọi file, shelf giữ nguyên.
+  - **Rename…**, **Delete…** (hỏi xác nhận).
+  - **Create Patch…** — lưu patch của shelf ra file; **Copy as Patch** — copy vào clipboard.
+- Chuột phải file trong shelf: **Unshelve This File**, **Show Diff**.
+
+Unshelve dùng `git apply --3way` với commit gốc của shelf, nên vẫn áp dụng được khi HEAD đã đi tiếp hoặc file đang có thay đổi chưa commit:
+- File áp dụng sạch: được bỏ khỏi shelf (nếu bật ô *Remove…*). Phần stage của bạn không đổi: các file này không bị stage.
+- File bị conflict: có conflict marker và hiện trong nhóm **Merge Conflicts** của view Commit để giải quyết như merge bình thường; file đó **vẫn ở lại** trong shelf. File mới trong shelf trùng tên với một file chưa theo dõi đang có cũng thành conflict (cả hai nội dung nằm trong file, không mất gì).
+- Nếu git từ chối hẳn patch (ví dụ file cần sửa đã bị xoá), extension hiện lỗi của git và **không thay đổi gì**.
+- Shelf hết file thì tự bị xoá.
+
+**Lưu ở đâu:** `.git/git-tools/shelf/<id>/` (`shelf.json` + `changes.patch`), dùng chung cho mọi worktree và không bao giờ bị commit. Ref `refs/git-tools/shelf/<id>` giữ commit gốc để `git gc` không xoá mất, kể cả khi commit đó đã bị rebase / reset. Định dạng này dùng chung với app Git Tools (Flutter): shelf tạo ở bên này mở được ở bên kia.
+
+---
+
+## 8d. Create Patch / Apply Patch
+
+### Create Patch
+
+- **Từ file đang thay đổi:** chuột phải file / thư mục / nhóm trong view Commit ▸ **Create Patch…** (lưu ra file, tên mặc định `<branch>.patch`) hoặc **Copy as Patch to Clipboard**. Trên thanh tiêu đề view Commit, menu `…` có **Create Patch from Ticked Files…** / **Copy Patch of Ticked Files to Clipboard** cho các file đang tick. Patch so với HEAD, có cả file mới chưa theo dõi, file xoá và file nhị phân (`git diff --binary`); index và working tree không bị đụng tới.
+- **Từ commit:** Log ▸ chọn 1 hoặc nhiều commit ▸ chuột phải ▸ **Create Patch…**. Các commit được xuất bằng `git format-patch --stdout` vào **một** file, commit cũ trước, commit mới sau.
+
+### Apply Patch
+
+- Command Palette ▸ **Git Tools: Apply Patch…** (chọn file) hoặc **Apply Patch from Clipboard**; cũng có trong menu `…` của view Commit và cây Branches.
+- Bảng xem trước hiện danh sách file (M / A / D / R, số dòng thêm / bớt) và kết quả chạy thử `git apply --check --3way`: *Applies cleanly*, *Applies with conflicts in …*, hoặc lỗi của git.
+- Patch dạng mailbox (tạo bởi `git format-patch`, bắt đầu bằng `From <hash> ` hoặc có header `Subject:`):
+  - **Apply as Commits** (mặc định) — `git am --3way`, tạo lại các commit với tác giả và message gốc.
+  - **Apply Changes Only** — chỉ áp dụng thay đổi vào working tree, không tạo commit.
+- Patch thường (diff): **Apply to Working Tree** — `git apply --3way`; phần stage của bạn không đổi.
+- Conflict được đưa sang nhóm **Merge Conflicts** như khi merge. Với `git am`, view Commit hiện banner **"Applying patch 1/3"** kèm nút **Continue** (`git am --continue`), **Skip** (`git am --skip`) và **Abort** (`git am --abort`).
+
+---
+
 ## 9. Merge, rebase và giải quyết conflict
 
-Khi đang merge / rebase / cherry-pick / revert, view Commit hiện banner kiểu **"Merging in progress · 1 conflict"** kèm nút:
+Khi đang merge / rebase / cherry-pick / revert / áp dụng patch bằng `git am`, view Commit hiện banner kiểu **"Merging in progress · 1 conflict"** kèm nút:
 
 - **Resolve…** khi còn conflict.
 - **Continue** khi đã giải quyết hết. Với merge, Continue tạo merge commit bằng message mặc định của git.
-- **Skip** (chỉ khi rebase) — bỏ qua commit đang dừng (`git rebase --skip`), có hỏi xác nhận.
+- **Skip** (chỉ khi rebase hoặc `git am`) — bỏ qua commit / patch đang dừng (`git rebase --skip` / `git am --skip`), có hỏi xác nhận.
 - **Abort**.
 
 Khi rebase, banner hiện tiến độ, ví dụ **"Rebasing 2/5"**. Nếu rebase dừng ở commit đánh dấu `edit`, banner ghi thêm *"Stopped at 1a2b3c4d Thêm API for editing — amend, then Continue"*: sửa file, tick **Amend** rồi Commit, sau đó bấm **Continue**.
@@ -553,7 +620,10 @@ Mở Command Palette (`Ctrl+Shift+P`) và gõ `Git Tools`:
 | Push… / Update Project / Pull… / Fetch | Đồng bộ với remote |
 | Branches… / New Branch… / Checkout Tag or Revision… | Quản lý branch |
 | Stash Changes… | Tạo stash |
-| Resolve Conflicts… / Continue Merge / Rebase / Abort Merge / Rebase / Skip Commit (Rebase) | Xử lý merge, rebase |
+| Shelve Changes… / Show Shelf | Shelve các file đang tick, mở mục Shelf trong cây Branches |
+| Create Patch from Ticked Files… / Copy Patch of Ticked Files to Clipboard | Tạo patch từ các file đang tick |
+| Apply Patch… / Apply Patch from Clipboard | Áp dụng patch (`git apply --3way` hoặc `git am --3way`) |
+| Resolve Conflicts… / Continue Merge / Rebase / Abort Merge / Rebase / Skip Commit (Rebase) | Xử lý merge, rebase, `git am` |
 | Interactive Rebase… | Chọn commit cũ nhất rồi mở panel Interactive Rebase |
 | Show Git Log / Show History for Current File | Xem lịch sử |
 | Show Reflog | Mở panel Reflog (tìm lại commit bị mất) |
@@ -588,7 +658,8 @@ Extension không gán phím tắt mặc định để tránh trùng phím của 
 
 ## 14. Giới hạn hiện tại
 
-- Chưa có shelve.
+- File chọn từng dòng được shelve cả file. Submodule không shelve được.
+- Shelf chỉ hiện trong cây Branches (chưa có tab riêng như Android Studio); diff của file đã shelve chỉ đọc.
 - Reflog chỉ tải 500 mục mới nhất, chưa có "load more".
 - Danh sách tác giả trong dropdown User lấy từ các commit đã tải (tối đa 100 người). Tìm theo **Me** dùng `user.name` / `user.email` hiện tại, nên commit cũ với tên / email khác không được tính.
 - Interactive rebase giữ nguyên merge commit (không reword / drop / đổi chỗ merge commit được).
@@ -610,17 +681,20 @@ git_tools/
 │  ├─ extension.js         kích hoạt + composition root: tạo GitCliService, createAi rồi đưa cho presentation
 │  ├─ domain/              JS thuần: không require vscode, fs, child_process hay data/
 │  │  ├─ entities.js       kiểu dữ liệu (FileChange, Status, Commit, Branch…), describeSubmodule
-│  │  ├─ ports.js          hợp đồng tầng data phải đáp ứng: GitRepository, GitService, CommitMessageAi
-│  │  ├─ errors.js         GitError, AiError, StaleSelectionError, CommitRejected
+│  │  ├─ ports.js          hợp đồng tầng data phải đáp ứng: GitRepository, GitService, ShelfStore, CommitMessageAi
+│  │  ├─ errors.js         GitError, AiError, StaleSelectionError, CommitRejected, RebaseRejected, ShelfRejected, PatchRejected
 │  │  ├─ prompt.js         system prompt + dựng prompt sinh commit message
 │  │  ├─ logic/            graph.js (xếp làn đồ thị), conflicts.js (conflict marker), lineSelection.js (chọn từng dòng),
 │  │  │                    rebaseTodo.js (đọc / kiểm tra / dựng todo của interactive rebase),
-│  │  │                    history.js (bộ lọc Log user / date / nội dung, tách subject reflog, thứ tự Compare Commits)
-│  │  └─ usecases/         commitChanges.js, generateCommitMessage.js, selectedLineContents.js, interactiveRebase.js
+│  │  │                    history.js (bộ lọc Log user / date / nội dung, tách subject reflog, thứ tự Compare Commits),
+│  │  │                    shelf.js (định dạng shelf.json, id shelf), patch.js (nhận dạng mailbox, numstat / summary)
+│  │  └─ usecases/         commitChanges.js, generateCommitMessage.js, selectedLineContents.js, interactiveRebase.js,
+│  │                       shelveChanges.js (shelve / unshelve), patches.js (create / apply patch)
 │  ├─ data/                implementation của ports
 │  │  ├─ gitRunner.js      chạy lệnh git
 │  │  ├─ gitRepository.js  Repository: thao tác git + phân tích output (status, log, branch…)
 │  │  ├─ gitService.js     tìm / mở repository, quét thư mục workspace
+│  │  ├─ shelfStore.js     đọc / ghi shelf trong .git/git-tools/shelf + ref giữ commit gốc
 │  │  └─ aiClients.js      gọi Claude / Gemini (streaming)
 │  └─ presentation/        mọi thứ dùng API của VS Code
 │     ├─ model.js          trạng thái repo, tự làm mới, nhiều repo
@@ -634,6 +708,8 @@ git_tools/
 │     ├─ selectLines.js    panel Commit Lines  (media/lines.*)
 │     ├─ rebaseView.js     panel Interactive Rebase, ô soạn message, lệnh sửa lịch sử trong Log (media/rebase.*)
 │     ├─ reflogView.js     panel Reflog       (media/reflog.*)
+│     ├─ shelf.js          hộp thoại Shelve / Unshelve, lệnh của Shelf, nội dung đã shelve cho diff editor
+│     ├─ patches.js        Create Patch / Apply Patch
 │     ├─ diff.js           nội dung file theo revision cho diff editor
 │     ├─ guide.js          trang Setup Guide  (media/guide.*)
 │     └─ webview.js        khung HTML chung cho webview
@@ -651,7 +727,7 @@ Quy tắc:
 - Chạy test (cần Node 18 trở lên và git):
 
   ```bash
-  node --test test/core.test.js test/lineSelection.test.js test/submodule.test.js test/branchUpstream.test.js test/usecases.test.js test/rebaseTodo.test.js test/interactiveRebase.test.js test/historyTools.test.js
+  node --test test/core.test.js test/lineSelection.test.js test/submodule.test.js test/branchUpstream.test.js test/usecases.test.js test/rebaseTodo.test.js test/interactiveRebase.test.js test/historyTools.test.js test/shelvePatches.test.js
   ```
 
 - Đóng gói lại file `.vsix` (cần Node và Internet ở lần chạy đầu):

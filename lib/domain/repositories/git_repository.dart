@@ -1,5 +1,6 @@
 import '../entities/git_models.dart';
 import '../entities/log_query.dart';
+import '../entities/patch.dart';
 import '../entities/rebase.dart';
 import '../entities/reflog.dart';
 
@@ -185,6 +186,9 @@ abstract interface class GitRepository {
   Future<void> continueOperation(RepoState state);
   Future<void> skipRebaseCommit();
 
+  /// Skips the patch `git am` stopped on.
+  Future<void> skipMailboxPatch();
+
   // ---------------------------------------------------------------------------
   // Remote operations
   // ---------------------------------------------------------------------------
@@ -255,7 +259,7 @@ abstract interface class GitRepository {
     bool rebaseMerges = false,
   });
 
-  /// Position of the rebase in progress, or null.
+  /// Position of the rebase (or `git am`) in progress, or null.
   Future<RebaseProgress?> rebaseProgress();
 
   /// Deletes the state directory when no rebase is in progress.
@@ -273,6 +277,43 @@ abstract interface class GitRepository {
   Future<void> stashDrop(Stash s);
   Future<void> stashClear();
   Future<void> stashBranch(Stash s, String branch);
+
+  // ---------------------------------------------------------------------------
+  // Patches
+  // ---------------------------------------------------------------------------
+
+  /// Absolute path of the git directory shared by all worktrees
+  /// (`git rev-parse --git-common-dir`).
+  Future<String> commonDir();
+
+  /// `git diff --binary --full-index -M` of [paths] as they are in the work
+  /// tree (untracked and deleted files included) relative to [base], with
+  /// the files of the patch. Made through a temporary index: the real index
+  /// is not touched.
+  Future<WorkingTreePatch> diffWorkingTree(String base, List<String> paths);
+
+  /// The selected commits as one mailbox (`git format-patch --stdout`),
+  /// in topological order, oldest first. Merge commits are left out.
+  Future<List<int>> formatPatch(List<String> hashes);
+
+  /// Output of `git apply --numstat --summary` for [patch].
+  Future<String> patchStats(List<int> patch);
+
+  /// Applies [patch] to the working tree with `git apply --3way`. Local
+  /// changes of the patched files (staged or not) take part in the 3-way
+  /// merge, and a new file that already exists untracked gives an add/add
+  /// conflict. The index keeps its entries for the files that apply cleanly
+  /// (they are not staged); conflicting files get conflict markers and
+  /// unmerged index entries. With [check] nothing is changed. Throws
+  /// [GitException] when git refuses the patch (then nothing was changed).
+  Future<PatchApplyResult> applyPatch(List<int> patch, {bool check = false});
+
+  /// Applies a mailbox as commits (`git am --3way`). Returns false when it
+  /// stopped on a patch (state [RepoState.applyingMailbox]).
+  Future<bool> applyMailbox(List<int> patch);
+
+  Future<void> updateRef(String ref, String hash);
+  Future<void> deleteRef(String ref);
 
   // ---------------------------------------------------------------------------
   // Conflicts

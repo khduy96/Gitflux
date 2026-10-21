@@ -6,20 +6,26 @@ import 'package:path/path.dart' as p;
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
 import '../../domain/entities/log_query.dart';
+import '../../domain/entities/patch.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/entities/reflog.dart';
+import '../../domain/entities/shelf.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/graph_layout.dart';
 import '../../domain/logic/line_selection.dart';
 import '../../domain/logic/log_filters.dart';
+import '../../domain/logic/shelf_format.dart';
 import '../../domain/repositories/commit_message_generator.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../../domain/repositories/git_service.dart';
+import '../../domain/repositories/shelf_repository.dart';
 import '../../domain/usecases/commit_changes.dart';
 import '../../domain/usecases/compare_commits.dart';
 import '../../domain/usecases/generate_commit_message.dart';
 import '../../domain/usecases/get_selected_line_contents.dart';
 import '../../domain/usecases/interactive_rebase.dart';
+import '../../domain/usecases/patches.dart';
+import '../../domain/usecases/shelve_changes.dart';
 import 'app_settings.dart';
 import 'log_filter.dart';
 
@@ -112,6 +118,11 @@ class RepoController {
     _selectedContents = GetSelectedLineContents(repo);
     _rebase = InteractiveRebase(repo);
     compareCommits = CompareCommits(repo);
+    shelfStore = git.shelves(repo);
+    _shelve = ShelveChanges(repo, shelfStore);
+    _unshelve = UnshelveChanges(repo, shelfStore);
+    _createPatch = CreatePatch(repo);
+    _applyPatch = ApplyPatch(repo);
     final session = _sessionLogFilters[repo.root];
     if (session != null) logFilter.value = LogFilter(author: session.$1, date: session.$2);
     bottomTab.addListener(_onBottomTab);
@@ -123,6 +134,11 @@ class RepoController {
   late final GetSelectedLineContents _selectedContents;
   late final InteractiveRebase _rebase;
   late final CompareCommits compareCommits;
+  late final ShelfRepository shelfStore;
+  late final ShelveChanges _shelve;
+  late final UnshelveChanges _unshelve;
+  late final CreatePatch _createPatch;
+  late final ApplyPatch _applyPatch;
 
   final status = ValueNotifier<RepoStatus>(const RepoStatus());
 
@@ -210,6 +226,7 @@ class RepoController {
     await Future.wait([
       refreshStatus(),
       refreshRefs(),
+      refreshShelves(),
     ]);
     _checkSubmodulesAfterHeadChange(headBefore);
     await Future.wait([
@@ -250,7 +267,7 @@ class RepoController {
       final previous = status.value.state;
       status.value = s;
       _recomputeIncluded();
-      if (s.state == RepoState.rebasing) {
+      if (s.state == RepoState.rebasing || s.state == RepoState.applyingMailbox) {
         final progress = await repo.rebaseProgress();
         if (!_disposed) rebaseProgress.value = progress;
       } else {
@@ -503,6 +520,12 @@ class RepoController {
     } on RebaseRejected catch (e) {
       notify(AppNotification(e.title, details: e.details, isError: true));
       return false;
+    } on ShelfRejected catch (e) {
+      notify(AppNotification(e.title, details: e.details, isError: true));
+      return false;
+    } on PatchRejected catch (e) {
+      notify(AppNotification(e.title, details: e.details, isError: true));
+      return false;
     } catch (e) {
       notify(AppNotification('$label failed', details: '$e', isError: true));
       return false;
@@ -667,6 +690,158 @@ class RepoController {
   // ---------------------------------------------------------------------------
 
   void openCompare(Commit a, Commit b) => openTab(CompareTab(a, b));
+
+  // ---------------------------------------------------------------------------
+  // Shelf
+  // ---------------------------------------------------------------------------
+
+  /// Index of the Shelf tab of the Git tool window.
+  static const shelfTab = 4;
+
+  final shelves = ValueNotifier<List<Shelf>>(const []);
+
+  void showShelf() => bottomTab.value = shelfTab;
+
+  Future<void> refreshShelves() async {
+    try {
+      final list = await shelfStore.list();
+      if (!_disposed) shelves.value = list;
+    } catch (e) {
+      _addConsole(ConsoleEntry('shelf failed: $e', ConsoleKind.error));
+    }
+  }
+
+  /// Name proposed for a new shelf: the commit message or the date.
+  String get newShelfName => defaultShelfName(commitMessage.text, DateTime.now());
+
+  /// Shelves [changes] and, unless [keep], reverts them to HEAD. Returns
+  /// false when it failed.
+  Future<bool> shelveChanges(String name, List<FileChange> changes, {bool keep = false}) async {
+    ShelveOutcome? out;
+    final ok = await run('Shelve changes',
+        () async => out = await _shelve(name: name, changes: changes, keep: keep));
+    final o = out;
+    if (!ok || o == null) return false;
+    final n = o.shelf.files.length;
+    notify(AppNotification(
+      '$n file${n == 1 ? '' : 's'} shelved to "${o.shelf.name}"',
+      details: o.skipped.isNotEmpty
+          ? 'Not shelved (submodules / conflicts): ${o.skipped.join(', ')}'
+          : keep
+              ? 'The changes were kept in the working tree.'
+              : null,
+      actionLabel: 'Show Shelf',
+      onAction: showShelf,
+    ));
+    return true;
+  }
+
+  /// Applies the files of [shelf] in [paths] (all when null) to the working
+  /// tree. With [removeApplied] the cleanly applied files leave the shelf.
+  Future<bool> unshelve(Shelf shelf, {List<String>? paths, bool removeApplied = true}) async {
+    UnshelveOutcome? out;
+    final label = removeApplied ? 'Unshelve "${shelf.name}"' : 'Apply "${shelf.name}"';
+    final ok = await run(label,
+        () async => out = await _unshelve(shelf, paths: paths, removeApplied: removeApplied));
+    final o = out;
+    if (!ok || o == null) return false;
+    final n = o.applied.length;
+    if (o.conflicted.isEmpty) {
+      notify(AppNotification('$n file${n == 1 ? '' : 's'} ${removeApplied ? 'unshelved' : 'applied'}'));
+    } else {
+      notify(AppNotification(
+        '${o.conflicted.length} file${o.conflicted.length == 1 ? '' : 's'} unshelved with conflicts',
+        details: '${o.conflicted.map((f) => f.path).take(5).join(', ')}\n'
+            'Resolve them in the Commit panel; they stay in the shelf.',
+        isError: true,
+      ));
+    }
+    return true;
+  }
+
+  Future<void> renameShelf(Shelf shelf, String name) async {
+    await run('Rename shelf', () => shelfStore.update(shelf, name: name.trim()), refresh: false);
+    await refreshShelves();
+  }
+
+  Future<void> deleteShelf(Shelf shelf) async {
+    await run('Delete shelf "${shelf.name}"', () => shelfStore.delete(shelf),
+        success: 'Shelf "${shelf.name}" deleted', refresh: false);
+    await refreshShelves();
+  }
+
+  /// Content of the patch of [shelf].
+  Future<List<int>> shelfPatch(Shelf shelf) => shelfStore.patch(shelf);
+
+  /// Diff of a shelved file: base commit ↔ shelved content (read-only).
+  Future<void> showShelfDiff(Shelf shelf, ShelvedFile f, {bool preview = false}) async {
+    final patch = await shelfStore.patchPath(shelf);
+    if (!_disposed) openTab(DiffTab(shelfDiffRequest(shelf, f, patch)), preview: preview);
+  }
+
+  DiffRequest shelfDiffRequest(Shelf shelf, ShelvedFile f, String patchPath) {
+    final Revision left = f.status == ShelfFileStatus.added ? const EmptyRev() : CommitRev(shelf.base);
+    final Revision right = f.status == ShelfFileStatus.deleted ? const EmptyRev() : PatchedRev(shelf.base, patchPath);
+    return DiffRequest(
+      title: '${f.fileName} (shelved)',
+      leftPath: f.oldPath ?? f.path,
+      rightPath: f.path,
+      left: left,
+      right: right,
+      leftTitle: left is EmptyRev ? '(does not exist)' : shelf.shortBase,
+      rightTitle: right is EmptyRev ? '(deleted)' : 'Shelved: ${shelf.name}',
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Patches
+  // ---------------------------------------------------------------------------
+
+  /// Patch of [changes] relative to HEAD, or null (with a notification).
+  Future<List<int>?> createPatch(List<FileChange> changes) async {
+    List<int>? patch;
+    await run('Create patch', () async => patch = await _createPatch.fromChanges(status.value, changes),
+        refresh: false);
+    return patch;
+  }
+
+  /// [commits] as one mailbox, oldest first, or null (with a notification).
+  Future<List<int>?> createPatchFromCommits(List<Commit> commits) async {
+    List<int>? patch;
+    await run('Create patch', () async => patch = await _createPatch.fromCommits(commits), refresh: false);
+    return patch;
+  }
+
+  /// Files of [patch] and whether it applies, or null (with a notification)
+  /// when it cannot be read.
+  Future<PatchPreview?> previewPatch(List<int> patch) async {
+    PatchPreview? preview;
+    await run('Read patch', () async => preview = await _applyPatch.preview(patch), refresh: false);
+    return preview;
+  }
+
+  /// Applies [patch] to the working tree, or as commits (`git am`). Returns
+  /// false when it failed.
+  Future<bool> applyPatch(List<int> patch, {bool asCommits = false}) async {
+    ({bool stopped, List<String> conflicts})? out;
+    final ok = await run(asCommits ? 'Apply patch as commits' : 'Apply patch',
+        () async => out = await _applyPatch(patch, asCommits: asCommits));
+    final o = out;
+    if (!ok || o == null) return false;
+    if (o.stopped) {
+      notify(AppNotification('Applying patches stopped',
+          details: o.conflicts.isEmpty
+              ? 'A patch does not apply. Skip it or Abort in the Commit panel.'
+              : 'Resolve the conflicts, then click Continue in the Commit panel (or Skip / Abort).',
+          isError: true));
+    } else if (o.conflicts.isNotEmpty) {
+      notify(AppNotification('Patch applied with conflicts',
+          details: '${o.conflicts.take(5).join(', ')}\nResolve them in the Commit panel.', isError: true));
+    } else {
+      notify(AppNotification(asCommits ? 'Patches applied as commits' : 'Patch applied'));
+    }
+    return true;
+  }
 
   // ---------------------------------------------------------------------------
   // AI commit message

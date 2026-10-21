@@ -7,6 +7,7 @@ import '../../state/repo_controller.dart';
 import '../actions.dart';
 import '../branches/compare_dialog.dart';
 import '../common.dart';
+import '../dialogs/patch_dialogs.dart';
 import 'graph_painter.dart';
 import 'log_filter_bar.dart';
 
@@ -142,6 +143,8 @@ class _CommitTableState extends State<CommitTable> {
         await showCompareDialog(context, ctrl, c.hash);
       case 'compareCommits':
         ctrl.openCompare(selected[0], selected[1]);
+      case 'patch':
+        await createPatchFromCommits(context, ctrl, selected);
       case 'reset':
         await resetDialog(context, ctrl, c);
       case 'revert':
@@ -206,6 +209,7 @@ class _CommitTableState extends State<CommitTable> {
       menuItem('checkout', 'Checkout Revision \'${c.shortHash}\'', icon: Icons.login, enabled: single),
       menuItem('compare', 'Compare with Local', icon: Icons.compare_arrows, enabled: single),
       menuItem('compareCommits', 'Compare Commits', icon: Icons.difference_outlined, enabled: selected.length == 2),
+      menuItem('patch', 'Create Patch…', icon: Icons.save_alt, enabled: selected.any((x) => !x.isMerge)),
       const PopupMenuDivider(height: 8),
       menuItem('reset', 'Reset Current Branch to Here…', icon: Icons.restore, enabled: single),
       menuItem('revert', 'Revert Commit', icon: Icons.undo),

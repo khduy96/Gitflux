@@ -10,7 +10,8 @@
  *   submodule?: SubmoduleChange}} FileChange
  * @typedef {{path: string, sha: string, status: 'upToDate'|'uninitialized'|'outOfDate'|'conflict'|'notRegistered',
  *   url: string, describe: string, declared?: boolean}} Submodule
- * @typedef {'normal'|'merging'|'rebasing'|'cherryPicking'|'reverting'} RepoState
+ * @typedef {'normal'|'merging'|'rebasing'|'cherryPicking'|'reverting'|'applyingMailbox'} RepoState
+ *   applyingMailbox: `git am` stopped at a patch (rebase-apply/applying).
  * @typedef {{branch: string|null, head: string|null, upstream: string|null, ahead: number, behind: number, changes: FileChange[], state: RepoState}} Status
  * @typedef {{name: string, kind: 'head'|'local'|'remote'|'tag'}} RefLabel
  * @typedef {{hash: string, parents: string[], author: string, email: string, time: number, committer: string, commitTime: number, refs: RefLabel[], subject: string}} Commit
@@ -28,6 +29,15 @@
  *   A commit to rewrite, with its full message.
  * @typedef {{current: number, total: number, stoppedForEdit: boolean, stoppedSha: string|null, stoppedSubject: string}} RebaseProgress
  * @typedef {{signature: string, excluded: Set<string>, total: number}} LineSelection
+ * @typedef {'M'|'A'|'D'|'R'} ShelfFileStatus
+ * @typedef {{path: string, oldPath: string|null, status: ShelfFileStatus}} ShelfFile
+ *   A shelved file; oldPath only for a rename.
+ * @typedef {{id: string, name: string, created: number, base: string, branch: string|null, files: ShelfFile[]}} Shelf
+ *   Changes put aside: `created` in ms, `base` the HEAD commit the patch is relative to.
+ * @typedef {{path: string, oldPath: string|null, status: ShelfFileStatus, added: number|null, deleted: number|null}} PatchFile
+ *   A file of a patch to apply; added / deleted lines are null for a binary file.
+ * @typedef {{conflicts: string[], error: string|null}} PatchCheck
+ *   `git apply --check --3way`: files that would conflict, or why the patch does not apply at all.
  * @typedef {'none'|'claude'|'gemini'} AiProvider
  * @typedef {{provider: 'claude'|'gemini', apiKey: string, model: string, language?: string, instructions?: string}} AiConfig
  */

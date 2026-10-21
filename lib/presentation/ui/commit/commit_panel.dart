@@ -9,8 +9,10 @@ import '../actions.dart';
 import '../common.dart';
 import '../conflicts/conflicts_dialog.dart';
 import '../dialogs/ai_settings_dialog.dart';
+import '../dialogs/patch_dialogs.dart';
 import '../dialogs/push_dialog.dart';
 import '../dialogs/rollback_dialog.dart';
+import '../dialogs/shelve_dialogs.dart';
 import '../dialogs/stash_dialogs.dart';
 
 class _Node {
@@ -206,6 +208,9 @@ class _CommitPanelState extends State<CommitPanel> {
       menuItem('rollback', 'Rollback…', icon: Icons.undo, enabled: anyTracked, shortcut: 'Ctrl+Alt+Z'),
       if (allUntracked) menuItem('delete', 'Delete', icon: Icons.delete_outline),
       if (allUntracked) menuItem('ignore', 'Add to .gitignore', icon: Icons.visibility_off_outlined),
+      menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined,
+          enabled: sel.any(canShelve) && ctrl.status.value.state == RepoState.normal),
+      menuItem('patch', 'Create Patch…', icon: Icons.save_alt, enabled: sel.any(canShelve)),
       const PopupMenuDivider(height: 8),
       menuItem('history', 'Show History', icon: Icons.history, enabled: single != null && single.type != ChangeType.untracked),
       menuItem('blame', 'Annotate with Git Blame', icon: Icons.person_search_outlined,
@@ -234,6 +239,10 @@ class _CommitPanelState extends State<CommitPanel> {
         await deleteUntracked(context, ctrl, sel);
       case 'ignore':
         await ctrl.run('Add to .gitignore', () => ctrl.repo.addToGitignore(sel.map((c) => '/${c.path}').toList()));
+      case 'shelve':
+        await showShelveDialog(context, ctrl, sel);
+      case 'patch':
+        await showCreatePatchDialog(context, ctrl, sel);
       case 'history':
         ctrl.showHistory(single!.path);
       case 'blame':
@@ -242,6 +251,25 @@ class _CommitPanelState extends State<CommitPanel> {
         copyToClipboard(context, sel.map((c) => c.path).join('\n'));
       case 'explorer':
         showInExplorer(ctrl.root, single!.path);
+    }
+  }
+
+  /// Menu of a group ("Changes", "Unversioned Files") or directory node:
+  /// acts on all its files.
+  Future<void> _nodeMenu(Offset pos, _Node n) async {
+    final files = n.files.where(canShelve).toList();
+    if (files.isEmpty) return;
+    final r = await showContextMenu<String>(context, pos, [
+      menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined,
+          enabled: ctrl.status.value.state == RepoState.normal),
+      menuItem('patch', 'Create Patch…', icon: Icons.save_alt),
+    ]);
+    if (!mounted) return;
+    switch (r) {
+      case 'shelve':
+        await showShelveDialog(context, ctrl, files);
+      case 'patch':
+        await showCreatePatchDialog(context, ctrl, files);
     }
   }
 
@@ -281,6 +309,13 @@ class _CommitPanelState extends State<CommitPanel> {
                   icon: Icons.inventory_2_outlined,
                   tooltip: 'Stash Changes…',
                   onPressed: s.changes.isEmpty ? null : () => showStashDialog(context, ctrl),
+                ),
+                ToolButton(
+                  icon: Icons.inventory_outlined,
+                  tooltip: 'Shelve Changes… (checked files)',
+                  onPressed: s.changes.any(canShelve) && s.state == RepoState.normal
+                      ? () => showShelveDialog(context, ctrl, ctrl.includedChanges)
+                      : null,
                 ),
                 ToolButton(
                   icon: _groupByDir ? Icons.account_tree_outlined : Icons.list,
@@ -398,7 +433,10 @@ class _CommitPanelState extends State<CommitPanel> {
       },
       onDoubleTap: c == null ? null : () => _openDiff(c),
       onSecondaryTapDown: (d) {
-        if (c == null) return;
+        if (c == null) {
+          if (collapsible) _nodeMenu(d.globalPosition, n);
+          return;
+        }
         if (!_selected.contains(c.path)) setState(() => _selected = {c.path});
         _contextMenu(d.globalPosition, _selectedChanges(ctrl.status.value));
       },
@@ -714,12 +752,15 @@ class _StateBanner extends StatelessWidget {
       RepoState.rebasing => 'Rebasing',
       RepoState.cherryPicking => 'Cherry-picking',
       RepoState.reverting => 'Reverting',
+      RepoState.applyingMailbox => 'Applying patch',
       RepoState.normal => '',
     };
-    final step = s == RepoState.rebasing && progress != null && progress.total > 0
+    final mailbox = s == RepoState.applyingMailbox;
+    final step = (s == RepoState.rebasing || mailbox) && progress != null && progress.total > 0
         ? ' ${progress.done}/${progress.total}'
         : '';
     final editStop = s == RepoState.rebasing && progress != null && progress.stoppedForEdit;
+    final patchSubject = mailbox ? progress?.stoppedSubject : null;
     final conflicts = status.conflicts.length;
     return Container(
       margin: const EdgeInsets.fromLTRB(8, 0, 8, 6),
@@ -754,6 +795,11 @@ class _StateBanner extends StatelessWidget {
               style: const TextStyle(fontSize: 12, color: AppColors.textDim),
             ),
           ],
+          if (patchSubject != null && patchSubject.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text('git am stopped at "$patchSubject"',
+                overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: AppColors.textDim)),
+          ],
           const SizedBox(height: 6),
           Wrap(
             spacing: 6,
@@ -770,6 +816,11 @@ class _StateBanner extends StatelessWidget {
                 _BannerButton('Skip Commit', () => controller.run(
                       'Skip commit',
                       () => controller.repo.skipRebaseCommit(),
+                    )),
+              if (s == RepoState.applyingMailbox)
+                _BannerButton('Skip Patch', () => controller.run(
+                      'Skip patch',
+                      () => controller.repo.skipMailboxPatch(),
                     )),
               _BannerButton('Abort', () => controller.run(
                     'Abort $label',
