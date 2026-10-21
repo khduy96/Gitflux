@@ -8,18 +8,14 @@ import '../../../domain/logic/branch_folders.dart';
 import '../common.dart';
 
 /// Opens the branch picker under [anchor]: All, HEAD and the branches as a
-/// tree of folders. [open] holds the keys of the open folders and is kept up
-/// to date; the folders down to [current] open first. Returns the picked
-/// branch, `''` for All, null when dismissed.
+/// tree of folders. [current] is the branch shown in the Log, null for all.
+/// Returns the picked branch, `''` for All, null when dismissed.
 Future<String?> showBranchPicker(
   BuildContext context, {
   required Rect anchor,
   required List<Branch> branches,
   required String? current,
-  required Set<String> open,
 }) {
-  final shown = branches.where((b) => b.name == current).firstOrNull;
-  if (shown != null) open.addAll(branchFolderPath(shown.isRemote ? 'Remote' : 'Local', shown.name));
   return showDialog<String>(
     context: context,
     barrierColor: Colors.transparent,
@@ -33,7 +29,7 @@ Future<String?> showBranchPicker(
             top: top,
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: math.max(160.0, screen.height - top - 8)),
-              child: BranchPicker(branches: branches, current: current, open: open),
+              child: BranchPicker(branches: branches, current: current),
             ),
           ),
         ],
@@ -42,16 +38,17 @@ Future<String?> showBranchPicker(
   );
 }
 
-/// Search box over All, HEAD and the Local / Remote branch folders. Folders
+/// Search box over All, HEAD and the Local / Remote branch folders. Opens
+/// with every folder closed but the ones down to [current], or to the checked
+/// out branch when [current] is null; that branch is the active line. Folders
 /// open and close on click or ← / →; ↑ / ↓ and Enter pick a branch.
 class BranchPicker extends StatefulWidget {
-  const BranchPicker({super.key, required this.branches, required this.current, required this.open});
+  const BranchPicker({super.key, required this.branches, required this.current});
 
   static const width = 300.0;
 
   final List<Branch> branches;
   final String? current;
-  final Set<String> open;
 
   @override
   State<BranchPicker> createState() => _BranchPickerState();
@@ -80,8 +77,16 @@ class _BranchPickerState extends State<BranchPicker> {
     buildBranchFolder('Local', 'Local', widget.branches.where((b) => !b.isRemote)),
     buildBranchFolder('Remote', 'Remote', widget.branches.where((b) => b.isRemote)),
   ];
+  /// Branch revealed on opening: the one shown in the Log, else the checked out one.
+  late final _target = widget.current ?? widget.branches.where((b) => b.isCurrent).firstOrNull?.name ?? '';
+
+  /// Keys of the open folders.
+  late final _open = {
+    for (final b in widget.branches)
+      if (b.name == _target) ...branchFolderPath(b.isRemote ? 'Remote' : 'Local', b.name),
+  };
   late var _lines = _build();
-  late var _active = math.max(0, _lines.indexWhere((l) => l.ref == (widget.current ?? '')));
+  late var _active = math.max(0, _lines.indexWhere((l) => l.ref == _target));
 
   @override
   void initState() {
@@ -102,9 +107,9 @@ class _BranchPickerState extends State<BranchPicker> {
       if (q.isEmpty) ...const [_Line.ref('', 'All'), _Line.ref('HEAD', 'HEAD')],
     ];
     for (final root in _roots) {
-      final open = q.isNotEmpty || widget.open.contains(root.key);
+      final open = q.isNotEmpty || _open.contains(root.key);
       final inner = open
-          ? branchTreeRows(root, isOpen: (f) => widget.open.contains(f.key), query: q, depth: 1)
+          ? branchTreeRows(root, isOpen: (f) => _open.contains(f.key), query: q, depth: 1)
           : const <BranchTreeRow>[];
       if (root.count == 0 || (q.isNotEmpty && inner.isEmpty)) continue;
       lines
@@ -141,7 +146,7 @@ class _BranchPickerState extends State<BranchPicker> {
     if (_query.text.trim().isNotEmpty) return;
     final key = l.row!.folder!.key;
     setState(() {
-      if (!widget.open.remove(key)) widget.open.add(key);
+      if (!_open.remove(key)) _open.add(key);
       _lines = _build();
     });
   }

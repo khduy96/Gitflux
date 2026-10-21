@@ -14,14 +14,19 @@
   const banner = h('div#banner');
   const tree = h('div#tree', { tabindex: '0' });
   const amend = h('input', { type: 'checkbox', id: 'amend' });
+  const signOff = h('input', { type: 'checkbox', id: 'signOff' });
+  const sign = h('input', { type: 'checkbox', id: 'sign' });
+  const signLabel = h('label.amend', null, sign, ' Sign commit');
   const genBtn = h('button.icon#gen', { title: 'Generate Commit Message' }, '✨');
   const message = h('textarea#message', { rows: '5', placeholder: 'Commit Message' });
   const commitBtn = h('button#commit', { text: 'Commit' });
   const pushBtn = h('button.secondary#commitPush', { text: 'Commit and Push…' });
   const count = h('span.muted#count');
   const bottom = h('div#bottom', null,
-    h('div.row', null,
-      h('label.amend', null, amend, ' Amend'),
+    h('div.row.options', null,
+      h('label.amend', { title: 'Replace the last commit (git commit --amend)' }, amend, ' Amend'),
+      h('label.amend', { title: 'Add a Signed-off-by trailer (git commit --signoff)' }, signOff, ' Sign-off'),
+      signLabel,
       h('span.spacer'),
       genBtn),
     message,
@@ -34,6 +39,8 @@
   // ------------------------------------------------------------- events
 
   amend.addEventListener('change', () => post('amend', { value: amend.checked }));
+  signOff.addEventListener('change', () => post('option', { name: 'signOff', value: signOff.checked }));
+  sign.addEventListener('change', () => post('option', { name: 'sign', value: sign.checked }));
   genBtn.addEventListener('click', () => post(state && state.generating ? 'cancelGenerate' : 'generate'));
   message.addEventListener('input', () => post('message', { text: message.value }));
   message.addEventListener('focus', () => { messageFocused = true; });
@@ -68,6 +75,11 @@
       render();
     } else if (e.key === 'Delete' && sel.length) {
       post('menu', { action: 'rollback', paths: sel });
+    } else if (e.key === 'F6' && sel.length) {
+      // F6: Move to Another Changelist (Android Studio shortcut).
+      e.preventDefault();
+      const tracked = state.changes.filter((c) => selected.has(c.path) && c.type !== 'untracked');
+      if (tracked.length) post('menu', { action: 'moveToList', paths: tracked.map((c) => c.path) });
     } else if ((e.key === 'a' || e.key === 'A') && e.ctrlKey && e.altKey) {
       // Ctrl+Alt+A: Add to VCS (Android Studio shortcut).
       e.preventDefault();
@@ -77,14 +89,20 @@
   });
 
   // ------------------------------------------------------------- drag & drop
-  // Unversioned files dropped on "Changes" are added to git; newly added
-  // files dropped on "Unversioned Files" are removed from the index again.
+  // Files dropped on another changelist move to it; unversioned files
+  // dropped on a changelist are added to git in that list; newly added files
+  // dropped on "Unversioned Files" are removed from the index again.
 
-  /** @type {{from: string, paths: string[]}|null} */
+  /** paths: files to move; added: those of them that can be unversioned. @type {{from: string, paths: string[], added: string[]}|null} */
   let dragging = null;
 
-  const dropAllowed = (to) => !!dragging &&
-    ((dragging.from === 'unversioned' && to === 'changes') || (dragging.from === 'changes' && to === 'unversioned'));
+  /** Group key of a changelist: "cl:<id>". */
+  const isList = (key) => !!key && key.startsWith('cl:');
+
+  const dropAllowed = (to) => !!dragging && (
+    (dragging.from === 'unversioned' && isList(to)) ||
+    (isList(dragging.from) && isList(to) && to !== dragging.from && dragging.paths.length > 0) ||
+    (isList(dragging.from) && to === 'unversioned' && dragging.added.length > 0));
 
   function clearDropHighlight() {
     for (const el of tree.querySelectorAll('.drop')) el.classList.remove('drop');
@@ -117,29 +135,29 @@
     clearDropHighlight();
     if (!to || !dropAllowed(to)) return;
     e.preventDefault();
-    post(to === 'changes' ? 'addToVcs' : 'unversion', { paths: dragging.paths });
+    if (dragging.from === 'unversioned') post('addToVcs', { paths: dragging.paths, list: to.slice(3) });
+    else if (to === 'unversioned') post('unversion', { paths: dragging.added });
+    else post('moveToList', { paths: dragging.paths, list: to.slice(3) });
     dragging = null;
   });
 
-  /** Files of group `g` that can be moved to the other group. */
-  const movable = (g, c) => (g.key === 'unversioned' ? c.type === 'untracked' : c.type === 'added');
+  /** Files of group `g` that can be dragged out of it (nested repositories are registered, not added). */
+  const movable = (g, c) => !c.nestedRepo && (g.key === 'unversioned' ? c.type === 'untracked' : isList(g.key) && c.type !== 'conflicted');
 
   function onDragStart(e, g, f) {
-    // Drag the whole selection when the row is part of it.
-    const paths = selected.has(f.path)
-      ? state.changes.filter((c) => selected.has(c.path) && movable(g, c)).map((c) => c.path)
-      : [f.path];
-    startDrag(e, g, paths, paths.length === 1 ? basename(paths[0]) : `${paths.length} files`);
+    // Drag the selected files of this group when the row is part of the selection.
+    const files = (selected.has(f.path) ? g.files.filter((c) => selected.has(c.path)) : [f]).filter((c) => movable(g, c));
+    startDrag(e, g, files, files.length === 1 ? basename(files[0].path) : `${files.length} files`);
   }
 
   /** Dragging a folder moves every file below it. */
   function onDirDragStart(e, g, d, files) {
-    const paths = files.map((c) => c.path);
-    startDrag(e, g, paths, `${d.name}/ (${paths.length} file${paths.length === 1 ? '' : 's'})`);
+    startDrag(e, g, files, `${d.name}/ (${files.length} file${files.length === 1 ? '' : 's'})`);
   }
 
-  function startDrag(e, g, paths, label) {
-    dragging = { from: g.key, paths };
+  function startDrag(e, g, files, label) {
+    const paths = files.map((c) => c.path);
+    dragging = { from: g.key, paths, added: files.filter((c) => c.type === 'added').map((c) => c.path) };
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', paths.join('\n'));
     const ghost = h('div.dragghost', { text: label });
@@ -164,11 +182,29 @@
 
   // ------------------------------------------------------------- render
 
+  /**
+   * Merge Conflicts, one group per changelist (key "cl:<id>"; empty lists
+   * other than the active one only with "Show Empty Changelists"), then
+   * Unversioned Files.
+   */
   function groups() {
     const c = state.changes;
+    const lists = state.changelists || [];
+    const ids = new Set(lists.map((l) => l.id));
+    const tracked = c.filter((x) => x.type !== 'conflicted' && x.type !== 'untracked');
+    const listGroups = lists.map((l) => ({
+      key: `cl:${l.id}`,
+      list: l,
+      label: l.active ? `${l.name} (active)` : l.name,
+      // A file of an unknown list shows in the active one (as git-tools assigns it).
+      files: tracked.filter((x) => x.list === l.id || (l.active && !ids.has(x.list))),
+      checkable: true,
+      hideEmpty: !l.active && !state.showEmptyChangelists,
+    }));
+    if (!listGroups.length) listGroups.push({ key: 'cl:default', list: null, label: 'Changes', files: tracked, checkable: true, hideEmpty: false });
     return [
       { key: 'conflicts', label: 'Merge Conflicts', files: c.filter((x) => x.type === 'conflicted'), checkable: false, hideEmpty: true },
-      { key: 'changes', label: 'Changes', files: c.filter((x) => x.type !== 'conflicted' && x.type !== 'untracked'), checkable: true },
+      ...listGroups,
       { key: 'unversioned', label: 'Unversioned Files', files: c.filter((x) => x.type === 'untracked'), checkable: true, hideEmpty: true },
     ].filter((g) => !(g.hideEmpty && !g.files.length));
   }
@@ -259,8 +295,22 @@
     for (const g of groups()) {
       const isCollapsed = collapsed.has(g.key);
       const n = g.files.filter((f) => f.included).length;
-      const header = h('div.row.group', {
+      // Dragging the header moves every file of the group that can move.
+      const dragFiles = g.files.filter((c) => movable(g, c));
+      const dragHint = !dragFiles.length ? ''
+        : g.key === 'unversioned' ? 'Drag to a changelist to add all these files to Git.'
+          : 'Drag to another changelist to move all its files.';
+      const header = h(`div.row.group${g.list ? '.changelist' : ''}${g.list && g.list.active ? '.active' : ''}`, {
         'data-group': g.key,
+        title: [g.list ? (g.list.active
+          ? `${g.list.name}: the active changelist. New changes go here and its files are ticked.`
+          : `${g.list.name}: right-click to make it active, edit or delete it. Drop files here to move them.`) : '', dragHint]
+          .filter(Boolean).join('\n') || null,
+        draggable: dragFiles.length ? 'true' : null,
+        ondragstart: dragFiles.length
+          ? (e) => startDrag(e, g, dragFiles, `${g.label} (${dragFiles.length} file${dragFiles.length === 1 ? '' : 's'})`)
+          : null,
+        ondragend: dragFiles.length ? () => { dragging = null; clearDropHighlight(); } : null,
         onclick: (e) => {
           if (e.target.tagName === 'INPUT' || e.target.classList.contains('link')) return;
           if (isCollapsed) collapsed.delete(g.key);
@@ -268,7 +318,7 @@
           persist();
           render();
         },
-        oncontextmenu: (e) => nodeMenu(e, g.files, g.key),
+        oncontextmenu: (e) => (g.list ? listMenu(e, g) : nodeMenu(e, g.files, g.key)),
       },
       h('span.chev', { text: isCollapsed ? '▸' : '▾' }),
       g.checkable ? h('input', {
@@ -282,7 +332,7 @@
       g.key === 'conflicts' ? h('span.link', { text: 'Resolve', onclick: () => post('resolve') }) : null);
       if (g.checkable && n > 0 && n < g.files.length) header.querySelector('input').indeterminate = true;
       tree.append(header);
-      if (!g.files.length && g.key === 'changes') {
+      if (!g.files.length && isList(g.key) && !isCollapsed) {
         tree.append(h('div.empty', { 'data-group': g.key, text: 'No changes' }));
       }
       if (isCollapsed) continue;
@@ -303,8 +353,7 @@
       const isCollapsed = collapsed.has(key);
       const files = filesUnder(d);
       // A folder can be dragged when every file below it can move groups.
-      const draggable = files.length > 0 && files.every((c) => movable(g, c)) &&
-        (g.key === 'unversioned' || g.key === 'changes');
+      const draggable = files.length > 0 && files.every((c) => movable(g, c));
       tree.append(h('div.row.dir', {
         'data-group': g.key,
         style: { paddingLeft: `${24 + depth * 14}px` },
@@ -312,8 +361,8 @@
         ondragstart: draggable ? (e) => onDirDragStart(e, g, d, files) : null,
         ondragend: draggable ? () => { dragging = null; clearDropHighlight(); } : null,
         title: `${d.path}${draggable ? (g.key === 'unversioned'
-          ? '\nDrag to "Changes" to add the whole folder to Git'
-          : '\nDrag to "Unversioned Files" to unversion the whole folder') : ''}`,
+          ? '\nDrag to a changelist to add the whole folder to Git'
+          : '\nDrag to another changelist to move the whole folder') : ''}`,
         onclick: (e) => {
           if (e.target.tagName === 'INPUT') return;
           if (isCollapsed) collapsed.delete(key);
@@ -338,8 +387,10 @@
     const flat = state.groupBy !== 'directory';
     // In directory mode files line up with the checkbox of sibling folders.
     // Nested repositories are registered as submodules instead of added.
-    const draggable = !f.nestedRepo &&
-      ((g.key === 'unversioned' && f.type === 'untracked') || (g.key === 'changes' && f.type === 'added'));
+    const draggable = movable(g, f);
+    const lock = f.lock ? `\nLocked by ${f.lock.mine ? 'you' : f.lock.owner}` : '';
+    const hint = g.key === 'unversioned' ? '\nDrag to a changelist to add to Git'
+      : draggable ? `\nDrag to another changelist to move${f.type === 'added' ? ', or to "Unversioned Files" to unversion' : ''}` : '';
     tree.append(h(`div.row.file${selected.has(f.path) ? '.selected' : ''}`, {
       style: { paddingLeft: `${24 + depth * 14 + (flat ? 0 : 16)}px` },
       'data-path': f.path,
@@ -347,8 +398,7 @@
       draggable: draggable ? 'true' : null,
       ondragstart: draggable ? (e) => onDragStart(e, g, f) : null,
       ondragend: draggable ? () => { dragging = null; clearDropHighlight(); } : null,
-      title: `${f.type}: ${f.path}${f.oldPath ? ` (from ${f.oldPath})` : ''}${
-        g.key === 'unversioned' ? '\nDrag to "Changes" to add to Git' : f.type === 'added' ? '\nDrag to "Unversioned Files" to unversion' : ''}`,
+      title: `${f.type}: ${f.path}${f.oldPath ? ` (from ${f.oldPath})` : ''}${f.lfs ? '\nStored with Git LFS' : ''}${lock}${hint}`,
       onclick: (e) => {
         if (e.target.tagName === 'INPUT') return;
         tree.focus();
@@ -363,6 +413,8 @@
     },
     g.checkable && !f.nestedRepo ? fileCheckbox(f) : h('span.nocheck'),
     h(`span.name.t-${f.type}`, { text: basename(f.path) }),
+    f.lfs ? h('span.badge.lfs', { text: 'LFS', title: 'Stored with Git LFS' }) : null,
+    f.lock ? h(`span.lock${f.lock.mine ? '.mine' : ''}`, { text: '🔒', title: `Locked by ${f.lock.mine ? 'you' : f.lock.owner}` }) : null,
     f.lines ? h('span.partial', {
       text: `${f.lines.selected}/${f.lines.total} lines`,
       title: 'Only some lines are committed. Click to change the selection.',
@@ -397,6 +449,9 @@
   function renderBottom() {
     amend.checked = !!state.amend;
     amend.disabled = !state.hasCommits;
+    signOff.checked = !!state.signOff;
+    sign.checked = !!state.sign;
+    signLabel.title = state.signTitle || 'Sign the commit (git commit -S)';
     if (!messageFocused || state.generating) {
       if (message.value !== state.message) message.value = state.message;
     }
@@ -500,6 +555,7 @@
       { label: 'Select Lines to Commit…', id: 'selectLines', disabled: !(single && single.canLines) },
       { label: 'Include in Commit', id: 'include' },
       { label: 'Exclude from Commit', id: 'exclude' },
+      { label: 'Move to Another Changelist…    F6', id: 'moveToList', disabled: !anyTracked },
       '-',
       { label: 'Rollback…', id: 'rollback', disabled: !anyTracked });
     if (sel.some((c) => c.type === 'untracked' && !c.nestedRepo)) {
@@ -508,6 +564,7 @@
     if (allUntracked) {
       items.push({ label: 'Delete…', id: 'delete', danger: true }, { label: 'Add to .gitignore', id: 'ignore' });
     }
+    items.push(...lfsItems(sel));
     items.push('-', ...patchItems(sel));
     items.push('-',
       { label: 'Show History', id: 'history', disabled: !single || single.type === 'untracked' },
@@ -517,6 +574,39 @@
       { label: 'Copy Path', id: 'copy' },
       { label: 'Reveal in Explorer View', id: 'reveal', disabled: !single || single.type === 'deleted' });
     showMenu(x, y, items, (action) => post('menu', { action, paths: sel.map((c) => c.path) }));
+  }
+
+  /** Git LFS items (when git-lfs is installed): track / untrack, and locks when the remote supports them. */
+  function lfsItems(sel) {
+    if (!state.lfs || !state.lfs.available) return [];
+    const items = [];
+    if (sel.some((c) => c.type === 'untracked' && !c.nestedRepo)) items.push({ label: 'Track with LFS…', id: 'lfsTrack' });
+    if (sel.some((c) => c.lfs)) items.push({ label: 'Untrack from LFS…', id: 'lfsUntrack' });
+    if (state.lfs.locks && sel.some((c) => c.lfs && c.type !== 'untracked')) {
+      items.push({ label: 'Lock', id: 'lfsLock' }, { label: 'Unlock', id: 'lfsUnlock' });
+    }
+    return items.length ? ['-', ...items] : [];
+  }
+
+  /** Context menu of a changelist group: the list itself, then its files. */
+  function listMenu(e, g) {
+    e.preventDefault();
+    e.stopPropagation();
+    const l = g.list;
+    const none = !g.files.length;
+    showMenu(e.clientX, e.clientY, [
+      { label: 'Set Active Changelist', id: 'setActive', disabled: l.active },
+      { label: 'New Changelist…', id: 'new' },
+      { label: 'Edit Changelist…', id: 'edit' },
+      { label: 'Delete Changelist…', id: 'delete', disabled: l.isDefault, danger: true },
+      '-',
+      { label: 'Include in Commit', id: 'include', disabled: none },
+      { label: 'Exclude from Commit', id: 'exclude', disabled: none },
+      '-',
+      ...patchItems(g.files),
+      '-',
+      { label: 'Rollback…', id: 'rollback', disabled: none },
+    ], (action) => post('listMenu', { action, list: l.id, paths: g.files.map((c) => c.path) }));
   }
 
   /** Shelve / patch items for a set of changes (files, a folder or a group). */
@@ -541,6 +631,7 @@
       ...(groupKey === 'unversioned' ? [{ label: 'Clean Unversioned Files…', id: 'clean', danger: true }, '-'] : []),
       { label: 'Include in Commit', id: 'include', disabled: !checkable.length },
       { label: 'Exclude from Commit', id: 'exclude', disabled: !checkable.length },
+      ...(files.some((c) => c.type !== 'untracked') ? [{ label: 'Move to Another Changelist…    F6', id: 'moveToList' }] : []),
       '-',
       ...patchItems(files),
       '-',

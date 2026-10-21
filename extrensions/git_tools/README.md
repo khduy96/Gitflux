@@ -3,6 +3,9 @@
 Extension cho VS Code mang Git tool window kiểu Android Studio vào VS Code:
 
 - Panel **Commit**: tick chọn file để commit, không cần thao tác staging.
+- **Changelists** kiểu Android Studio: chia file thay đổi thành nhiều nhóm, mỗi nhóm một commit message nháp.
+- **Git LFS**: nhãn LFS trên file, Track / Untrack, Pull / Fetch / Prune, khoá file (lock).
+- **Ký commit** bằng GPG, SSH hoặc X.509, huy hiệu chữ ký trong Log.
 - **Log** có đồ thị nhánh, lọc theo tác giả / ngày, tìm commit theo nội dung thay đổi, so sánh hai commit bất kỳ.
 - **Reflog**: tìm lại commit bị mất sau reset, rebase, drop, amend.
 - Popup **Branches**.
@@ -27,14 +30,14 @@ Phiên bản: 0.4.2 · Yêu cầu: VS Code **1.90 trở lên** và **Git** đã 
 
 1. [Cài đặt](#1-cài-đặt)
 2. [Giao diện tổng quan](#2-giao-diện-tổng-quan)
-3. [Commit](#3-commit)
+3. [Commit](#3-commit) · [Changelists](#3b-changelists)
 4. [Xem diff](#4-xem-diff)
 5. [Log và lịch sử commit](#5-log-và-lịch-sử-commit)
 6. [Branches](#6-branches) · [Worktrees](#6b-worktrees)
 7. [Push, Update Project, Fetch](#7-push-update-project-fetch)
-8. [Stash](#8-stash) · [Submodules](#8b-submodules-gitmodules) · [Shelve và Shelf](#8c-shelve-và-shelf) · [Patch](#8d-create-patch--apply-patch)
+8. [Stash](#8-stash) · [Submodules](#8b-submodules-gitmodules) · [Shelve và Shelf](#8c-shelve-và-shelf) · [Patch](#8d-create-patch--apply-patch) · [Git LFS](#8e-git-lfs)
 9. [Merge, rebase và giải quyết conflict](#9-merge-rebase-và-giải-quyết-conflict) · [Interactive rebase](#9b-interactive-rebase-sửa-lịch-sử-commit) · [Bisect](#9c-bisect-tìm-commit-gây-lỗi)
-10. [AI commit message](#10-ai-commit-message)
+10. [AI commit message](#10-ai-commit-message) · [Ký commit](#10b-ký-commit-gpg--ssh--x509)
 11. [Cài đặt (Settings)](#11-cài-đặt-settings)
 12. [Danh sách lệnh](#12-danh-sách-lệnh)
 13. [Xử lý sự cố](#13-xử-lý-sự-cố)
@@ -136,7 +139,7 @@ Dữ liệu tự làm mới khi file hoặc thư mục `.git` thay đổi (kể 
 View **Commit** có các nhóm:
 
 - **Merge Conflicts** — chỉ xuất hiện khi có conflict. Link **Resolve** mở công cụ giải quyết conflict.
-- **Changes** — file đã được git theo dõi và có thay đổi. **Mặc định được tick.**
+- **Changelists** (mặc định chỉ có **Changes**) — file đã được git theo dõi và có thay đổi, chia theo changelist (xem [mục 3b](#3b-changelists)). File của **changelist đang active** được tick sẵn, file của changelist khác thì không.
 - **Unversioned Files** — file mới chưa được theo dõi. **Mặc định không tick.**
 
 Chỉ các file **được tick** mới được commit. Bạn không cần stage: extension tự `git add` và commit đúng các file đã chọn, giống Android Studio.
@@ -163,9 +166,13 @@ Nút trên thanh tiêu đề view Commit dùng để chuyển cách hiển thị
 | Đưa file mới vào Git (Add to VCS) | **Kéo file từ Unversioned Files thả vào Changes**, hoặc chuột phải ▸ **Add to VCS**, hoặc `Ctrl+Alt+A`. File chuyển sang nhóm Changes (trạng thái *added*) và được tick sẵn |
 | Bỏ theo dõi file vừa thêm | **Kéo file *added* từ Changes thả về Unversioned Files** (`git rm --cached`, file trên đĩa vẫn giữ nguyên) |
 | Đưa cả thư mục vào Git | Khi **Group by Directory**: kéo **dòng thư mục** trong Unversioned Files thả vào Changes. Mọi file trong thư mục đó, kể cả thư mục con, được thêm vào Git. Thư mục ở Changes chỉ chứa file *added* cũng kéo ngược về được |
+| Đưa toàn bộ file mới vào Git | Kéo **dòng tiêu đề Unversioned Files** thả vào một changelist: mọi file trong nhóm được thêm vào Git, vào đúng changelist đó (trừ repo con lồng bên trong). Kéo dòng tiêu đề của một changelist sang changelist khác để chuyển toàn bộ file của nó (file conflict ở lại) |
 | Commit | Nút **Commit** hoặc `Ctrl+Enter` trong ô message |
 | Commit rồi push | **Commit and Push…** |
 | Sửa commit trước | Tick **Amend**. Nếu ô message đang trống, message cũ được điền sẵn |
+| Thêm dòng `Signed-off-by` | Tick **Sign-off** (`git commit --signoff`) |
+| Ký commit | Tick **Sign commit** (`-S`); bỏ tick thì commit không ký (`--no-gpg-sign`) kể cả khi `commit.gpgsign = true`. Mặc định theo `commit.gpgsign`. Xem [mục 10b](#10b-ký-commit-gpg--ssh--x509) |
+| Chuyển file sang changelist khác | `F6`, chuột phải ▸ **Move to Another Changelist…**, hoặc kéo thả giữa các nhóm changelist |
 
 ### Menu chuột phải trên file
 
@@ -179,6 +186,8 @@ Nút trên thanh tiêu đề view Commit dùng để chuyển cách hiển thị
 - Delete… và Add to .gitignore — chỉ có với file chưa được theo dõi.
 - Show History — mở Log lọc theo file.
 - Annotate with Git Blame — xem [mục 4](#annotate-git-blame).
+- Move to Another Changelist…  `F6` — xem [mục 3b](#3b-changelists).
+- Track with LFS… / Untrack from LFS… / Lock / Unlock — chỉ có khi máy cài Git LFS, xem [mục 8e](#8e-git-lfs).
 - Copy Path
 - Reveal in Explorer View
 
@@ -192,6 +201,7 @@ Chuột phải **dòng thư mục** (khi Group by Directory) hoặc **dòng nhó
 - **⟳ Refresh**
 - **Group by Directory / Group by: None** — xem mục Group by ở trên.
 - Trong menu `…`:
+  - New Changelist… / Set Active Changelist… / Show Empty Changelists (Hide Empty Changelists)
   - Update Project
   - Push
   - Fetch
@@ -201,6 +211,8 @@ Chuột phải **dòng thư mục** (khi Group by Directory) hoặc **dòng nhó
   - Clean Working Tree…
   - Select Repository
   - AI Commit Message: Configure / Setup Guide
+  - Signing Settings… — xem [mục 10b](#10b-ký-commit-gpg--ssh--x509)
+  - **LFS ▸** Pull / Fetch / Prune… / Show Tracked Patterns… — chỉ hiện khi máy cài Git LFS
 
 ### Clean Working Tree (xoá file chưa theo dõi)
 
@@ -235,6 +247,36 @@ Lưu ý:
 - Không dùng được khi đang merge / rebase (lúc đó git phải commit cả file).
 - Extension commit qua một index tạm, nên **index thật của bạn không bị thay đổi**: những gì bạn đã stage bằng công cụ khác vẫn giữ nguyên, và git hooks (pre-commit, commit-msg) vẫn chạy.
 - Nút ✨ AI chỉ đưa các dòng đã chọn vào nội dung gửi cho AI.
+
+---
+
+## 3b. Changelists
+
+Giống Android Studio, file thay đổi (đã được git theo dõi) được chia thành nhiều **changelist**. Mỗi changelist là một nhóm trong view Commit, hiện tên và số file; changelist **đang active** in đậm kèm chữ *(active)*. Changelist mặc định tên **Changes**, đổi tên được nhưng không xoá được.
+
+- **File mới thay đổi** tự vào changelist đang active **tại lúc nó xuất hiện**. Đổi changelist active sau đó không kéo file cũ theo.
+- **Đổi tên file** (`git mv`): tên mới thay chỗ tên cũ trong changelist của nó. File hết thay đổi (đã commit, rollback…) tự rời changelist.
+- **File chưa theo dõi** (Unversioned Files) không thuộc changelist nào.
+- **Changelist trống** (trừ cái đang active) được ẩn; bật **Show Empty Changelists** trong menu `…` để hiện.
+- **Group by Directory** vẫn dùng được bên trong từng changelist.
+
+**Chuột phải dòng tên changelist:**
+
+| Lệnh | Ý nghĩa |
+|---|---|
+| Set Active Changelist | Changelist này thành active. **Ô tick đổi thành đúng các file của changelist này.** Message đang gõ được lưu làm nháp của changelist cũ, ô message nạp nháp của changelist mới |
+| New Changelist… | Tạo changelist mới: tên, message nháp, có thể đặt active luôn |
+| Edit Changelist… | Đổi tên, message nháp, hoặc đặt active |
+| Delete Changelist… | Hỏi xác nhận. File của nó chuyển sang changelist đang active (xoá changelist đang active thì file về **Changes**, và **Changes** thành active) |
+| Shelve Changes… | Shelve cả changelist; tên shelf mặc định là tên changelist. Khi unshelve, file quay về changelist cùng tên với shelf nếu còn, nếu không thì vào changelist đang active |
+| Create Patch… / Copy as Patch to Clipboard | Patch của cả changelist |
+| Include / Exclude, Rollback… | Như với nhóm Changes |
+
+**Chuyển file giữa các changelist:** chọn file (nhiều file, hoặc dòng thư mục khi Group by Directory) ▸ `F6` hoặc chuột phải ▸ **Move to Another Changelist…** ▸ chọn changelist có sẵn hoặc **New Changelist…**. Cũng có thể **kéo thả** file / thư mục từ nhóm changelist này sang nhóm khác. Kéo file từ **Unversioned Files** thả vào một changelist = thêm vào Git và đưa vào đúng changelist đó.
+
+**Commit:** chỉ file được tick mới được commit, nên commit changelist active không đụng tới file của changelist khác. Sau khi commit, nếu một changelist (không phải **Changes**) trở nên trống, extension hỏi **Delete changelist '…'?** — chọn **Delete**, **Keep**, hoặc **Keep, Don't Ask Again This Session** (không hỏi lại tới khi đóng VS Code). Chọn từng dòng để commit vẫn hoạt động như cũ.
+
+**Lưu ở đâu:** `.git/git-tools/changelists.json` (đường dẫn của `git rev-parse --git-path git-tools/changelists.json`, nên mỗi worktree có danh sách riêng), không bao giờ bị commit. Định dạng dùng chung với app Git Tools (Flutter): hai bên đọc / ghi cùng file, thay đổi ở bên này hiện ở bên kia sau lần làm mới. Các trường lạ (do phiên bản khác ghi) được giữ nguyên. File hỏng (không phải JSON) **không bị ghi đè**: lỗi được ghi ra Git Console và thao tác changelist bị từ chối tới khi sửa file.
 
 ---
 
@@ -277,12 +319,16 @@ View **Log** gồm 3 phần:
 2. **Bảng commit:**
    - Đồ thị nhánh có màu.
    - Nhãn ref màu: HEAD vàng, branch local xanh lá, remote tím, tag xanh dương.
+   - Nhãn ref được thu gọn để không che subject: chỉ hiện **một** tên (ưu tiên branch hiện tại, rồi branch local, branch chỉ có trên remote, tag) và `+N` cho phần còn lại. Branch local và branch remote cùng tên gộp thành một nhãn, icon **màn hình** = có branch local, icon **mây** = có trên remote (`origin/main`). Rê chuột vào nhãn để xem đầy đủ mọi ref.
+   - Khi đang lọc theo một branch (dropdown **Branch**), mỗi dòng chỉ hiện nhãn của branch đó.
    - Các cột message, tác giả, thời gian, hash.
    - Commit HEAD được in đậm.
+   - **Huy hiệu chữ ký** cạnh hash: ✓ xanh lá = chữ ký tốt (`G`), ✓ vàng = chữ ký đúng nhưng khoá chưa được tin cậy / đã hết hạn (`U` / `X` / `Y`), ✗ đỏ = chữ ký sai, khoá bị thu hồi hoặc không kiểm tra được (`B` / `R` / `E`), không có gì = commit không ký. Chỉ các dòng đang hiện trên màn hình mới được kiểm tra (kiểm chữ ký chậm), sau khi ngừng cuộn một chút.
    - Khi đang lọc bằng ô tìm kiếm, User, Date hoặc Changes, đồ thị được ẩn đi.
 3. **Chi tiết commit** (bên phải, kéo thanh chia để đổi độ rộng):
    - Danh sách file thay đổi. Click để xem diff; với merge commit thì so với parent đầu tiên.
    - Message đầy đủ, tác giả, committer, parent.
+   - Chữ ký: trạng thái, người ký, khoá, mức tin cậy. Tag có chữ ký trên commit được kiểm tra bằng `git tag -v`.
    - Các branch chứa commit.
 
 **Phím tắt trong bảng:**
@@ -311,7 +357,7 @@ View **Log** gồm 3 phần:
 | Interactively Rebase from Here… | Mở panel **Interactive Rebase** cho commit đó và mọi commit mới hơn, xem [mục 9b](#9b-interactive-rebase-sửa-lịch-sử-commit) |
 | Merge into Current… | Mở hộp thoại **Merge…** để merge commit đó vào branch hiện tại, xem [mục 9](#hộp-thoại-merge). Mờ khi commit đã nằm trong branch hiện tại |
 | Bisect ▸ … | Bắt đầu hoặc tiếp tục bisect, xem [mục 9c](#9c-bisect-tìm-commit-gây-lỗi) |
-| New Branch… / New Tag… | Tạo branch hoặc tag tại commit đó |
+| New Branch… / New Tag… | Tạo branch hoặc tag tại commit đó. Khi đã cấu hình ký, New Tag hỏi thêm **Sign Tag / Do Not Sign** (mặc định theo `tag.gpgsign`); tag có ký luôn là annotated tag (`git tag -s`) |
 
 Các lệnh sửa lịch sử (từ Edit Commit Message… tới Interactively Rebase from Here…) bị **làm mờ** khi không áp dụng được: commit không nằm trong lịch sử của HEAD, HEAD đang detached, hoặc đang có merge / rebase dở.
 
@@ -533,12 +579,29 @@ Unshelve dùng `git apply --3way` với commit gốc của shelf, nên vẫn áp
 
 ---
 
+## 8e. Git LFS
+
+Các tính năng LFS chỉ hiện khi máy đã cài [Git LFS](https://git-lfs.com) (`git lfs version` chạy được). Không cài thì mọi menu LFS bị ẩn.
+
+- **Nhãn LFS:** trong view Commit, file khớp một pattern LFS (`git check-attr filter` = `lfs`) có nhãn nhỏ **LFS**.
+- **Diff file LFS:** mở diff hiện **pointer** của hai phía (`oid`, kích thước). Nếu object của phía HEAD có sẵn trên máy, extension đề nghị **Show Content Diff** để so sánh nội dung thật (ảnh dùng trình so sánh ảnh của VS Code).
+- **Track with LFS…** (chuột phải file chưa theo dõi): chọn pattern — đúng đường dẫn file, `*.<đuôi>`, hoặc `<thư mục>/**` — rồi chạy `git lfs track`. File `.gitattributes` đổi và hiện trong danh sách thay đổi để bạn commit.
+- **Untrack from LFS…** (chuột phải file có nhãn LFS): chọn pattern khớp với file để gỡ khỏi `.gitattributes`.
+- **Menu `…` ▸ LFS ▸** (hoặc Command Palette ▸ **Git Tools: LFS: …**):
+  - **Pull** (`git lfs pull`), **Fetch** (`git lfs fetch`).
+  - **Prune…** — chạy `git lfs prune --dry-run` trước, liệt kê object sẽ xoá, hỏi xác nhận rồi mới xoá.
+  - **Show Tracked Patterns…** — danh sách pattern (`git lfs track`), nút Untrack trên từng dòng, mục *Track Pattern…* để thêm pattern.
+- **Khoá file (lock):** chỉ có khi remote hỗ trợ (`git lfs locks` chạy được). Chuột phải file LFS ▸ **Lock** / **Unlock**. File đang bị khoá có dấu 🔒, rê chuột để xem ai khoá. Mở khoá file người khác khoá cần xác nhận rồi mới dùng `--force`. Danh sách khoá cần hỏi server nên chỉ được tải lại tối đa mỗi phút một lần (và ngay sau Lock / Unlock), và chỉ với repo có pattern LFS.
+- **Push / Pull:** git tự chạy hook của LFS. Nếu push lỗi vì LFS, thông báo hiện các dòng lỗi của LFS, nút **Show Details** mở toàn bộ stderr.
+
+---
+
 ## 9. Merge, rebase và giải quyết conflict
 
 Khi đang merge / rebase / cherry-pick / revert / áp dụng patch bằng `git am`, view Commit hiện banner kiểu **"Merging in progress · 1 conflict"** kèm nút:
 
 - **Resolve…** khi còn conflict.
-- **Continue** khi đã giải quyết hết. Với merge, Continue tạo merge commit bằng message mặc định của git.
+- **Continue** khi đã giải quyết hết. Với merge, Continue tạo merge commit bằng message mặc định của git (có ký hay không theo ô **Sign commit**).
 - **Skip** (chỉ khi rebase hoặc `git am`) — bỏ qua commit / patch đang dừng (`git rebase --skip` / `git am --skip`), có hỏi xác nhận.
 - **Abort**.
 
@@ -682,6 +745,32 @@ Vào Settings, tìm `gitTools.ai`:
 
 ---
 
+## 10b. Ký commit (GPG / SSH / X.509)
+
+**Sign commit** (dưới ô message, cạnh Amend / Sign-off): tick thì commit được ký (`git commit -S`), bỏ tick thì **không** ký (`--no-gpg-sign`) kể cả khi config bật ký. Giá trị mặc định lấy từ `commit.gpgsign`. Lựa chọn này áp dụng cho:
+
+- Commit và Amend, kể cả commit chọn từng dòng.
+- Edit Commit Message (HEAD và commit cũ qua interactive rebase): các dòng `exec git commit --amend` của rebase cũng nhận `-S` / `--no-gpg-sign`, và rebase chạy với `--gpg-sign` / `--no-gpg-sign`.
+- Merge commit tạo từ hộp thoại **Merge…** và khi bấm **Continue** để kết thúc merge.
+- Tag: New Tag hỏi riêng **Sign Tag** (mặc định theo `tag.gpgsign`).
+
+**Signing Settings…** (menu `…` của view Commit, hoặc Command Palette ▸ **Git Tools: Signing Settings…**):
+
+1. **Định dạng:** OpenPGP (GPG), SSH, hoặc X.509 (gpgsm) — `gpg.format`.
+2. **Khoá ký** (`user.signingkey`):
+   - OpenPGP: danh sách secret key từ `gpg --list-secret-keys` (uid, key id, ngày hết hạn; khoá hết hạn / bị thu hồi được đánh dấu).
+   - SSH: các file `~/.ssh/*.pub` và khoá đang nạp trong ssh-agent (`ssh-add -L`). Khoá trong agent lưu dạng `key::<khoá>`; khoá file lưu đường dẫn.
+   - X.509: gõ id khoá.
+3. **Sign commits by default** (`commit.gpgsign`), **Sign tags by default** (`tag.gpgsign`).
+4. **Phạm vi lưu:** *This repository* (`git config --local`) hoặc *Global* (`git config --global`). Chỉ những mục bạn đổi mới được ghi.
+5. **Test signing:** ký thử một object tạm (`git commit-tree -S`, không tạo ref nào) và báo thành công hoặc lỗi của git.
+
+**Khi ký lỗi** (không có agent, sai khoá, huỷ nhập passphrase…): extension hiện lỗi của git kèm nút **Signing Settings…**. Commit **không** bao giờ được tạo lại mà không ký.
+
+Để Log kiểm tra được chữ ký SSH (✓ thay vì ✗ "cannot be checked"), cần đặt `gpg.ssh.allowedSignersFile` trỏ tới file allowed signers.
+
+---
+
 ## 11. Cài đặt (Settings)
 
 | Setting | Mặc định | Mô tả |
@@ -724,6 +813,9 @@ Mở Command Palette (`Ctrl+Shift+P`) và gõ `Git Tools`:
 | Manage Remotes… | Thêm, sửa URL, xoá remote |
 | Select Repository… / Open Repository… / Reopen Closed Repositories | Chọn, thêm hoặc hiện lại repository |
 | Group by Directory / Group by: None (Flat List) | Đổi cách hiển thị trong view Commit |
+| New Changelist… / Set Active Changelist… / Show Empty Changelists / Hide Empty Changelists | Changelists (xem [mục 3b](#3b-changelists)) |
+| LFS: Pull / LFS: Fetch / LFS: Prune… / LFS: Show Tracked Patterns… | Git LFS (chỉ hiện khi máy cài Git LFS, xem [mục 8e](#8e-git-lfs)) |
+| Signing Settings… | Định dạng, khoá ký, ký mặc định, thử ký (xem [mục 10b](#10b-ký-commit-gpg--ssh--x509)) |
 | Select Lines to Commit… | Chọn từng dòng của file đang mở để commit |
 | Show Git Console | Xem các lệnh git đã chạy |
 | Refresh | Làm mới |
@@ -747,6 +839,10 @@ Extension không gán phím tắt mặc định để tránh trùng phím của 
 | AI: *Quota exceeded / 429* | Hết giới hạn (thường là gói free của Gemini). Chờ reset hoặc đổi model |
 | AI: *Network error* | Kiểm tra proxy / firewall có chặn `api.anthropic.com` hoặc `generativelanguage.googleapis.com` không |
 | Dữ liệu không tự cập nhật | Bấm ⟳. Kiểm tra `gitTools.autoRefresh` |
+| Commit báo *the commit could not be signed* | Mở **Signing Settings…** ▸ **Test signing** để xem lỗi. Thường do chưa chạy gpg-agent / ssh-agent, `user.signingkey` sai, hoặc huỷ nhập passphrase. Muốn commit không ký thì bỏ tick **Sign commit** |
+| Log hiện ✗ đỏ cho commit ký bằng SSH | Đặt `gpg.ssh.allowedSignersFile` (git cần file này để kiểm tra chữ ký SSH) |
+| Không thấy menu LFS | Cài Git LFS và kiểm tra `git lfs version` chạy được trong terminal, rồi reload cửa sổ |
+| Changelist không đổi theo app Flutter | Bấm ⟳. Nếu Git Console báo `changelists.json` hỏng, sửa hoặc xoá file `.git/git-tools/changelists.json` |
 
 ---
 
@@ -764,6 +860,9 @@ Extension không gán phím tắt mặc định để tránh trùng phím của 
 - Danh sách worktree tự làm mới khi `.git/worktrees` thay đổi; thay đổi file bên trong worktree khác không hiện ở cửa sổ này (mở worktree đó trong cửa sổ riêng).
 - Nút ✨ trên Source Control của VS Code dùng danh sách file đang tick của Git Tools, không dùng danh sách *Staged Changes* của VS Code.
 - API key lưu riêng trên từng máy, không đồng bộ.
+- Changelists: hộp thoại New / Edit chỉ sửa message nháp một dòng (nháp nhiều dòng được giữ nguyên nếu không đổi). File đang conflict chỉ hiện trong nhóm Merge Conflicts nhưng vẫn giữ changelist của nó.
+- Git LFS: Lock / Unlock / Pull / Fetch không có giới hạn thời gian chờ; bản sao nội dung LFS cho Show Content Diff nằm trong thư mục tạm của hệ thống. Diff trong chi tiết commit của Log hiện pointer chứ không hiện nội dung LFS.
+- Ký commit: khoá X.509 phải gõ tay (chưa liệt kê khoá của gpgsm). **Test signing** không thử được trường hợp "không có khoá" khi config vẫn còn một khoá (khoá đó được dùng). Quick Merge (không qua hộp thoại) theo `commit.gpgsign`.
 
 ---
 
@@ -784,14 +883,20 @@ git_tools/
 │  │  ├─ logic/            graph.js (xếp làn đồ thị), conflicts.js (conflict marker), lineSelection.js (chọn từng dòng),
 │  │  │                    rebaseTodo.js (đọc / kiểm tra / dựng todo của interactive rebase),
 │  │  │                    history.js (bộ lọc Log user / date / nội dung, tách subject reflog, thứ tự Compare Commits),
-│  │  │                    shelf.js (định dạng shelf.json, id shelf), patch.js (nhận dạng mailbox, numstat / summary)
+│  │  │                    shelf.js (định dạng shelf.json, id shelf), patch.js (nhận dạng mailbox, numstat / summary),
+│  │  │                    changelists.js (định dạng changelists.json, gán / dọn / đổi tên file trong changelist),
+│  │  │                    lfs.js (đọc output git lfs / check-attr, pattern), signing.js (cấu hình ký, khoá gpg / ssh, %G?)
 │  │  └─ usecases/         commitChanges.js, generateCommitMessage.js, selectedLineContents.js, interactiveRebase.js,
-│  │                       shelveChanges.js (shelve / unshelve), patches.js (create / apply patch)
+│  │                       shelveChanges.js (shelve / unshelve), patches.js (create / apply patch),
+│  │                       changelists.js (đọc - sửa - ghi changelists.json lần lượt)
 │  ├─ data/                implementation của ports
 │  │  ├─ gitRunner.js      chạy lệnh git
 │  │  ├─ gitRepository.js  Repository: thao tác git + phân tích output (status, log, branch…)
 │  │  ├─ gitService.js     tìm / mở repository, quét thư mục workspace
 │  │  ├─ shelfStore.js     đọc / ghi shelf trong .git/git-tools/shelf + ref giữ commit gốc
+│  │  ├─ changelistStore.js đọc / ghi .git/git-tools/changelists.json (ghi qua file tạm)
+│  │  ├─ gitLfs.js         lệnh git lfs (track, locks, pull, pointer, object trên máy)
+│  │  ├─ signingKeys.js    liệt kê khoá gpg / ssh để chọn khoá ký
 │  │  └─ aiClients.js      gọi Claude / Gemini (streaming)
 │  └─ presentation/        mọi thứ dùng API của VS Code
 │     ├─ model.js          trạng thái repo, tự làm mới, nhiều repo
@@ -807,6 +912,9 @@ git_tools/
 │     ├─ reflogView.js     panel Reflog       (media/reflog.*)
 │     ├─ shelf.js          hộp thoại Shelve / Unshelve, lệnh của Shelf, nội dung đã shelve cho diff editor
 │     ├─ patches.js        Create Patch / Apply Patch
+│     ├─ changelists.js    hộp thoại New / Edit / Delete / Move to Another Changelist, lệnh changelist
+│     ├─ lfs.js            lệnh LFS, Track / Untrack / Lock / Unlock, diff pointer của file LFS
+│     ├─ signing.js        hộp thoại Signing Settings, thông báo khi ký lỗi
 │     ├─ diff.js           nội dung file theo revision cho diff editor
 │     ├─ guide.js          trang Setup Guide  (media/guide.*)
 │     └─ webview.js        khung HTML chung cho webview
@@ -821,10 +929,11 @@ Quy tắc:
 - Chỉ `extension.js` được require `data/`.
 
 - Không có dependency và không có bước build. Sửa file JS rồi reload cửa sổ Extension Development Host là thấy thay đổi.
-- Chạy test (cần Node 18 trở lên và git):
+- Chạy test (cần Node 18 trở lên và git; test LFS / ký commit tự bỏ qua khi thiếu git-lfs, gpg hoặc ssh-keygen, và chỉ dùng
+  GNUPGHOME / HOME / config global tạm, không đụng tới khoá hay config thật của bạn):
 
   ```bash
-  node --test test/core.test.js test/lineSelection.test.js test/submodule.test.js test/branchUpstream.test.js test/usecases.test.js test/rebaseTodo.test.js test/interactiveRebase.test.js test/historyTools.test.js test/shelvePatches.test.js
+  node --test test/*.test.js
   ```
 
 - Đóng gói lại file `.vsix` (cần Node và Internet ở lần chạy đầu):

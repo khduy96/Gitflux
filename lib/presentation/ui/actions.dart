@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../domain/entities/git_models.dart';
+import '../../domain/entities/merge.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/rebase_todo.dart';
@@ -356,14 +357,15 @@ String _current(RepoController ctrl) =>
 /// Merges [ref] right away with git's default options (no dialog).
 Future<void> mergeIntoCurrent(
     BuildContext context, RepoController ctrl, String ref) async {
-  await ctrl.run('Merge $ref into ${_current(ctrl)}', () => ctrl.repo.merge(ref),
+  await ctrl.run('Merge $ref into ${_current(ctrl)}',
+      () => ctrl.repo.merge(ref, options: MergeOptions(sign: ctrl.signCommit.value)),
       success: 'Merged $ref into ${_current(ctrl)}');
   _maybeShowConflicts(ctrl);
 }
 
 Future<void> rebaseCurrentOnto(
     BuildContext context, RepoController ctrl, String ref) async {
-  await ctrl.run('Rebase ${_current(ctrl)} onto $ref', () => ctrl.repo.rebase(ref),
+  await ctrl.run('Rebase ${_current(ctrl)} onto $ref', () => ctrl.repo.rebase(ref, sign: ctrl.signCommit.value),
       success: 'Rebased ${_current(ctrl)} onto $ref');
   _maybeShowConflicts(ctrl);
 }
@@ -372,7 +374,7 @@ Future<void> checkoutAndRebase(
     BuildContext context, RepoController ctrl, Branch b) async {
   final cur = _current(ctrl);
   await ctrl.run('Checkout ${b.name} and rebase onto $cur',
-      () => ctrl.repo.rebase(cur, branch: b.name),
+      () => ctrl.repo.rebase(cur, branch: b.name, sign: ctrl.signCommit.value),
       success: 'Rebased ${b.name} onto $cur');
   _maybeShowConflicts(ctrl);
 }
@@ -481,11 +483,12 @@ class _ResetDialogState extends State<_ResetDialog> {
 Future<void> newTagDialog(
     BuildContext context, RepoController ctrl, Commit c) async {
   final existing = ctrl.tags.value.map((t) => t.name).toSet();
-  final result = await showDialog<(String, String)>(
+  final result = await showDialog<(String, String, bool)>(
     context: context,
     builder: (ctx) {
       final name = TextEditingController();
       final msg = TextEditingController();
+      var sign = ctrl.signing.config.value.tagSign;
       String? error;
       return StatefulBuilder(builder: (ctx, setLocal) {
         void submit() {
@@ -496,7 +499,7 @@ Future<void> newTagDialog(
             setLocal(() => error = err);
             return;
           }
-          Navigator.pop(ctx, (n, msg.text));
+          Navigator.pop(ctx, (n, msg.text, sign));
         }
 
         return AppDialog(
@@ -523,8 +526,21 @@ Future<void> newTagDialog(
                 minLines: 3,
                 maxLines: 6,
                 style: const TextStyle(fontSize: 13),
-                decoration: const InputDecoration(
-                    labelText: 'Message (optional, creates an annotated tag)'),
+                decoration: InputDecoration(
+                    labelText: sign
+                        ? 'Message (optional, the tag name when empty)'
+                        : 'Message (optional, creates an annotated tag)'),
+              ),
+              const SizedBox(height: 4),
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: sign,
+                title: const Text('Sign tag', style: TextStyle(fontSize: 13)),
+                subtitle: const Text('-s · Creates a signed annotated tag (default: tag.gpgsign)',
+                    style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                onChanged: (v) => setLocal(() => sign = v ?? false),
               ),
             ],
           ),
@@ -533,9 +549,10 @@ Future<void> newTagDialog(
     },
   );
   if (result == null) return;
-  await ctrl.run('Create tag ${result.$1}',
-      () => ctrl.repo.createTag(result.$1, c.hash, message: result.$2),
-      success: 'Created tag ${result.$1}');
+  final (tagName, message, sign) = result;
+  await ctrl.run('Create tag $tagName',
+      () => ctrl.repo.createTag(tagName, c.hash, message: message, sign: sign),
+      success: 'Created tag $tagName');
 }
 
 Future<void> editHeadMessage(BuildContext context, RepoController ctrl) async {
@@ -548,7 +565,8 @@ Future<void> editHeadMessage(BuildContext context, RepoController ctrl) async {
       multiline: true,
       validator: (v) => v.trim().isEmpty ? 'Message cannot be empty' : null);
   if (msg == null || msg.trim() == current.trim()) return;
-  await ctrl.run('Edit commit message', () => ctrl.repo.rewordHead(msg.trim()),
+  // Signed like the next commit ("Sign commit" of the Commit panel).
+  await ctrl.run('Edit commit message', () => ctrl.repo.rewordHead(msg.trim(), sign: ctrl.signCommit.value),
       success: 'Commit message updated');
 }
 

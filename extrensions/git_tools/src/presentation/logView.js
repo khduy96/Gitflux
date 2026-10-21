@@ -9,11 +9,14 @@ const { REBASE_ACTIONS, rebaseAction } = require('./rebaseView');
 const { createPatchFromCommits } = require('./patches');
 const { isDay } = require('../domain/logic/history');
 const { bisectAction } = require('./bisect');
+const { makeSignature } = require('../domain/logic/signing');
 
 /** Log filter fields the webview may change. */
 const FILTER_KEYS = ['branch', 'path', 'user', 'date', 'search'];
 /** Authors offered in the "User" dropdown. */
 const MAX_AUTHORS = 100;
+/** Most commits verified per request (the webview asks for its visible rows). */
+const MAX_SIGNATURES = 200;
 
 /**
  * Webview view "Log" in the panel: commit graph, filters and details.
@@ -78,7 +81,7 @@ class LogViewProvider {
         loading: m.logLoading,
         filter: m.logFilter,
         authors: m.authors.slice(0, MAX_AUTHORS).map((a) => ({ name: a.name, count: a.count, emails: a.emails.slice(0, 3) })),
-        branches: m.branches.map((b) => ({ name: b.name, remote: b.remote })),
+        branches: m.branches.map((b) => ({ name: b.name, remote: b.remote, current: b.current })),
         canRebase: LogViewProvider.canRebase(m),
         bisect,
       } : { repo: null, commits: [], graph: [], head: null, loading: false, filter: {}, authors: [], branches: [], canRebase: false, bisect: null },
@@ -209,11 +212,35 @@ class LogViewProvider {
         if (!c) return;
         const parent = c.parents[0] || null;
         const [body, files] = await Promise.all([m.repo.commitBody(c.hash), m.repo.changedFiles(parent, c.hash)]);
-        const details = { ...c, body, files, containedIn: null };
+        // containedIn, signature and tags (null while loading) arrive one by one: verifying can be slow.
+        const details = { ...c, body, files, containedIn: null, signature: null, tags: null };
         this._details = details;
         this.view?.webview.postMessage({ type: 'details', details });
-        const containedIn = await m.repo.branchesContaining(c.hash);
-        this.view?.webview.postMessage({ type: 'details', details: { ...details, containedIn } });
+        const update = (fields) => {
+          if (this._details !== details) return;
+          Object.assign(details, fields);
+          this.view?.webview.postMessage({ type: 'details', details: { ...details } });
+        };
+        const tagNames = (c.refs || []).filter((r) => r.kind === 'tag').map((r) => r.name);
+        await Promise.all([
+          m.repo.branchesContaining(c.hash).then((containedIn) => update({ containedIn })),
+          m.repo.signatures([c.hash]).catch(() => new Map())
+            .then((s) => update({ signature: s.get(c.hash) || makeSignature('N') })),
+          Promise.all(tagNames.map((t) => m.repo.verifyTag(t).catch(() => null)))
+            .then((tags) => update({ tags: tags.filter(Boolean) })),
+        ]);
+        return;
+      }
+      case 'signatures': {
+        // Signature badges of the rows the webview shows (verifying every commit would be slow).
+        if (msg.repo !== m.name) return;
+        const hashes = (msg.hashes || []).filter((h) => typeof h === 'string').slice(0, MAX_SIGNATURES);
+        const found = await m.repo.signatures(hashes).catch(() => new Map());
+        /** @type {Record<string, any>} */
+        const signatures = {};
+        // Unanswered commits count as unsigned, so they are not asked for again.
+        for (const h of hashes) signatures[h] = found.get(h) || makeSignature('N');
+        this.view?.webview.postMessage({ type: 'signatures', repo: m.name, signatures });
         return;
       }
       case 'openDiff':

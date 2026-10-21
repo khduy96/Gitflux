@@ -9,6 +9,7 @@ class MergeOptions {
     this.squash = false,
     this.noCommit = false,
     this.message,
+    this.sign,
   });
 
   /// `--ff-only`: refuse unless the merge is a fast-forward.
@@ -26,12 +27,27 @@ class MergeOptions {
   /// Message of the merge commit (`-m`); null or blank keeps git's default.
   final String? message;
 
+  /// Signing of the merge commit: true `-S`, false `--no-gpg-sign`, null
+  /// leaves it to `commit.gpgsign`.
+  final bool? sign;
+
   bool flag(MergeFlag f) => switch (f) {
         MergeFlag.ffOnly => ffOnly,
         MergeFlag.noFf => noFf,
         MergeFlag.squash => squash,
         MergeFlag.noCommit => noCommit,
       };
+
+  MergeOptions _copy({bool? ffOnly, bool? noFf, bool? squash, bool? noCommit, String? Function()? message,
+          bool? Function()? sign}) =>
+      MergeOptions(
+        ffOnly: ffOnly ?? this.ffOnly,
+        noFf: noFf ?? this.noFf,
+        squash: squash ?? this.squash,
+        noCommit: noCommit ?? this.noCommit,
+        message: message == null ? this.message : message(),
+        sign: sign == null ? this.sign : sign(),
+      );
 
   /// Switches [f] to [value] keeping the options consistent: fast-forward
   /// only, no fast-forward and squash exclude each other, and a squash never
@@ -40,18 +56,18 @@ class MergeOptions {
     if (f == MergeFlag.noCommit && squash) return this;
     final on = value;
     return switch (f) {
-      MergeFlag.ffOnly => MergeOptions(ffOnly: on, noFf: on ? false : noFf, squash: on ? false : squash,
-          noCommit: on && squash ? false : noCommit, message: message),
-      MergeFlag.noFf => MergeOptions(ffOnly: on ? false : ffOnly, noFf: on, squash: on ? false : squash,
-          noCommit: on && squash ? false : noCommit, message: message),
-      MergeFlag.squash => MergeOptions(ffOnly: on ? false : ffOnly, noFf: on ? false : noFf, squash: on,
-          noCommit: on, message: message),
-      MergeFlag.noCommit => MergeOptions(ffOnly: ffOnly, noFf: noFf, squash: squash, noCommit: on, message: message),
+      MergeFlag.ffOnly => _copy(ffOnly: on, noFf: on ? false : noFf, squash: on ? false : squash,
+          noCommit: on && squash ? false : noCommit),
+      MergeFlag.noFf => _copy(ffOnly: on ? false : ffOnly, noFf: on, squash: on ? false : squash,
+          noCommit: on && squash ? false : noCommit),
+      MergeFlag.squash => _copy(ffOnly: on ? false : ffOnly, noFf: on ? false : noFf, squash: on, noCommit: on),
+      MergeFlag.noCommit => _copy(noCommit: on),
     };
   }
 
-  MergeOptions withMessage(String? message) =>
-      MergeOptions(ffOnly: ffOnly, noFf: noFf, squash: squash, noCommit: noCommit, message: message);
+  MergeOptions withMessage(String? message) => _copy(message: () => message);
+
+  MergeOptions withSign(bool? sign) => _copy(sign: () => sign);
 
   /// Why these options cannot be used together, or null when they can.
   String? get error {
@@ -78,6 +94,8 @@ class MergeOptions {
         if (squash) '--squash',
         if (noCommit && !squash) '--no-commit',
         if (message != null && message!.trim().isNotEmpty) ...['-m', message!.trim()],
+        if (sign == true) '--gpg-sign',
+        if (sign == false) '--no-gpg-sign',
       ];
 }
 

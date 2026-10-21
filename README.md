@@ -19,6 +19,8 @@ flutter build windows --release
 - Commit, Commit and Push…, Amend, Sign-off, đổi author (Ctrl+Enter để commit)
 - Rollback (có tuỳ chọn xoá file added), Delete / Add to .gitignore cho file unversioned
 - Chuột phải nhóm "Unversioned Files" ▸ **Clean Unversioned Files…** (xem mục **Clean** bên dưới)
+- Kéo thả file / thư mục / **cả nhóm** sang changelist khác: kéo dòng tiêu đề "Unversioned Files" thả vào một changelist
+  để thêm toàn bộ file mới vào Git trong changelist đó; kéo tiêu đề một changelist để chuyển hết file của nó
 - **Chọn từng dòng để commit** (chuột phải file ▸ Select Lines to Commit…):
   - Tab "Commit Lines" có checkbox cho từng dòng và từng đoạn thay đổi; dòng không chọn vẫn nằm lại trong working copy.
   - File chọn một phần có checkbox lưng chừng và nhãn `x/y lines`.
@@ -53,7 +55,9 @@ flutter build windows --release
 
 **Git tool window (Alt+9)**
 - Log: cây branch (HEAD, Local, Remote, Tags, Submodules, Worktrees, Reflog; branch gom thành thư mục theo `/` trong tên,
-  thư mục chứa branch hiện tại hoặc branch đang lọc tự mở), đồ thị commit có màu theo nhánh, ref labels,
+  thư mục chứa branch hiện tại hoặc branch đang lọc tự mở), đồ thị commit có màu theo nhánh, ref labels
+  (thu gọn: một tên + `+N`, branch local và remote cùng tên gộp lại với icon máy tính / đám mây, rê chuột để xem
+  đầy đủ; khi lọc theo branch chỉ hiện branch đó),
   lọc theo text/hash/author, branch, user, ngày, nội dung thay đổi, theo file (Show History)
   (xem mục **Lọc Log** bên dưới)
 - Chi tiết commit: danh sách file đã đổi, message, author/committer, các branch chứa commit

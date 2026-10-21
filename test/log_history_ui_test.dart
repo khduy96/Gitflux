@@ -68,7 +68,9 @@ void main() {
     tester.view.physicalSize = const Size(1400, 700);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
-    final ctrl = RepoController(dir, git: const GitCliService(), commitMessageAi: _noAi);
+    // Built in real time: futures it creates (the changelist write queue) would
+    // otherwise belong to the fake clock of the test and never complete.
+    final ctrl = (await tester.runAsync(() async => RepoController(dir, git: const GitCliService(), commitMessageAi: _noAi)))!;
     await tester.runAsync(ctrl.refreshAll);
     addTearDown(ctrl.dispose);
     return ctrl;

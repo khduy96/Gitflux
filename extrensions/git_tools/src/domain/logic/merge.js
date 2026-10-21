@@ -1,6 +1,8 @@
 // @ts-check
 'use strict';
 
+const { signArgs } = require('./signing');
+
 /**
  * Merge dialog options (Android Studio "Merge…"): which combinations git
  * accepts, the git arguments and what the merge will produce. Pure
@@ -55,7 +57,8 @@ function createsMergeCommit(o, fastForwardPossible) {
 }
 
 /**
- * `git merge` arguments for the options (the revision last).
+ * `git merge` arguments for the options (the revision last). `sign` adds
+ * -S / --no-gpg-sign (the merge commit, when one is created).
  * @param {string} ref
  * @param {MergeOptions} o
  */
@@ -66,6 +69,7 @@ function mergeArgs(ref, o) {
   else if (o.fastForward === 'never' || (o.noCommit && !o.squash)) args.push('--no-ff');
   if (o.squash) args.push('--squash');
   if (o.noCommit && !o.squash) args.push('--no-commit');
+  args.push(...signArgs(o.sign));
   if (o.message && o.message.trim()) args.push('-m', o.message.trim());
   else args.push('--no-edit');
   args.push(ref);

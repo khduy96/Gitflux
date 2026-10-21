@@ -121,3 +121,15 @@ class BisectRejected implements Exception {
   @override
   String toString() => details == null ? title : '$title: $details';
 }
+
+/// A changelist cannot be created, renamed or deleted (duplicate name, the
+/// default list, damaged changelists.json, ...).
+class ChangelistRejected implements Exception {
+  ChangelistRejected(this.title, {this.details});
+
+  final String title;
+  final String? details;
+
+  @override
+  String toString() => details == null ? title : '$title: $details';
+}

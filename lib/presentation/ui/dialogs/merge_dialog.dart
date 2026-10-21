@@ -31,7 +31,8 @@ class _MergeDialog extends StatefulWidget {
 class _MergeDialogState extends State<_MergeDialog> {
   RepoController get ctrl => widget.ctrl;
 
-  late MergeOptions _options = ctrl.lastMergeOptions;
+  // Signing follows the "Sign commit" option of the Commit panel.
+  late MergeOptions _options = ctrl.lastMergeOptions.withSign(ctrl.signCommit.value);
   final _message = TextEditingController();
   bool _loading = true;
   MergePreview? _preview;
@@ -83,6 +84,13 @@ class _MergeDialogState extends State<_MergeDialog> {
     final suffix = into == null || into == 'main' || into == 'master' ? '' : ' into $into';
     return "Merge $kind '${kind == 'commit' ? widget.ref : name}'$suffix";
   }
+
+  /// Why "Sign merge commit" does not apply, or null when it does.
+  String? get _signHint => _options.leavesChangesToCommit
+      ? 'No merge commit now: "Sign commit" of the Commit panel applies'
+      : _options.ffOnly
+          ? 'A fast-forward creates no commit'
+          : null;
 
   void _submit() {
     if (_options.error != null) return;
@@ -162,6 +170,17 @@ class _MergeDialogState extends State<_MergeDialog> {
                     ? null
                     : (v) => setState(() => _options = _options.withFlag(flag, v ?? false)),
               ),
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: _options.sign ?? false,
+              title: const Text('Sign merge commit', style: TextStyle(fontSize: 13)),
+              subtitle: Text(
+                  '${_options.sign == true ? '-S' : '--no-gpg-sign'} · ${_signHint ?? 'Sign the merge commit with your signing key'}',
+                  style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+              onChanged: _signHint != null ? null : (v) => setState(() => _options = _options.withSign(v ?? false)),
+            ),
             const SizedBox(height: 8),
             TextField(
               controller: _message,

@@ -23,6 +23,9 @@ const { registerWorktreeCommands } = require('./presentation/worktrees');
 const { registerBlame } = require('./presentation/blame');
 const { cleanWorkingTree } = require('./presentation/clean');
 const { bisectAction } = require('./presentation/bisect');
+const { registerChangelistCommands } = require('./presentation/changelists');
+const { registerLfsCommands } = require('./presentation/lfs');
+const { registerSigningCommands, signChoice } = require('./presentation/signing');
 const cmd = require('./presentation/commands');
 
 const NO_OPERATION = 'No merge, rebase, cherry-pick, revert or patch application in progress.';
@@ -45,6 +48,9 @@ async function activate(context) {
   const statusBar = new BranchStatusBar(manager);
   registerWorktreeCommands(context, manager);
   registerBlame(context, manager, logView);
+  registerChangelistCommands(context, manager, commitView);
+  registerLfsCommands(context, manager);
+  registerSigningCommands(context, manager);
 
   context.subscriptions.push(
     output,
@@ -230,7 +236,8 @@ async function activate(context) {
   reg('gitTools.resolveConflicts', (m) => cmd.resolveConflicts(m, (model, change) => openMergeTool(context, model, change)));
   reg('gitTools.continueOperation', (m) => {
     if (m.status.state === 'normal') return vscode.window.showInformationMessage(NO_OPERATION);
-    return m.run(`Continue ${OPERATION_LABEL[m.status.state] || m.status.state}`, () => m.repo.continueOperation(m.status.state));
+    // Concluding a merge creates the merge commit: signed as the Commit view's "Sign commit" says.
+    return m.run(`Continue ${OPERATION_LABEL[m.status.state] || m.status.state}`, () => m.repo.continueOperation(m.status.state, signChoice(m)));
   });
   reg('gitTools.skipRebaseCommit', async (m) => {
     if (m.status.state === 'applyingMailbox') {

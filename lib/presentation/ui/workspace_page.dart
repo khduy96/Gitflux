@@ -19,11 +19,13 @@ import 'dialogs/ai_settings_dialog.dart';
 import 'dialogs/ai_setup_guide.dart';
 import 'dialogs/basic_dialogs.dart';
 import 'dialogs/clean_dialog.dart';
+import 'dialogs/lfs_dialogs.dart';
 import 'dialogs/pull_dialog.dart';
 import 'dialogs/push_dialog.dart';
 import 'dialogs/patch_dialogs.dart';
 import 'dialogs/remotes_dialog.dart';
 import 'dialogs/shelve_dialogs.dart';
+import 'dialogs/signing_settings_dialog.dart';
 import 'dialogs/stash_dialogs.dart';
 import 'dialogs/worktree_dialogs.dart';
 import 'log/compare_commits_view.dart';
@@ -70,6 +72,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
     ctrl.notifications.addListener(_onNotification);
     ctrl.bottomTab.addListener(_onBottomTab);
     ctrl.openRepoRequest.addListener(_onOpenRepoRequest);
+    ctrl.signingSettingsRequest.addListener(_openSigningSettings);
     _lifecycle = AppLifecycleListener(onResume: () => ctrl.refreshAll());
   }
 
@@ -78,6 +81,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
     ctrl.notifications.removeListener(_onNotification);
     ctrl.bottomTab.removeListener(_onBottomTab);
     ctrl.openRepoRequest.removeListener(_onOpenRepoRequest);
+    ctrl.signingSettingsRequest.removeListener(_openSigningSettings);
     _lifecycle.dispose();
     _messageFocus.dispose();
     _rootFocus.dispose();
@@ -94,6 +98,11 @@ class _WorkspacePageState extends State<WorkspacePage> {
 
   void _onBottomTab() {
     if (!_showBottom) setState(() => _showBottom = true);
+  }
+
+  /// Requested by a signing failure ("Signing Settings…" action).
+  void _openSigningSettings() {
+    if (mounted) showSigningSettingsDialog(context, ctrl);
   }
 
   void _onNotification() {
@@ -224,7 +233,9 @@ class _WorkspacePageState extends State<WorkspacePage> {
       menuItem('applyPatch', 'Apply Patch…', icon: Icons.file_open_outlined),
       menuItem('applyClipboard', 'Apply Patch from Clipboard', icon: Icons.content_paste_go),
       const PopupMenuDivider(height: 8),
+      if (ctrl.lfs.available.value) menuItem('lfs', 'Git LFS', icon: Icons.cloud_sync_outlined, shortcut: '›'),
       menuItem('remotes', 'Manage Remotes…', icon: Icons.cloud_outlined),
+      menuItem('signing', 'Signing Settings…', icon: Icons.verified_user_outlined),
       menuItem('ai', 'AI Commit Message Settings…', icon: Icons.auto_awesome),
       menuItem('aiGuide', 'AI Setup Guide', icon: Icons.menu_book_outlined),
       menuItem('explorer', 'Open in Explorer', icon: Icons.folder_open_outlined),
@@ -266,8 +277,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
         showApplyPatchDialog(context, ctrl);
       case 'applyClipboard':
         showApplyPatchDialog(context, ctrl, fromClipboard: true);
+      case 'lfs':
+        showLfsMenu(context, ctrl, pos);
       case 'remotes':
         showRemotesDialog(context, ctrl);
+      case 'signing':
+        showSigningSettingsDialog(context, ctrl);
       case 'ai':
         showAiSettingsDialog(context, widget.settings).then((_) => setState(() {}));
       case 'aiGuide':

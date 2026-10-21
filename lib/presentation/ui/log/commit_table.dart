@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -11,8 +13,10 @@ import '../common.dart';
 import '../dialogs/bisect_dialogs.dart';
 import '../dialogs/merge_dialog.dart';
 import '../dialogs/patch_dialogs.dart';
+import 'commit_refs.dart';
 import 'graph_painter.dart';
 import 'log_filter_bar.dart';
+import 'signature_badge.dart';
 
 const _rowHeight = 24.0;
 
@@ -31,15 +35,21 @@ class _CommitTableState extends State<CommitTable> {
   final _focus = FocusNode();
   Set<String> _multi = {};
 
+  /// Rows of the last build, for loading the signatures of the visible ones.
+  List<(Commit, GraphRow?)> _rows = const [];
+  Timer? _signatureTimer;
+
   @override
   void initState() {
     super.initState();
     ctrl.revealCommit.addListener(_reveal);
+    _scroll.addListener(_scheduleSignatures);
   }
 
   @override
   void dispose() {
     ctrl.revealCommit.removeListener(_reveal);
+    _signatureTimer?.cancel();
     _scroll.dispose();
     _focus.dispose();
     super.dispose();
@@ -61,6 +71,26 @@ class _CommitTableState extends State<CommitTable> {
         _scroll.jumpTo((top - pos.viewportDimension / 3).clamp(0, pos.maxScrollExtent));
       }
     });
+  }
+
+  /// Verifying signatures is slow: they are loaded only for the rows on
+  /// screen, once scrolling has paused.
+  void _scheduleSignatures() {
+    _signatureTimer?.cancel();
+    _signatureTimer = Timer(const Duration(milliseconds: 250), _loadSignatures);
+  }
+
+  void _loadSignatures() {
+    if (!mounted || _rows.isEmpty) return;
+    var first = 0, count = 60;
+    if (_scroll.hasClients) {
+      final pos = _scroll.position;
+      first = (pos.pixels / _rowHeight).floor();
+      count = (pos.viewportDimension / _rowHeight).ceil() + 1;
+    }
+    first = first.clamp(0, _rows.length);
+    final end = (first + count).clamp(first, _rows.length);
+    ctrl.signing.loadSignatures([for (final r in _rows.sublist(first, end)) r.$1.hash]);
   }
 
   List<(Commit, GraphRow?)> _visible() {
@@ -292,7 +322,8 @@ class _CommitTableState extends State<CommitTable> {
                 ctrl.bisect,
               ]),
               builder: (context, _) {
-                final rows = _visible();
+                final rows = _rows = _visible();
+                _scheduleSignatures();
                 if (rows.isEmpty) {
                   return ctrl.logLoading.value
                       ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
@@ -367,7 +398,7 @@ class _CommitTableState extends State<CommitTable> {
             )
           else
             const SizedBox(width: 10),
-          for (final r in c.refs) RefChip(r),
+          CommitRefs(c.refs, focus: ctrl.logFilter.value.branch),
           if (bisectMark != null) _BisectChip(bisectMark),
           Expanded(
             child: Text(
@@ -379,7 +410,12 @@ class _CommitTableState extends State<CommitTable> {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
+          ValueListenableBuilder(
+            valueListenable: ctrl.signing.signatures,
+            builder: (context, signatures, _) => SignatureBadge(signatures[c.hash]),
+          ),
+          const SizedBox(width: 6),
           SizedBox(
             width: 140,
             child: Text(c.authorName,

@@ -9,6 +9,7 @@ const { olderFirst } = require('../domain/logic/history');
 const { checkedOutElsewhere, worktreeOfBranch } = require('../domain/logic/worktree');
 const { mergeDialog } = require('./mergeDialog');
 const { newWorktree, openWorktree } = require('./worktrees');
+const { signChoice, askSignTag } = require('./signing');
 
 /** @typedef {import('./model').RepoModel} RepoModel */
 /** @typedef {import('../domain/entities').Branch} Branch */
@@ -711,7 +712,8 @@ async function commitAction(m, action, commits) {
       const current = await m.repo.lastCommitMessage();
       const msg = await vscode.window.showInputBox({ title: 'Edit Commit Message', value: current, validateInput: (v) => (v.trim() ? null : 'Message cannot be empty') });
       if (!msg || msg.trim() === current) return;
-      return m.run('Edit commit message', () => m.repo.commit({ message: msg.trim(), paths: [], amend: true }), { success: 'Commit message updated' });
+      return m.run('Edit commit message', () => m.repo.commit({ message: msg.trim(), paths: [], amend: true, sign: signChoice(m) }),
+        { success: 'Commit message updated' });
     }
     case 'branch':
       return newBranch(m, c.hash, short);
@@ -720,7 +722,10 @@ async function commitAction(m, action, commits) {
       if (!name) return;
       const message = await vscode.window.showInputBox({ title: `Tag ${name}`, prompt: 'Message (optional, creates an annotated tag)' });
       if (message === undefined) return;
-      return m.run(`Create tag ${name}`, () => m.repo.createTag(name.trim(), c.hash, message.trim()), { success: `Tag ${name} created` });
+      const sign = await askSignTag(m, name.trim(), !!message.trim());
+      if (sign === undefined) return;
+      return m.run(`Create tag ${name}`, () => m.repo.createTag(name.trim(), c.hash, message.trim(), sign),
+        { success: `${sign ? 'Signed tag' : 'Tag'} ${name} created` });
     }
   }
 }

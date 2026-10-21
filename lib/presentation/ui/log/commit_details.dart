@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../../../domain/entities/git_models.dart';
+import '../../../domain/entities/signing.dart';
 import '../../state/repo_controller.dart';
 import '../common.dart';
 import '../widgets/split_view.dart';
+import 'signature_badge.dart';
 
 /// Right part of the Log tab: changed files and commit message.
 class CommitDetailsPanel extends StatefulWidget {
@@ -55,6 +57,7 @@ class _CommitDetailsPanelState extends State<CommitDetailsPanel> {
       final d = await ctrl.repo.commitDetails(c);
       if (!mounted || gen != _gen) return;
       setState(() => _details = d);
+      ctrl.signing.loadSignatures([c.hash]);
       final branches = await ctrl.repo.branchesContaining(c.hash);
       if (!mounted || gen != _gen) return;
       setState(() => _containedIn = branches);
@@ -178,6 +181,30 @@ class _CommitDetailsPanelState extends State<CommitDetailsPanel> {
     );
   }
 
+  /// "[title]: status · by signer · key" with the badge; "checking…" while
+  /// [s] is not verified yet.
+  Widget _signatureLine(String title, SignatureInfo? s) {
+    const label = TextStyle(fontSize: 12, color: AppColors.textMuted);
+    if (s == null) return Text('$title: checking…', style: label);
+    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (s.isSigned) ...[
+        Padding(padding: const EdgeInsets.only(top: 1), child: SignatureBadge(s, size: 13)),
+        const SizedBox(width: 4),
+      ],
+      Expanded(
+        child: Text.rich(TextSpan(children: [
+          TextSpan(text: '$title: ', style: label),
+          TextSpan(
+            text: s.description,
+            style: TextStyle(
+                fontSize: 12, color: s.isSigned ? signatureColor(s.status.level) : AppColors.textMuted),
+          ),
+          if (s.isSigned && s.message != null) TextSpan(text: ' (${s.message})', style: label),
+        ])),
+      ),
+    ]);
+  }
+
   Widget _message(CommitDetails d) {
     final c = d.commit;
     const label = TextStyle(fontSize: 12, color: AppColors.textMuted);
@@ -225,6 +252,22 @@ class _CommitDetailsPanelState extends State<CommitDetailsPanel> {
                   style: label,
                 ),
               ),
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: ValueListenableBuilder(
+                valueListenable: ctrl.signing.signatures,
+                builder: (context, signatures, _) => _signatureLine('Signature', signatures[c.hash]),
+              ),
+            ),
+            for (final r in c.refs)
+              if (r.kind == RefKind.tag)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: FutureBuilder(
+                    future: ctrl.signing.tagSignature(r.name),
+                    builder: (context, snap) => _signatureLine('Tag ${r.name}', snap.data),
+                  ),
+                ),
             const SizedBox(height: 8),
             if (_containedIn == null)
               const Text('Looking for branches…', style: label)

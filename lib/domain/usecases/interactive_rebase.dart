@@ -54,17 +54,19 @@ class InteractiveRebase {
   }
 
   /// Runs the edited [entries] of [plan]. Throws [RebaseRejected] when they
-  /// are invalid or the branch moved since [prepare].
-  Future<RebaseOutcome> start(RebasePlan plan, List<RebaseEntry> entries) async {
+  /// are invalid or the branch moved since [prepare]. [sign] applies to every
+  /// rewritten commit (picks and amends): true signs, false strips the
+  /// signatures, null leaves it to `commit.gpgsign`.
+  Future<RebaseOutcome> start(RebasePlan plan, List<RebaseEntry> entries, {bool? sign}) async {
     final status = await _repo.status();
     _checkState(status);
     if (status.headHash != plan.head || status.branch != plan.branch) {
       throw RebaseRejected('The branch changed since the rebase was prepared',
           details: 'Start the interactive rebase again.');
     }
-    final built = buildTodo(entries, stateDir: await _repo.rebaseStateDir());
+    final built = buildTodo(entries, stateDir: await _repo.rebaseStateDir(), sign: sign);
     return _repo.runRebaseTodo(plan.base,
-        todo: built.todo, messages: built.messages, rebaseMerges: plan.rebaseMerges);
+        todo: built.todo, messages: built.messages, rebaseMerges: plan.rebaseMerges, sign: sign);
   }
 
   static void _checkState(RepoStatus status) {

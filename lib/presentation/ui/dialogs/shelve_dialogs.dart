@@ -12,7 +12,8 @@ import 'basic_dialogs.dart';
 bool canShelve(FileChange c) => c.type != ChangeType.conflicted && !c.isSubmodule && !c.nestedRepo;
 
 /// "Shelve Changes…": all local changes are listed, [chosen] are checked.
-Future<void> showShelveDialog(BuildContext context, RepoController ctrl, List<FileChange> chosen) async {
+/// [name] is proposed as the shelf name (e.g. the name of a changelist).
+Future<void> showShelveDialog(BuildContext context, RepoController ctrl, List<FileChange> chosen, {String? name}) async {
   final s = ctrl.status.value;
   if (s.state != RepoState.normal) {
     ctrl.notify(AppNotification('Cannot shelve now',
@@ -31,17 +32,20 @@ Future<void> showShelveDialog(BuildContext context, RepoController ctrl, List<Fi
       changes: changes,
       chosen: {for (final c in chosen) if (canShelve(c)) c.path},
       skipped: [for (final c in chosen) if (c.isSubmodule || c.nestedRepo) c.path],
+      name: name,
     ),
   );
 }
 
 class _ShelveDialog extends StatefulWidget {
-  const _ShelveDialog({required this.ctrl, required this.changes, required this.chosen, required this.skipped});
+  const _ShelveDialog(
+      {required this.ctrl, required this.changes, required this.chosen, required this.skipped, this.name});
 
   final RepoController ctrl;
   final List<FileChange> changes;
   final Set<String> chosen;
   final List<String> skipped;
+  final String? name;
 
   @override
   State<_ShelveDialog> createState() => _ShelveDialogState();
@@ -49,7 +53,7 @@ class _ShelveDialog extends StatefulWidget {
 
 class _ShelveDialogState extends State<_ShelveDialog> {
   late final TextEditingController _name = () {
-    final name = widget.ctrl.newShelfName;
+    final name = widget.name ?? widget.ctrl.newShelfName;
     return TextEditingController(text: name)..selection = TextSelection(baseOffset: 0, extentOffset: name.length);
   }();
   late Set<String> _checked = {...widget.chosen};

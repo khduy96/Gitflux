@@ -2,7 +2,7 @@
   "name": "git-tools-as",
   "displayName": "Git Tools (Android Studio style)",
   "description": "Android Studio style Git tool window for VS Code: commit panel with checkboxes, log with branch graph, branches popup, push/pull dialogs, stashes, shelf, patches and AI commit messages (Claude / Gemini).",
-  "version": "0.4.6",
+  "version": "0.4.8",
   "publisher": "local",
   "license": "UNLICENSED",
   "private": true,
@@ -167,6 +167,56 @@
         "title": "Clean Working Tree…",
         "category": "Git Tools",
         "icon": "$(trash)"
+      },
+      {
+        "command": "gitTools.changelist.new",
+        "title": "New Changelist…",
+        "category": "Git Tools",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "gitTools.changelist.setActive",
+        "title": "Set Active Changelist…",
+        "category": "Git Tools",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "gitTools.commit.showEmptyChangelists",
+        "title": "Show Empty Changelists",
+        "category": "Git Tools",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "gitTools.commit.hideEmptyChangelists",
+        "title": "Hide Empty Changelists",
+        "category": "Git Tools",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "gitTools.lfs.pull",
+        "title": "LFS: Pull",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.lfs.fetch",
+        "title": "LFS: Fetch",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.lfs.prune",
+        "title": "LFS: Prune…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.lfs.showTrackedPatterns",
+        "title": "LFS: Show Tracked Patterns…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.signingSettings",
+        "title": "Signing Settings…",
+        "category": "Git Tools",
+        "icon": "$(key)"
       },
       {
         "command": "gitTools.annotate",
@@ -598,6 +648,12 @@
         "category": "Git Tools"
       }
     ],
+    "submenus": [
+      {
+        "id": "gitTools.lfsMenu",
+        "label": "LFS"
+      }
+    ],
     "menus": {
       "view/title": [
         {
@@ -644,6 +700,26 @@
           "command": "gitTools.repo.reopenClosed",
           "when": "view == gitTools.repositories",
           "group": "1_repos@1"
+        },
+        {
+          "command": "gitTools.changelist.new",
+          "when": "view == gitTools.commit",
+          "group": "0_changelists@1"
+        },
+        {
+          "command": "gitTools.changelist.setActive",
+          "when": "view == gitTools.commit",
+          "group": "0_changelists@2"
+        },
+        {
+          "command": "gitTools.commit.showEmptyChangelists",
+          "when": "view == gitTools.commit && !gitTools.showEmptyChangelists",
+          "group": "0_changelists@3"
+        },
+        {
+          "command": "gitTools.commit.hideEmptyChangelists",
+          "when": "view == gitTools.commit && gitTools.showEmptyChangelists",
+          "group": "0_changelists@3"
         },
         {
           "command": "gitTools.update",
@@ -704,6 +780,16 @@
           "command": "gitTools.ai.setupGuide",
           "when": "view == gitTools.commit",
           "group": "4_ai@2"
+        },
+        {
+          "command": "gitTools.signingSettings",
+          "when": "view == gitTools.commit",
+          "group": "5_sign@1"
+        },
+        {
+          "submenu": "gitTools.lfsMenu",
+          "when": "view == gitTools.commit && gitTools.lfsAvailable",
+          "group": "6_lfs@1"
         },
         {
           "command": "gitTools.newBranch",
@@ -1053,6 +1139,24 @@
           "group": "1@3"
         }
       ],
+      "gitTools.lfsMenu": [
+        {
+          "command": "gitTools.lfs.pull",
+          "group": "1@1"
+        },
+        {
+          "command": "gitTools.lfs.fetch",
+          "group": "1@2"
+        },
+        {
+          "command": "gitTools.lfs.prune",
+          "group": "2@1"
+        },
+        {
+          "command": "gitTools.lfs.showTrackedPatterns",
+          "group": "3@1"
+        }
+      ],
       "scm/title": [
         {
           "command": "gitTools.ai.generate",
@@ -1273,6 +1377,30 @@
         {
           "command": "gitTools.annotate",
           "when": "resourceScheme == file"
+        },
+        {
+          "command": "gitTools.lfs.pull",
+          "when": "gitTools.lfsAvailable"
+        },
+        {
+          "command": "gitTools.lfs.fetch",
+          "when": "gitTools.lfsAvailable"
+        },
+        {
+          "command": "gitTools.lfs.prune",
+          "when": "gitTools.lfsAvailable"
+        },
+        {
+          "command": "gitTools.lfs.showTrackedPatterns",
+          "when": "gitTools.lfsAvailable"
+        },
+        {
+          "command": "gitTools.commit.showEmptyChangelists",
+          "when": "!gitTools.showEmptyChangelists"
+        },
+        {
+          "command": "gitTools.commit.hideEmptyChangelists",
+          "when": "gitTools.showEmptyChangelists"
         }
       ],
       "editor/context": [

@@ -59,7 +59,7 @@ test('CommitChanges commits whole files with --only outside an operation', async
   const repo = fakeRepo();
   const uc = new CommitChanges(/** @type {any} */ (repo));
   await uc.run(await uc.prepare({ status: status(), message: 'msg', changes: [a, { path: 'n.txt', oldPath: 'o.txt', type: 'renamed' }], lineSelections: new Map() }));
-  assert.deepEqual(repo.calls.commit, { message: 'msg', paths: ['a.txt', 'n.txt', 'o.txt'], amend: false, signOff: false, partial: true });
+  assert.deepEqual(repo.calls.commit, { message: 'msg', paths: ['a.txt', 'n.txt', 'o.txt'], amend: false, signOff: false, sign: null, partial: true });
 
   await uc.run(await uc.prepare({ status: status({ state: 'merging' }), message: 'msg', changes: [], lineSelections: new Map() }));
   assert.equal(repo.calls.commit.partial, false);
@@ -78,6 +78,7 @@ test('CommitChanges commits selected lines through commitSelected', async () => 
     partial: [{ path: 'a.txt', content: buildContent('a\nb\n', parsed, sel.excluded) }],
     amend: false,
     signOff: false,
+    sign: null,
   });
 });
 

@@ -14,6 +14,7 @@ class PreparedCommit {
     required this.inMerge,
     this.signOff = false,
     this.author,
+    this.sign,
   });
 
   final String message;
@@ -29,6 +30,9 @@ class PreparedCommit {
   final bool inMerge;
   final bool signOff;
   final String? author;
+
+  /// true `-S`, false `--no-gpg-sign`, null: `commit.gpgsign`.
+  final bool? sign;
 }
 
 /// Commits the included changes, whole files or selected lines.
@@ -49,6 +53,7 @@ class CommitChanges {
     bool amend = false,
     bool signOff = false,
     String? author,
+    bool? sign,
   }) async {
     final inMerge = status.state != RepoState.normal;
     if (message.isEmpty) throw CommitRejected('Commit message is empty');
@@ -73,6 +78,7 @@ class CommitChanges {
       inMerge: inMerge,
       signOff: signOff,
       author: author,
+      sign: sign,
     );
   }
 
@@ -84,6 +90,7 @@ class CommitChanges {
           amend: c.amend,
           signOff: c.signOff,
           author: c.author,
+          sign: c.sign,
         )
       : _repo.commit(
           message: c.message,
@@ -91,6 +98,7 @@ class CommitChanges {
           amend: c.amend,
           signOff: c.signOff,
           author: c.author,
+          sign: c.sign,
           partial: !c.inMerge,
         );
 }

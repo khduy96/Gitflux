@@ -1,4 +1,5 @@
 import '../entities/console_entry.dart';
+import 'changelist_repository.dart';
 import 'git_repository.dart';
 import 'shelf_repository.dart';
 
@@ -26,4 +27,7 @@ abstract interface class GitService {
 
   /// The shelves of [repo].
   ShelfRepository shelves(GitRepository repo);
+
+  /// The changelists of the worktree of [repo].
+  ChangelistRepository changelists(GitRepository repo);
 }

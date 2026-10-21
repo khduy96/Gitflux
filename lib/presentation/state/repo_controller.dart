@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 
 import '../../domain/entities/bisect.dart';
+import '../../domain/entities/changelist.dart';
 import '../../domain/entities/clean.dart';
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
@@ -13,17 +14,20 @@ import '../../domain/entities/patch.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/entities/reflog.dart';
 import '../../domain/entities/shelf.dart';
+import '../../domain/entities/signing.dart';
 import '../../domain/entities/worktree.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/graph_layout.dart';
 import '../../domain/logic/line_selection.dart';
 import '../../domain/logic/log_filters.dart';
 import '../../domain/logic/shelf_format.dart';
+import '../../domain/logic/signing_parser.dart';
 import '../../domain/repositories/commit_message_generator.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../../domain/repositories/git_service.dart';
 import '../../domain/repositories/shelf_repository.dart';
 import '../../domain/usecases/bisect.dart';
+import '../../domain/usecases/changelists.dart';
 import '../../domain/usecases/clean_working_tree.dart';
 import '../../domain/usecases/commit_changes.dart';
 import '../../domain/usecases/compare_commits.dart';
@@ -34,7 +38,9 @@ import '../../domain/usecases/merge_branch.dart';
 import '../../domain/usecases/patches.dart';
 import '../../domain/usecases/shelve_changes.dart';
 import 'app_settings.dart';
+import 'lfs_state.dart';
 import 'log_filter.dart';
+import 'signing_state.dart';
 
 export 'log_filter.dart';
 
@@ -137,6 +143,7 @@ class RepoController {
     _merge = MergeBranch(repo);
     _clean = CleanWorkingTree(repo);
     _bisect = BisectCommits(repo);
+    _changelists = ManageChangelists(git.changelists(repo));
     final session = _sessionLogFilters[repo.root];
     if (session != null) logFilter.value = LogFilter(author: session.$1, date: session.$2);
     bottomTab.addListener(_onBottomTab);
@@ -156,6 +163,15 @@ class RepoController {
   late final MergeBranch _merge;
   late final CleanWorkingTree _clean;
   late final BisectCommits _bisect;
+  late final ManageChangelists _changelists;
+
+  /// Git LFS state of the Commit panel (badges, locks).
+  late final lfs = LfsState(repo, onError: (e) => _addConsole(ConsoleEntry('lfs failed: $e', ConsoleKind.error)));
+
+  /// Commit signing: configuration, "Sign commit" and log signatures. Read
+  /// on first use (when the repository opens).
+  late final signing = SigningState(repo, onError: (e) => _addConsole(ConsoleEntry('signing: $e', ConsoleKind.error)))
+    ..load();
 
   final status = ValueNotifier<RepoStatus>(const RepoStatus());
 
@@ -227,6 +243,9 @@ class RepoController {
     if (msg != null && commitMessage.text.isEmpty) {
       commitMessage.text = msg;
       _prefilledMessage = msg;
+    } else if (commitMessage.text.isEmpty) {
+      // The draft message of the active changelist.
+      commitMessage.text = changelists.value.activeList.comment;
     }
     _startWatching();
   }
@@ -291,6 +310,8 @@ class RepoController {
     try {
       final s = await repo.status();
       if (_disposed) return;
+      await _syncChangelists(s);
+      if (_disposed) return;
       final previous = status.value.state;
       status.value = s;
       _recomputeIncluded();
@@ -320,6 +341,7 @@ class RepoController {
         commitMessage.clear();
         _prefilledMessage = null;
       }
+      if (!_disposed) lfs.refresh(s);
     } catch (e) {
       _addConsole(ConsoleEntry('status failed: $e', ConsoleKind.error));
     }
@@ -450,11 +472,38 @@ class RepoController {
   // Inclusion
   // ---------------------------------------------------------------------------
 
+  /// Tracked files of the active changelist are included unless unticked
+  /// ([_excludedTracked]); those of other lists only when ticked.
+  final Set<String> _includedInactive = {};
+
+  /// Whether [path] is in the active changelist (or in none yet).
+  bool _inActiveList(String path) {
+    final l = changelists.value.listOf(path);
+    return l == null || l.id == changelists.value.active;
+  }
+
+  bool _isIncluded(FileChange c) => switch (c.type) {
+        ChangeType.untracked => _includedUntracked.contains(c.path),
+        ChangeType.conflicted => !_excludedTracked.contains(c.path),
+        _ => _inActiveList(c.path) ? !_excludedTracked.contains(c.path) : _includedInactive.contains(c.path),
+      };
+
+  void _setTrackedIncluded(String path, bool value) {
+    if (_inActiveList(path)) {
+      _includedInactive.remove(path);
+      value ? _excludedTracked.remove(path) : _excludedTracked.add(path);
+    } else {
+      _excludedTracked.remove(path);
+      value ? _includedInactive.add(path) : _includedInactive.remove(path);
+    }
+  }
+
   void _recomputeIncluded() {
     final s = status.value;
     final paths = {for (final c in s.changes) c.path};
     _excludedTracked.removeWhere((p) => !paths.contains(p));
     _includedUntracked.removeWhere((p) => !paths.contains(p));
+    _includedInactive.removeWhere((p) => !paths.contains(p));
     final stale = lineSelections.value.keys
         .where((p) => !canSelectLines(s.changes.where((c) => c.path == p).firstOrNull))
         .toList();
@@ -464,11 +513,7 @@ class RepoController {
     included.value = {
       for (final c in s.changes)
         // A nested repository is never committed as files.
-        if (!c.nestedRepo &&
-            (c.type == ChangeType.untracked
-                ? _includedUntracked.contains(c.path)
-                : !_excludedTracked.contains(c.path)))
-          c.path,
+        if (!c.nestedRepo && _isIncluded(c)) c.path,
     };
   }
 
@@ -480,11 +525,12 @@ class RepoController {
     }
     if (selections.length != lineSelections.value.length) lineSelections.value = selections;
     for (final c in changes) {
-      final untracked = c.type == ChangeType.untracked;
-      if (untracked) {
+      if (c.type == ChangeType.untracked) {
         value ? _includedUntracked.add(c.path) : _includedUntracked.remove(c.path);
-      } else {
+      } else if (c.type == ChangeType.conflicted) {
         value ? _excludedTracked.remove(c.path) : _excludedTracked.add(c.path);
+      } else {
+        _setTrackedIncluded(c.path, value);
       }
     }
     _recomputeIncluded();
@@ -493,6 +539,147 @@ class RepoController {
   List<FileChange> get includedChanges => status.value.changes
       .where((c) => included.value.contains(c.path))
       .toList();
+
+  // ---------------------------------------------------------------------------
+  // Changelists
+  // ---------------------------------------------------------------------------
+
+  /// Changelists of the worktree, in line with [status] after each refresh.
+  final changelists = ValueNotifier<Changelists>(const Changelists());
+
+  /// changelists.json could not be read at the last refresh (reported once).
+  bool _changelistsBroken = false;
+
+  Future<void> _syncChangelists(RepoStatus s) async {
+    try {
+      final c = await _changelists.sync(s.changes);
+      _changelistsBroken = false;
+      if (!_disposed) _applyChangelists(c);
+    } on ChangelistRejected catch (e) {
+      if (!_changelistsBroken) _addConsole(ConsoleEntry('${e.title}: ${e.details ?? ''}', ConsoleKind.error));
+      _changelistsBroken = true;
+    }
+  }
+
+  /// Shows [c]. When the active list changed, the ticks become exactly the
+  /// files of the new active list and, with [loadMessage], the commit
+  /// message box shows its draft (outside of a merge / rebase).
+  void _applyChangelists(Changelists c, {bool loadMessage = false}) {
+    final before = changelists.value.active;
+    changelists.value = c;
+    if (c.active == before) return;
+    _excludedTracked.clear();
+    _includedInactive.clear();
+    _includedUntracked.clear();
+    final inList = c.activeList.files.toSet();
+    if (lineSelections.value.keys.any((p) => !inList.contains(p))) {
+      lineSelections.value = {...lineSelections.value}..removeWhere((k, _) => !inList.contains(k));
+    }
+    if (loadMessage && status.value.state == RepoState.normal) {
+      if (amend.value) {
+        _messageBeforeAmend = c.activeList.comment;
+      } else {
+        commitMessage.text = c.activeList.comment;
+      }
+    }
+  }
+
+  /// Text of the commit message box that belongs to the active list.
+  String get draftMessage => amend.value ? _messageBeforeAmend : commitMessage.text;
+
+  /// Runs a change of the lists and shows the result. Returns false (with
+  /// a notification) when it failed.
+  Future<bool> _changelistAction(Future<Changelists> Function() action) async {
+    try {
+      final c = await action();
+      if (_disposed) return false;
+      _applyChangelists(c, loadMessage: true);
+      _recomputeIncluded();
+      return true;
+    } on ChangelistRejected catch (e) {
+      notify(AppNotification(e.title, details: e.details, isError: true));
+      return false;
+    } catch (e) {
+      notify(AppNotification('Changelist update failed', details: '$e', isError: true));
+      return false;
+    }
+  }
+
+  /// Makes [id] the active list: the commit message box is saved as the
+  /// draft of the previous list and shows the draft of [id].
+  Future<bool> setActiveChangelist(String id) async {
+    if (id == changelists.value.active) return true;
+    final message = status.value.state == RepoState.normal ? draftMessage : null;
+    return _changelistAction(() => _changelists.setActive(id, message: message));
+  }
+
+  /// Adds a list; returns its id, or null when it failed.
+  Future<String?> createChangelist(String name, {String comment = '', bool active = false}) async {
+    Changelist? created;
+    final ok = await _changelistAction(() async {
+      final (lists, list) = await _changelists.create(name, comment: comment);
+      created = list;
+      return lists;
+    });
+    final id = created?.id;
+    if (!ok || id == null) return null;
+    if (active) await setActiveChangelist(id);
+    return id;
+  }
+
+  /// Renames list [id] and sets its draft message ([comment] is the commit
+  /// message box for the active list); with [active] it becomes active.
+  Future<bool> editChangelist(String id, {required String name, required String comment, bool active = false}) async {
+    final isActive = id == changelists.value.active;
+    final ok = await _changelistAction(() => _changelists.edit(id, name: name, comment: comment));
+    if (!ok) return false;
+    if (isActive) {
+      if (amend.value) {
+        _messageBeforeAmend = comment;
+      } else {
+        commitMessage.text = comment;
+      }
+      return true;
+    }
+    return active ? setActiveChangelist(id) : true;
+  }
+
+  /// Deletes list [id]; its files go to the active list, or to the default
+  /// list (which becomes active) when [id] is the active one.
+  Future<bool> deleteChangelist(String id) => _changelistAction(() => _changelists.delete(id));
+
+  /// Moves [changes] to list [toId], keeping their ticks. Unversioned files
+  /// are added to git first.
+  Future<bool> moveToChangelist(List<FileChange> changes, String toId) async {
+    final untracked = [for (final c in changes) if (c.type == ChangeType.untracked && !c.nestedRepo) c.path];
+    final tracked = [for (final c in changes) if (c.type != ChangeType.untracked) c.path];
+    if (untracked.isNotEmpty) {
+      final n = untracked.length;
+      return run('Add ${n == 1 ? untracked.first : '$n files'} to VCS', () async {
+        await repo.stage(untracked);
+        _applyChangelists(await _changelists.move([...tracked, ...untracked], toId));
+      });
+    }
+    if (tracked.isEmpty) return true;
+    final ticked = {for (final p in tracked) p: included.value.contains(p)};
+    final ok = await _changelistAction(() => _changelists.move(tracked, toId));
+    if (ok) {
+      ticked.forEach(_setTrackedIncluded);
+      _recomputeIncluded();
+    }
+    return ok;
+  }
+
+  /// Unshelved files go to the list named like the shelf when there is one
+  /// (they are in the active list otherwise).
+  Future<void> _unshelveIntoChangelist(String shelfName, Iterable<String> paths) async {
+    final target = changelists.value.byName(shelfName);
+    if (target == null || target.id == changelists.value.active) return;
+    final tracked = {for (final c in status.value.changes) if (c.type != ChangeType.untracked) c.path};
+    final moved = paths.where(tracked.contains).toList();
+    if (moved.isEmpty) return;
+    await _changelistAction(() => _changelists.move(moved, target.id));
+  }
 
   // ---------------------------------------------------------------------------
   // Line selection (partial commit)
@@ -513,13 +700,13 @@ class RepoController {
     final selections = {...lineSelections.value};
     if (excluded.isEmpty) {
       selections.remove(path);
-      _excludedTracked.remove(path);
+      _setTrackedIncluded(path, true);
     } else if (excluded.length >= total) {
       selections.remove(path);
-      _excludedTracked.add(path);
+      _setTrackedIncluded(path, false);
     } else {
       selections[path] = LineSelection(signature, {...excluded}, total);
-      _excludedTracked.remove(path);
+      _setTrackedIncluded(path, true);
     }
     lineSelections.value = selections;
     _recomputeIncluded();
@@ -549,7 +736,7 @@ class RepoController {
       if (success != null) notify(AppNotification(success));
       return true;
     } on GitException catch (e) {
-      notify(AppNotification('$label failed', details: e.message, isError: true));
+      notify(_signingFailure('$label failed', e.message));
       return false;
     } on RebaseRejected catch (e) {
       notify(AppNotification(e.title, details: e.details, isError: true));
@@ -567,6 +754,9 @@ class RepoController {
       notify(AppNotification(e.title, details: e.details, isError: true));
       return false;
     } on BisectRejected catch (e) {
+      notify(AppNotification(e.title, details: e.details, isError: true));
+      return false;
+    } on ChangelistRejected catch (e) {
       notify(AppNotification(e.title, details: e.details, isError: true));
       return false;
     } catch (e) {
@@ -598,7 +788,8 @@ class RepoController {
     }
   }
 
-  Future<bool> commit({bool signOff = false, String? author}) async {
+  /// [sign] defaults to the "Sign commit" option ([signCommit]).
+  Future<bool> commit({bool signOff = false, String? author, bool? sign}) async {
     final changes = includedChanges;
     final PreparedCommit prepared;
     try {
@@ -610,6 +801,7 @@ class RepoController {
         amend: amend.value,
         signOff: signOff,
         author: author,
+        sign: sign ?? signCommit.value,
       );
     } on CommitRejected catch (e) {
       notify(AppNotification(e.title, details: e.details, isError: true));
@@ -634,8 +826,11 @@ class RepoController {
       _messageBeforeAmend = '';
       _includedUntracked.clear();
       _excludedTracked.clear();
+      _includedInactive.clear();
       lineSelections.value = const {};
       _recomputeIncluded();
+      // The draft message of the list was used.
+      await _changelistAction(() => _changelists.saveComment(changelists.value.active, ''));
     }
     return ok;
   }
@@ -662,7 +857,7 @@ class RepoController {
     required String success,
   }) async {
     RebaseOutcome? outcome;
-    final ok = await run(label, () async => outcome = await _rebase.start(plan, entries));
+    final ok = await run(label, () async => outcome = await _rebase.start(plan, entries, sign: signCommit.value));
     final out = outcome;
     if (!ok || out == null) return false;
     final progress = rebaseProgress.value;
@@ -677,8 +872,7 @@ class RepoController {
           details: 'Amend the commit, then click Continue in the Commit panel.'));
     } else {
       final lines = out.output.trim().split('\n');
-      notify(AppNotification('$label stopped',
-          details: lines.sublist((lines.length - 6).clamp(0, lines.length)).join('\n'), isError: true));
+      notify(_signingFailure('$label stopped', lines.sublist((lines.length - 6).clamp(0, lines.length)).join('\n')));
     }
     return true;
   }
@@ -788,6 +982,7 @@ class RepoController {
         () async => out = await _unshelve(shelf, paths: paths, removeApplied: removeApplied));
     final o = out;
     if (!ok || o == null) return false;
+    await _unshelveIntoChangelist(shelf.name, [...o.applied, ...o.conflicted].map((f) => f.path));
     final n = o.applied.length;
     if (o.conflicted.isEmpty) {
       notify(AppNotification('$n file${n == 1 ? '' : 's'} ${removeApplied ? 'unshelved' : 'applied'}'));
@@ -1009,6 +1204,39 @@ class RepoController {
       onAction: () => showInLog(bad),
     ));
   }
+
+  // ---------------------------------------------------------------------------
+  // Signing
+  // ---------------------------------------------------------------------------
+
+  /// "Sign commit" (default `commit.gpgsign`): commits, amends, Edit Commit
+  /// Message, interactive rebases and merges pass `-S` / `--no-gpg-sign`.
+  ValueNotifier<bool> get signCommit => signing.signCommit;
+
+  /// Incremented to ask the workspace to open the Signing Settings dialog.
+  final signingSettingsRequest = ValueNotifier<int>(0);
+
+  void openSigningSettings() => signingSettingsRequest.value++;
+
+  /// Writes the Signing Settings, then re-reads the configuration ("Sign
+  /// commit" goes back to the new default) and forgets the verified
+  /// signatures.
+  Future<bool> saveSigningSettings(SigningSettings settings, ConfigScope scope) async {
+    final ok = await run('Save signing settings', () => repo.saveSigningSettings(settings, scope),
+        success: 'Signing settings saved (${scope == ConfigScope.global ? 'global' : 'this repository'})',
+        refresh: false);
+    signing.clear();
+    await signing.load();
+    return ok;
+  }
+
+  /// Error notification for a failed git command; when signing failed
+  /// (no agent, wrong key, pinentry cancelled) it offers the Signing
+  /// Settings. Nothing is retried unsigned.
+  AppNotification _signingFailure(String title, String details) => isSigningFailure(details)
+      ? AppNotification(title,
+          details: details, isError: true, actionLabel: 'Signing Settings…', onAction: openSigningSettings)
+      : AppNotification(title, details: details, isError: true);
 
   // ---------------------------------------------------------------------------
   // AI commit message

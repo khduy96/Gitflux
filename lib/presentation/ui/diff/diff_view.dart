@@ -9,9 +9,12 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../domain/entities/git_models.dart';
+import '../../../domain/entities/lfs.dart';
+import '../../../domain/logic/lfs_parser.dart';
 import '../../../domain/logic/text_diff.dart';
 import '../../state/app_settings.dart';
 import '../../state/repo_controller.dart';
+import '../commit/lfs_widgets.dart';
 import '../common.dart';
 
 const _rowHeight = 19.0;
@@ -51,6 +54,51 @@ class _Loaded {
 TextDiff _computeDiff((String, String, bool) args) =>
     TextDiff.compute(args.$1, args.$2, ignoreWhitespace: args.$3);
 
+/// One side of the diff of a file stored in Git LFS.
+class _LfsSide {
+  const _LfsSide({required this.raw, this.pointer, this.content});
+
+  /// Bytes as loaded: the pointer, or the content for the working tree.
+  final List<int>? raw;
+
+  /// Pointer of this side; null when the side does not exist or the file
+  /// is not stored in LFS there.
+  final LfsPointer? pointer;
+
+  /// The real content when it is available locally.
+  final List<int>? content;
+
+  bool get exists => raw != null;
+
+  /// Bytes shown as pointers: the pointer text, or the content when the
+  /// side is not in LFS.
+  List<int>? get pointerBytes => raw == null ? null : pointer == null ? raw : utf8.encode(pointer!.text);
+}
+
+/// Both sides of a diff where at least one side is an LFS pointer.
+class _LfsInfo {
+  const _LfsInfo(this.left, this.right);
+
+  final _LfsSide left;
+  final _LfsSide right;
+
+  /// The content of every existing side is available locally.
+  bool get contentAvailable =>
+      (!left.exists || left.content != null) && (!right.exists || right.content != null);
+}
+
+String _formatSize(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  var v = bytes / 1024;
+  var i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return '${v.toStringAsFixed(v < 10 ? 1 : 0)} ${units[i]}';
+}
+
 class DiffView extends StatefulWidget {
   const DiffView({
     super.key,
@@ -83,9 +131,21 @@ class _DiffViewState extends State<DiffView> {
   final _focus = FocusNode();
   late double _charWidth;
 
+  /// Set when the file is stored in Git LFS on either side.
+  _LfsInfo? _lfs;
+
+  /// Show the real content of an LFS file (when available) rather than its
+  /// pointers.
+  bool _lfsContent = true;
+
   DiffRequest get req => widget.request;
   AppSettings get settings => widget.settings;
   bool get _rightIsWorkingTree => req.right is WorkingTreeRev;
+  bool get _showLfsContent => _lfs != null && _lfsContent && _lfs!.contentAvailable;
+
+  /// Blocks can be reverted in the working tree file, but not while LFS
+  /// pointers are shown in place of its content.
+  bool get _canRevert => _rightIsWorkingTree && (_lfs == null || _showLfsContent);
 
   @override
   void initState() {
@@ -107,6 +167,7 @@ class _DiffViewState extends State<DiffView> {
     if (old.request.key != req.key) {
       _expanded = {};
       _currentBlock = -1;
+      _lfsContent = true;
       _load();
     }
   }
@@ -149,33 +210,86 @@ class _DiffViewState extends State<DiffView> {
         repo.fileBytes(req.left, req.leftPath),
         repo.fileBytes(req.right, req.rightPath),
       ]);
-      final left = _Side(results[0] == null ? null : Uint8List.fromList(results[0]!));
-      final right = _Side(results[1] == null ? null : Uint8List.fromList(results[1]!));
-      TextDiff? diff;
-      String lo = '', ro = '';
-      if (!left.binary && !right.binary) {
-        lo = left.text;
-        ro = right.text;
-        final lt = lo.replaceAll('\t', '    ');
-        final rt = ro.replaceAll('\t', '    ');
-        _lastIgnoreWs = settings.ignoreWhitespace;
-        final args = (lt, rt, settings.ignoreWhitespace);
-        diff = lt.length + rt.length > 200000
-            ? await Isolate.run(() => _computeDiff(args))
-            : _computeDiff(args);
-      }
+      final lfs = await _resolveLfs(results[0], results[1]);
       if (!mounted || gen != _loadGen) return;
-      setState(() {
-        _data = _Loaded(left, right, diff, lo, ro);
-        _loading = false;
-        _buildRows();
-      });
+      _lfs = lfs;
+      await _show(gen, results[0], results[1]);
     } catch (e) {
       if (!mounted || gen != _loadGen) return;
       setState(() {
         _error = e;
         _loading = false;
       });
+    }
+  }
+
+  /// The LFS sides when either side is an LFS pointer, or the working tree
+  /// file is stored in LFS (its content is on disk); else null.
+  Future<_LfsInfo?> _resolveLfs(List<int>? left, List<int>? right) async {
+    final repo = widget.controller.repo;
+    final lp = parseLfsPointer(left);
+    final rp = parseLfsPointer(right);
+    final trackedWorkTree = _rightIsWorkingTree && widget.controller.lfs.isTracked(req.rightPath);
+    if (lp == null && rp == null && !trackedWorkTree) return null;
+    Future<_LfsSide> side(List<int>? raw, LfsPointer? pointer, {required bool workTree, required String path}) async {
+      if (raw == null) return const _LfsSide(raw: null);
+      if (pointer != null) return _LfsSide(raw: raw, pointer: pointer, content: await repo.lfsObject(pointer));
+      // A smudged working tree file: its pointer is what would be committed.
+      if (workTree) return _LfsSide(raw: raw, pointer: await repo.lfsPointerOfFile(path), content: raw);
+      return _LfsSide(raw: raw, content: raw);
+    }
+
+    final sides = await Future.wait([
+      side(left, lp, workTree: false, path: req.leftPath),
+      side(right, rp, workTree: trackedWorkTree, path: req.rightPath),
+    ]);
+    return _LfsInfo(sides[0], sides[1]);
+  }
+
+  /// Shows [leftBytes] / [rightBytes], or for an LFS file the pointers or
+  /// the real content as chosen in the LFS bar.
+  Future<void> _show(int gen, List<int>? leftBytes, List<int>? rightBytes) async {
+    final lfs = _lfs;
+    if (lfs != null) {
+      final content = _showLfsContent;
+      leftBytes = content ? lfs.left.content : lfs.left.pointerBytes;
+      rightBytes = content ? lfs.right.content : lfs.right.pointerBytes;
+    }
+    final left = _Side(leftBytes == null ? null : Uint8List.fromList(leftBytes));
+    final right = _Side(rightBytes == null ? null : Uint8List.fromList(rightBytes));
+    TextDiff? diff;
+    String lo = '', ro = '';
+    if (!left.binary && !right.binary) {
+      lo = left.text;
+      ro = right.text;
+      final lt = lo.replaceAll('\t', '    ');
+      final rt = ro.replaceAll('\t', '    ');
+      _lastIgnoreWs = settings.ignoreWhitespace;
+      final args = (lt, rt, settings.ignoreWhitespace);
+      diff = lt.length + rt.length > 200000
+          ? await Isolate.run(() => _computeDiff(args))
+          : _computeDiff(args);
+    }
+    if (!mounted || gen != _loadGen) return;
+    setState(() {
+      _data = _Loaded(left, right, diff, lo, ro);
+      _loading = false;
+      _buildRows();
+    });
+  }
+
+  /// Switches an LFS diff between the pointers and the real content.
+  Future<void> _toggleLfsContent() async {
+    setState(() {
+      _lfsContent = !_lfsContent;
+      _expanded = {};
+      _currentBlock = -1;
+    });
+    final gen = ++_loadGen;
+    try {
+      await _show(gen, null, null);
+    } catch (e) {
+      if (mounted && gen == _loadGen) setState(() => _error = e);
     }
   }
 
@@ -410,7 +524,77 @@ class _DiffViewState extends State<DiffView> {
     if (_error != null) {
       return EmptyHint('Cannot load diff:\n$_error', icon: Icons.error_outline);
     }
-    final data = _data!;
+    final lfs = _lfs;
+    if (lfs == null) return _content(_data!);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _lfsBar(lfs),
+        const Divider(),
+        Expanded(child: _content(_data!)),
+      ],
+    );
+  }
+
+  /// Pointers of both sides of an LFS file, with the switch between the
+  /// pointers and the real content.
+  Widget _lfsBar(_LfsInfo lfs) {
+    InlineSpan side(String title, _LfsSide s) {
+      final ptr = s.pointer;
+      final String what;
+      if (!s.exists) {
+        what = 'does not exist';
+      } else if (ptr == null) {
+        what = 'not stored in LFS (${_formatSize(s.raw!.length)})';
+      } else {
+        what = 'oid ${ptr.shortOid}… · ${_formatSize(ptr.size)}${s.content == null ? ' · not downloaded' : ''}';
+      }
+      return TextSpan(children: [
+        TextSpan(text: '$title: ', style: const TextStyle(color: AppColors.textDim)),
+        TextSpan(text: what, style: monoStyle(size: 12, color: AppColors.text)),
+      ]);
+    }
+
+    final same = lfs.left.pointer != null && lfs.left.pointer == lfs.right.pointer;
+    final pointers = [lfs.left.pointer, lfs.right.pointer].nonNulls;
+    return Container(
+      color: AppColors.panelAlt,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        children: [
+          const LfsBadge(),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Tooltip(
+              message: pointers.map((ptr) => 'oid sha256:${ptr.oid}').join('\n'),
+              child: Text.rich(
+                TextSpan(children: [
+                  side(req.leftTitle, lfs.left),
+                  const TextSpan(text: '    →    ', style: TextStyle(color: AppColors.textMuted)),
+                  side(req.rightTitle, lfs.right),
+                  if (same) const TextSpan(text: '   (same object)', style: TextStyle(color: AppColors.textMuted)),
+                ]),
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Tooltip(
+            message: lfs.contentAvailable
+                ? (_showLfsContent ? 'Compare the LFS pointers' : 'Compare the real content of the files')
+                : 'The content is not in the local LFS store (Git LFS ▸ Pull downloads it)',
+            child: TextButton(
+              onPressed: lfs.contentAvailable ? _toggleLfsContent : null,
+              child: Text(_showLfsContent ? 'Show Pointers' : 'Show Content'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _content(_Loaded data) {
     if (data.diff == null) return _binaryView(data);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -567,7 +751,7 @@ class _DiffViewState extends State<DiffView> {
       DiffKind.inserted => (null, AppColors.diffInsertedBg, null, null),
     };
     final isBlockStart = r.block >= 0 && (i == 0 || _sideRows![i - 1].block != r.block);
-    final canRevert = isBlockStart && _rightIsWorkingTree;
+    final canRevert = isBlockStart && _canRevert;
     final markColor = switch (r.kind) {
       DiffKind.modified => AppColors.diffModifiedMark,
       DiffKind.deleted => AppColors.diffDeletedMark,
