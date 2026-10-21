@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../domain/entities/git_models.dart';
 import '../../../domain/entities/worktree.dart';
+import '../../../domain/logic/branch_folders.dart';
 import '../../state/repo_controller.dart';
 import '../actions.dart';
 import '../branches/branch_menu.dart';
@@ -23,6 +24,9 @@ class BranchesTree extends StatefulWidget {
 class _BranchesTreeState extends State<BranchesTree> {
   RepoController get ctrl => widget.controller;
   final Set<String> _collapsed = {'tags'};
+
+  /// Branch folders opened / closed by hand, by key (`local/feature`).
+  final Map<String, bool> _folderOpen = {};
   final _search = TextEditingController();
   bool _searching = false;
 
@@ -70,14 +74,15 @@ class _BranchesTreeState extends State<BranchesTree> {
               onTap: () => _filter(filter == 'HEAD' ? null : 'HEAD'),
             ),
             _group('local', 'Local', local.length),
-            if (!_collapsed.contains('local'))
-              for (final b in local) _branchRow(b, 1, filter),
+            if (!_collapsed.contains('local')) ..._folderRows(buildBranchFolder('local', 'Local', local), 1, filter, q),
             _group('remote', 'Remote', remote.length),
             if (!_collapsed.contains('remote'))
               for (final entry in byRemote.entries) ...[
                 _group('remote:${entry.key}', entry.key, entry.value.length, depth: 1, icon: Icons.cloud_outlined),
                 if (!_collapsed.contains('remote:${entry.key}'))
-                  for (final b in entry.value) _branchRow(b, 2, filter),
+                  ..._folderRows(
+                      buildBranchFolder('remote:${entry.key}', entry.key, entry.value, prefix: entry.key.length + 1),
+                      2, filter, q),
               ],
             _group('tags', 'Tags', tags.length),
             if (!_collapsed.contains('tags'))
@@ -358,15 +363,37 @@ class _BranchesTreeState extends State<BranchesTree> {
         success: 'Submodule added: commit .gitmodules and ${path.trim()} to record it');
   }
 
+  /// Sub folders and branches of [folder] (`feature/a` → feature ▸ a). A
+  /// folder starts open when it holds the current branch or the one shown in
+  /// the Log; all are open while searching.
+  List<Widget> _folderRows(BranchFolder folder, int depth, String? filter, String query) {
+    final current = ctrl.status.value.branch;
+    return [
+      for (final r in branchTreeRows(folder,
+          isOpen: (f) => _folderOpen[f.key] ?? (f.contains(current) || f.contains(filter)),
+          query: query,
+          depth: depth))
+        if (r.isFolder)
+          _group(r.folder!.key, r.label, r.folder!.count,
+              depth: r.depth,
+              collapsed: !r.open,
+              onToggle: () {
+                if (query.isEmpty) setState(() => _folderOpen[r.folder!.key] = !r.open);
+              })
+        else
+          _branchRow(r.branch!, r.depth, filter, label: r.label),
+    ];
+  }
+
   Widget _group(String key, String label, int count,
-      {int depth = 0, IconData? icon, void Function(Offset)? onSecondary}) {
-    final collapsed = _collapsed.contains(key);
+      {int depth = 0, IconData? icon, bool? collapsed, VoidCallback? onToggle, void Function(Offset)? onSecondary}) {
+    final isCollapsed = collapsed ?? _collapsed.contains(key);
     return HoverRow(
       padding: EdgeInsets.only(left: 4.0 + depth * 14),
       onSecondaryTapDown: onSecondary == null ? null : (d) => onSecondary(d.globalPosition),
-      onTap: () => setState(() => collapsed ? _collapsed.remove(key) : _collapsed.add(key)),
+      onTap: onToggle ?? () => setState(() => isCollapsed ? _collapsed.remove(key) : _collapsed.add(key)),
       child: Row(children: [
-        Icon(collapsed ? Icons.chevron_right : Icons.expand_more, size: 16, color: AppColors.textDim),
+        Icon(isCollapsed ? Icons.chevron_right : Icons.expand_more, size: 16, color: AppColors.textDim),
         const SizedBox(width: 2),
         Icon(icon ?? Icons.folder_outlined, size: 14, color: AppColors.textDim),
         const SizedBox(width: 6),
@@ -377,7 +404,7 @@ class _BranchesTreeState extends State<BranchesTree> {
     );
   }
 
-  Widget _branchRow(Branch b, int depth, String? filter) {
+  Widget _branchRow(Branch b, int depth, String? filter, {String? label}) {
     return _row(
       key: b.name,
       depth: depth,
@@ -387,7 +414,7 @@ class _BranchesTreeState extends State<BranchesTree> {
           : b.isFavorite
               ? AppColors.warning
               : (b.isRemote ? AppColors.remoteRef : AppColors.localRef),
-      label: b.isRemote ? b.shortName : b.name,
+      label: label ?? (b.isRemote ? b.shortName : b.name),
       bold: b.isCurrent,
       trailing: [
         if (b.ahead > 0) Text('↑${b.ahead}', style: const TextStyle(fontSize: 11.5, color: AppColors.added)),

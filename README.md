@@ -52,7 +52,8 @@ flutter build windows --release
 - Xem ảnh hai bên cho file ảnh nhị phân
 
 **Git tool window (Alt+9)**
-- Log: cây branch (HEAD, Local, Remote, Tags, Submodules, Worktrees, Reflog), đồ thị commit có màu theo nhánh, ref labels,
+- Log: cây branch (HEAD, Local, Remote, Tags, Submodules, Worktrees, Reflog; branch gom thành thư mục theo `/` trong tên,
+  thư mục chứa branch hiện tại hoặc branch đang lọc tự mở), đồ thị commit có màu theo nhánh, ref labels,
   lọc theo text/hash/author, branch, user, ngày, nội dung thay đổi, theo file (Show History)
   (xem mục **Lọc Log** bên dưới)
 - Chi tiết commit: danh sách file đã đổi, message, author/committer, các branch chứa commit
@@ -119,6 +120,9 @@ flutter build windows --release
   - **Changes containing text**: tìm commit làm thay đổi số lần xuất hiện của đoạn text (`git log -S`);
     **Changes matching regex (-G)**: commit có dòng thêm / xoá khớp regex (`git log -G`).
     Chạy trong git sau khi ngừng gõ ~0,5 giây, cần ít nhất 2 ký tự, không phân biệt hoa thường.
+- **Branch**: All, HEAD hoặc một branch, chọn trong cây thư mục theo tên branch (`Local ▸ feature ▸ login`,
+  `Remote ▸ origin ▸ main`). Bấm thư mục để mở / đóng; ô tìm kiếm lọc branch và mở sẵn các thư mục có kết quả.
+  Phím: ↑ / ↓ chọn, ← / → đóng / mở thư mục, Enter áp dụng, Esc đóng.
 - **User**: All, Me (`user.name` / `user.email` của repo), các author của các commit đã tải (nhiều commit nhất
   đứng trước), hoặc Select… để gõ tên / email. Khớp một phần tên hoặc email, không phân biệt hoa thường.
 - **Date**: All, Last 24 hours, Last 7 days, Last 30 days, hoặc Select… chọn từ ngày / đến ngày (có thể bỏ trống một đầu).
