@@ -1,5 +1,7 @@
 import '../entities/git_models.dart';
+import '../entities/log_query.dart';
 import '../entities/rebase.dart';
+import '../entities/reflog.dart';
 
 /// A change noticed in the repository folder.
 enum RepoEvent {
@@ -40,8 +42,17 @@ abstract interface class GitRepository {
   // Log
   // ---------------------------------------------------------------------------
 
-  /// Loads commits for the log. [revisions] defaults to all refs.
-  Future<List<Commit>> log({List<String>? revisions, String? path, int limit = 3000});
+  /// Loads commits for the log. [revisions] defaults to all refs; [query]
+  /// filters by author, date and content change.
+  Future<List<Commit>> log({
+    List<String>? revisions,
+    String? path,
+    int limit = 3000,
+    LogQuery query = const LogQuery(),
+  });
+
+  /// One commit (any revision), or null when it does not exist.
+  Future<Commit?> findCommit(String rev);
 
   /// Commits reachable from [to] but not from [from].
   Future<List<Commit>> commitsBetween(String from, String to);
@@ -62,6 +73,10 @@ abstract interface class GitRepository {
   /// Files that differ between two refs using merge base (`a...b`).
   Future<List<FileChange>> diffFilesSymmetric(String a, String b);
 
+  /// Files that differ between two revisions (`git diff -M a b`), with
+  /// rename detection.
+  Future<List<FileChange>> diffFiles(String a, String b);
+
   Future<List<String>> recentSubjects({int count = 15});
   Future<String> lastCommitMessage();
 
@@ -74,6 +89,10 @@ abstract interface class GitRepository {
   Future<List<Remote>> remotes();
   Future<List<Stash>> stashes();
   Future<List<FileChange>> stashFiles(Stash s);
+
+  /// Entries of the reflog of [ref] (`HEAD` or `refs/heads/<branch>`),
+  /// newest first, including the ones whose commit is gone.
+  Future<List<ReflogEntry>> reflog({String ref = 'HEAD', int limit = 500});
 
   // ---------------------------------------------------------------------------
   // File content

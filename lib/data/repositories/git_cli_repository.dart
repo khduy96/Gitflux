@@ -5,9 +5,13 @@ import 'package:path/path.dart' as p;
 
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
+import '../../domain/entities/log_query.dart';
 import '../../domain/entities/rebase.dart';
+import '../../domain/entities/reflog.dart';
 import '../../domain/errors.dart';
+import '../../domain/logic/log_filters.dart';
 import '../../domain/logic/rebase_todo.dart';
+import '../../domain/logic/reflog_parser.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../datasources/git_process.dart';
 
@@ -212,6 +216,7 @@ class GitCliRepository implements GitRepository {
     List<String>? revisions,
     String? path,
     int limit = 3000,
+    LogQuery query = const LogQuery(),
   }) async {
     final args = [
       'log',
@@ -220,6 +225,7 @@ class GitCliRepository implements GitRepository {
       '-n',
       '$limit',
       '--format=$_logFormat',
+      ...queryArgs(query),
       if (revisions != null && revisions.isNotEmpty)
         ...revisions
       else
@@ -236,6 +242,28 @@ class GitCliRepository implements GitRepository {
       throw GitException(args, r.exitCode, r.stderr, r.stdout);
     }
     return _parseCommits(r.stdout);
+  }
+
+  /// `git log` options of [q]. `-i` makes the author match ignore case; it
+  /// applies to `-S` / `-G` as well, so the content search always ignores
+  /// case too.
+  static List<String> queryArgs(LogQuery q) => [
+        if (q.authors.isNotEmpty || q.changes != null) '-i',
+        if (q.authors.isNotEmpty) '--basic-regexp',
+        for (final a in q.authors) '--author=${escapeBasicRegex(a)}',
+        if (q.since != null) '--since=${dateArg(q.since!)}',
+        if (q.until != null) '--until=${dateArg(q.until!)}',
+        if (q.changes != null) q.changesRegex ? '-G${q.changes}' : '-S${q.changes}',
+      ];
+
+  /// Absolute date for `--since` / `--until`.
+  static String dateArg(DateTime t) => '@${t.millisecondsSinceEpoch ~/ 1000}';
+
+  @override
+  Future<Commit?> findCommit(String rev) async {
+    final r = await git.runRaw(
+        ['log', '-1', '--no-walk', '--decorate=full', '--format=$_logFormat', '$rev^{commit}', '--']);
+    return r.exitCode == 0 ? _parseCommits(r.stdout).firstOrNull : null;
   }
 
   /// Commits reachable from [to] but not from [from].
@@ -375,6 +403,12 @@ class GitCliRepository implements GitRepository {
     return _parseNameStatusZ(out);
   }
 
+  @override
+  Future<List<FileChange>> diffFiles(String a, String b) async {
+    final out = await git.run(['diff', '-z', '-M', '--name-status', a, b, '--']);
+    return _parseNameStatusZ(out);
+  }
+
   List<FileChange> _parseNameStatusZ(String out) {
     final parts = out.split('\x00');
     final files = <FileChange>[];
@@ -502,6 +536,31 @@ class GitCliRepository implements GitRepository {
           FileChange(path: f.path, type: ChangeType.untracked)));
     }
     return files;
+  }
+
+  /// Two walks of the same reflog: one for selector, commit and subject, one
+  /// for the time of each entry (`--date=unix` turns the selector into it).
+  /// Entries git skips because their commit is gone come from the raw log.
+  @override
+  Future<List<ReflogEntry>> reflog({String ref = 'HEAD', int limit = 500}) async {
+    final args = ['reflog', 'show', '-z', '-n', '$limit'];
+    final r = await Future.wait([
+      git.runRaw([...args, '--format=$reflogFormat', ref, '--']),
+      git.runRaw([...args, '--date=unix', '--format=$reflogTimeFormat', ref, '--']),
+    ]);
+    // No reflog yet (new repository, unborn branch).
+    if (r[0].exitCode != 0) return const [];
+    final entries = parseReflog(r[0].stdout, r[1].exitCode == 0 ? r[1].stdout : '');
+    if (entries.isEmpty || entries.last.index + 1 == entries.length) return entries;
+    try {
+      final path = (await git.run(['rev-parse', '--git-path', 'logs/$ref'])).trim();
+      final file = File(p.isAbsolute(path) ? path : p.join(root, path));
+      if (!await file.exists()) return entries;
+      final raw = parseRawReflog(await file.readAsString(), ref);
+      return addMissingReflogEntries(entries, raw);
+    } on Object {
+      return entries;
+    }
   }
 
   // ---------------------------------------------------------------------------

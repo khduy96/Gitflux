@@ -236,6 +236,18 @@ String formatDateFull(DateTime t) {
   return '${two(t.day)}/${two(t.month)}/${t.year} ${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
 }
 
+/// "5 minutes ago", "3 days ago"…
+String formatRelative(DateTime t, {DateTime? now}) {
+  final d = (now ?? DateTime.now()).difference(t);
+  String ago(int n, String unit) => '$n $unit${n == 1 ? '' : 's'} ago';
+  if (d.inSeconds < 60) return 'just now';
+  if (d.inMinutes < 60) return ago(d.inMinutes, 'minute');
+  if (d.inHours < 24) return ago(d.inHours, 'hour');
+  if (d.inDays < 30) return ago(d.inDays, 'day');
+  if (d.inDays < 365) return ago(d.inDays ~/ 30, 'month');
+  return ago(d.inDays ~/ 365, 'year');
+}
+
 /// Small square icon button used in tool window toolbars.
 class ToolButton extends StatelessWidget {
   const ToolButton({

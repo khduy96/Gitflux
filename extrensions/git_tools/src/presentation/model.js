@@ -5,6 +5,7 @@ const vscode = require('vscode');
 const path = require('path');
 const { GitError, CommitRejected } = require('../domain/errors');
 const { layoutGraph } = require('../domain/logic/graph');
+const { emptyLogFilter, hasCommitFilter, logQuery, authorPatterns, buildAuthorList } = require('../domain/logic/history');
 const { CommitChanges } = require('../domain/usecases/commitChanges');
 const { InteractiveRebase } = require('../domain/usecases/interactiveRebase');
 const { selectedLineContents } = require('../domain/usecases/selectedLineContents');
@@ -43,8 +44,11 @@ class RepoModel {
     this.commits = [];
     /** @type {ReturnType<typeof layoutGraph>} */
     this.graph = [];
-    /** @type {{branch: string|null, path: string|null}} */
-    this.logFilter = { branch: null, path: null };
+    /** Kept for the session, per repository. @type {import('../domain/logic/history').LogFilter} */
+    this.logFilter = emptyLogFilter();
+    /** Authors of the commits loaded without a user filter (Log "User" dropdown). */
+    /** @type {import('../domain/logic/history').AuthorEntry[]} */
+    this.authors = [];
     this.logLoading = false;
 
     /** Commit message shown in the Commit view. */
@@ -255,14 +259,18 @@ class RepoModel {
     this.fire('log');
     try {
       const limit = vscode.workspace.getConfiguration('gitTools').get('log.maxCommits') || 2000;
-      const commits = await this.repo.log({
-        revisions: this.logFilter.branch ? [this.logFilter.branch] : undefined,
-        path: this.logFilter.path || undefined,
-        limit: Number(limit),
-      });
+      const f = this.logFilter;
+      const me = f.user && f.user.kind === 'me' ? await this.repo.currentUser() : undefined;
+      if (f.user && authorPatterns(f.user, me) === null) {
+        vscode.window.showWarningMessage('Set user.name or user.email in the Git config to filter by "Me".');
+        this.logFilter = { ...f, user: null };
+      }
+      const commits = await this.repo.log({ ...logQuery(this.logFilter, me), limit: Number(limit) });
       if (gen !== this._logGen) return;
       this.commits = commits;
-      this.graph = layoutGraph(commits);
+      // Filtered commits are not a connected history: no graph.
+      this.graph = hasCommitFilter(this.logFilter) ? [] : layoutGraph(commits);
+      if (!this.logFilter.user) this.authors = buildAuthorList(commits);
     } catch (e) {
       this.log(`log failed: ${e.message}`, 'error');
     } finally {
@@ -273,6 +281,7 @@ class RepoModel {
     }
   }
 
+  /** @param {Partial<import('../domain/logic/history').LogFilter>} filter */
   setLogFilter(filter) {
     this.logFilter = { ...this.logFilter, ...filter };
     this.refreshLog();

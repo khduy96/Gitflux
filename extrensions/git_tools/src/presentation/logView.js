@@ -6,6 +6,12 @@ const { webviewHtml } = require('./webview');
 const { openCommitDiff, openCompareWithLocal } = require('./diff');
 const cmd = require('./commands');
 const { REBASE_ACTIONS, rebaseAction } = require('./rebaseView');
+const { isDay } = require('../domain/logic/history');
+
+/** Log filter fields the webview may change. */
+const FILTER_KEYS = ['branch', 'path', 'user', 'date', 'search'];
+/** Authors offered in the "User" dropdown. */
+const MAX_AUTHORS = 100;
 
 /**
  * Webview view "Log" in the panel: commit graph, filters and details.
@@ -22,6 +28,12 @@ class LogViewProvider {
     this.view = null;
     /** Last "history can be rewritten" state sent to the webview. */
     this._canRebase = false;
+    /** The webview script is running (it posted 'ready'). */
+    this._ready = false;
+    /** Commit to show once the log is loaded (Reflog ▸ Show in Log). @type {string|null} */
+    this._pending = null;
+    /** Commit shown in the details without being in the loaded log. @type {import('../domain/entities').Commit|null} */
+    this._extra = null;
     manager.onDidChange((what) => {
       if (what === 'log' || what === 'refs') this.postLog();
       else if (what === 'status') this.postRepoState();
@@ -40,7 +52,10 @@ class LogViewProvider {
     });
     view.webview.onDidReceiveMessage((msg) => this.onMessage(msg));
     view.onDidChangeVisibility(() => { if (view.visible) this.postLog(); });
-    view.onDidDispose(() => { this.view = null; });
+    view.onDidDispose(() => {
+      this.view = null;
+      this._ready = false;
+    });
   }
 
   postLog() {
@@ -56,10 +71,16 @@ class LogViewProvider {
         head: m.status.head,
         loading: m.logLoading,
         filter: m.logFilter,
+        authors: m.authors.slice(0, MAX_AUTHORS).map((a) => ({ name: a.name, count: a.count, emails: a.emails.slice(0, 3) })),
         branches: m.branches.map((b) => ({ name: b.name, remote: b.remote })),
         canRebase: LogViewProvider.canRebase(m),
-      } : { repo: null, commits: [], graph: [], head: null, loading: false, filter: {}, branches: [], canRebase: false },
+      } : { repo: null, commits: [], graph: [], head: null, loading: false, filter: {}, authors: [], branches: [], canRebase: false },
     });
+    if (this._pending && this._ready && m && !m.logLoading) {
+      const hash = this._pending;
+      this._pending = null;
+      this.showCommit(hash);
+    }
   }
 
   /** History can be rewritten: on a branch, no operation in progress. */
@@ -81,15 +102,77 @@ class LogViewProvider {
     if (this.view) this.view.webview.postMessage({ type: 'select', hash });
   }
 
+  /**
+   * Opens the Log on a commit: selected when loaded, otherwise (e.g. a
+   * commit only the reflog still reaches) its details are shown on their own.
+   * @param {string} hash
+   */
+  async showCommit(hash) {
+    const m = this.manager.current;
+    if (!m) return;
+    if (!this.view || !this._ready || m.logLoading) {
+      // Applied by postLog() once the webview is ready and the log loaded.
+      this._pending = hash;
+      await vscode.commands.executeCommand('gitTools.log.focus');
+      return;
+    }
+    await vscode.commands.executeCommand('gitTools.log.focus');
+    if (m.commits.some((c) => c.hash === hash)) return this.reveal(hash);
+    const c = await m.repo.commitInfo(hash);
+    if (!c) return vscode.window.showWarningMessage(`Commit ${hash.slice(0, 8)} no longer exists.`);
+    this._extra = c;
+    this.view?.webview.postMessage({ type: 'showCommit', commit: c });
+  }
+
+  /** "User ▸ Select…": any part of an author name or email. */
+  async pickUser(m) {
+    const cur = m.logFilter.user && m.logFilter.user.kind === 'text' ? m.logFilter.user.text : '';
+    const text = await vscode.window.showInputBox({
+      title: 'Filter Log by User',
+      prompt: 'Part of the author name or email (case-insensitive)',
+      value: cur,
+    });
+    if (text === undefined) return this.postLog();
+    m.setLogFilter({ user: text.trim() ? { kind: 'text', text: text.trim() } : null });
+  }
+
+  /** "Date ▸ Select…": from / to days, either optional. */
+  async pickDate(m) {
+    const cur = m.logFilter.date && !('preset' in m.logFilter.date) ? m.logFilter.date : {};
+    const validateInput = (v) => (!v.trim() || isDay(v.trim()) ? null : 'Use YYYY-MM-DD, or leave empty');
+    const from = await vscode.window.showInputBox({
+      title: 'Filter Log by Date (1/2)', prompt: 'From day, YYYY-MM-DD (empty: no lower bound)', value: cur.from || '', validateInput,
+    });
+    if (from === undefined) return this.postLog();
+    const to = await vscode.window.showInputBox({
+      title: 'Filter Log by Date (2/2)', prompt: 'To day, YYYY-MM-DD, included (empty: no upper bound)', value: cur.to || '',
+      validateInput: (v) => validateInput(v) || (from.trim() && v.trim() && v.trim() < from.trim() ? 'Must not be before the from day' : null),
+    });
+    if (to === undefined) return this.postLog();
+    const date = { ...(from.trim() ? { from: from.trim() } : {}), ...(to.trim() ? { to: to.trim() } : {}) };
+    m.setLogFilter({ date: date.from || date.to ? date : null });
+  }
+
   async onMessage(msg) {
     const m = this.manager.current;
-    if (msg.type === 'ready') return this.postLog();
+    if (msg.type === 'ready') {
+      this._ready = true;
+      return this.postLog();
+    }
     if (!m) return;
-    const find = (h) => m.commits.find((c) => c.hash === h);
+    const find = (h) => m.commits.find((c) => c.hash === h) || (this._extra && this._extra.hash === h ? this._extra : undefined);
     switch (msg.type) {
-      case 'filter':
-        m.setLogFilter('path' in msg ? { path: msg.path } : { branch: msg.branch });
+      case 'filter': {
+        /** @type {any} */
+        const f = {};
+        for (const k of FILTER_KEYS) if (k in msg.filter) f[k] = msg.filter[k];
+        m.setLogFilter(f);
         return;
+      }
+      case 'pickUser':
+        return this.pickUser(m);
+      case 'pickDate':
+        return this.pickDate(m);
       case 'details': {
         const c = find(msg.hash);
         if (!c) return;

@@ -7,6 +7,7 @@ const path = require('path');
 const { GitError } = require('../domain/errors');
 const { GitRunner, lit, pathspecs } = require('./gitRunner');
 const { shQuote } = require('../domain/logic/rebaseTodo');
+const { escapeBasicRegex, splitReflogSubject } = require('../domain/logic/history');
 
 const FS = '\x1f';
 const RS = '\x1e';
@@ -20,6 +21,7 @@ const RS = '\x1e';
  * @typedef {import('../domain/entities').RefLabel} RefLabel
  * @typedef {import('../domain/entities').Commit} Commit
  * @typedef {import('../domain/entities').Branch} Branch
+ * @typedef {import('../domain/entities').ReflogEntry} ReflogEntry
  */
 
 const LETTER = {
@@ -27,6 +29,7 @@ const LETTER = {
 };
 
 const LOG_FORMAT = `%H${FS}%P${FS}%an${FS}%ae${FS}%at${FS}%cn${FS}%ct${FS}%D${FS}%s${RS}`;
+const REFLOG_FORMAT = `%gd${FS}%H${FS}%gs${RS}`;
 
 /** Splits into at most n fields, the last keeps the remainder. */
 function splitN(s, sep, n) {
@@ -145,6 +148,32 @@ function parseCommits(out) {
   return commits;
 }
 
+/**
+ * Parses `git reflog show` with REFLOG_FORMAT. git skips the entries whose
+ * commit no longer exists, which leaves gaps in the selector numbers: they
+ * come back as `missing` entries (hash filled in by Repository.reflog).
+ * @param {string} out
+ * @param {Map<number, number>} [times] entry time (ms) by selector number
+ * @returns {ReflogEntry[]}
+ */
+function parseReflog(out, times = new Map()) {
+  /** @type {ReflogEntry[]} */
+  const entries = [];
+  for (let rec of out.split(RS)) {
+    rec = rec.replace(/^\s+/, '');
+    if (!rec) continue;
+    const f = splitN(rec, FS, 3);
+    const m = f.length === 3 ? /^(.*)@\{(\d+)\}$/.exec(f[0]) : null;
+    if (!m) continue;
+    const index = parseInt(m[2], 10);
+    for (let i = entries.length ? entries[entries.length - 1].index + 1 : 0; i < index; i++) {
+      entries.push({ selector: `${m[1]}@{${i}}`, index: i, hash: '', action: '', message: '', time: null, missing: true });
+    }
+    entries.push({ selector: f[0], index, hash: f[1], ...splitReflogSubject(f[2]), time: times.get(index) ?? null, missing: false });
+  }
+  return entries;
+}
+
 /** Parses `--name-status -z` output. */
 function parseNameStatus(out) {
   const parts = out.split('\0');
@@ -227,11 +256,25 @@ class Repository {
   // ---------------------------------------------------------------- log
 
   /**
-   * @param {{revisions?: string[], path?: string, limit?: number}} [o]
+   * authors: substrings of the author name or email (case-insensitive, any
+   * of them); since / until: git dates, on the committer date; search: only
+   * commits whose diff adds or removes `text` (-S) or a line matching the
+   * regex (-G). git applies the limit after filtering.
+   * @param {import('../domain/ports').LogOptions} [o]
    * @returns {Promise<Commit[]>}
    */
   async log(o = {}) {
     const args = ['log', '--date-order', '--decorate=full', '-n', String(o.limit || 2000), `--format=${LOG_FORMAT}`];
+    const authors = o.authors && o.authors.length ? o.authors : null;
+    const search = o.search && o.search.text ? o.search : null;
+    // Explicit --basic-regexp: the escaping holds whatever grep.patternType says.
+    if (authors) args.push('--basic-regexp', ...authors.map((a) => `--author=${escapeBasicRegex(a)}`));
+    if (o.since) args.push(`--since=${o.since}`);
+    if (o.until) args.push(`--until=${o.until}`);
+    if (search) args.push(`${search.regex ? '-G' : '-S'}${search.text}`);
+    // -i applies to --author and to -S / -G alike: the content search
+    // always ignores case, with or without a user filter.
+    if (authors || search) args.push('--regexp-ignore-case');
     if (o.revisions && o.revisions.length) args.push(...o.revisions);
     else args.push(o.path ? 'HEAD' : '--all');
     if (o.path) args.push('--follow', '--', lit(o.path));
@@ -241,6 +284,89 @@ class Repository {
       throw new GitError(args, r.code, r.stderr, r.stdout);
     }
     return parseCommits(r.stdout);
+  }
+
+  /** One commit, also one that no ref reaches; null when it does not exist. */
+  async commitInfo(rev) {
+    const r = await this.git.raw(['log', '-1', '--no-walk', '--decorate=full', `--format=${LOG_FORMAT}`, rev, '--']);
+    return r.code === 0 ? parseCommits(r.stdout)[0] || null : null;
+  }
+
+  /**
+   * Reflog of `ref` (HEAD or refs/heads/<branch>), newest first. Entries
+   * whose commit no longer exists come back with `missing` set.
+   * @returns {Promise<ReflogEntry[]>}
+   */
+  async reflog(ref = 'HEAD', limit = 500) {
+    const base = ['reflog', 'show', '-n', String(limit)];
+    // %gd is the selector number, or the entry time with --date: two passes.
+    const [r, t] = await Promise.all([
+      this.git.raw([...base, `--format=${REFLOG_FORMAT}`, ref, '--']),
+      this.git.raw([...base, '--date=unix', `--format=%gd${RS}`, ref, '--']),
+    ]);
+    if (r.code !== 0) {
+      if (/unknown revision|ambiguous argument|bad revision|does not have any commits|no reflog/i.test(r.stderr)) return [];
+      throw new GitError([...base, ref], r.code, r.stderr, r.stdout);
+    }
+    const number = (s) => {
+      const m = /@\{(\d+)\}$/.exec(s.trim());
+      return m ? parseInt(m[1], 10) : null;
+    };
+    const selectors = r.stdout.split(RS).map((s) => s.replace(/^\s+/, '')).filter(Boolean).map((s) => number(s.split(FS)[0]));
+    const stamps = t.code === 0 ? t.stdout.split(RS).filter((s) => s.trim()).map(number) : [];
+    /** @type {Map<number, number>} */
+    const times = new Map();
+    if (stamps.length === selectors.length) {
+      selectors.forEach((n, i) => { if (n !== null && stamps[i] !== null) times.set(n, stamps[i] * 1000); });
+    }
+    const entries = parseReflog(r.stdout, times);
+    // git skips the entries whose commit no longer exists (gaps, or the
+    // oldest ones): the reflog file still has their hash, subject and time.
+    const raw = await this.reflogFile(ref);
+    if (raw) {
+      const prefix = entries.length ? entries[0].selector.replace(/@\{\d+\}$/, '') : ref.replace(/^refs\/heads\//, '');
+      for (let i = entries.length ? entries[entries.length - 1].index + 1 : 0; i < raw.length && entries.length < limit; i++) {
+        entries.push({ selector: `${prefix}@{${i}}`, index: i, hash: '', action: '', message: '', time: null, missing: true });
+      }
+      for (const e of entries) {
+        const line = e.missing ? raw[e.index] : null;
+        if (line) Object.assign(e, { hash: line.hash, ...splitReflogSubject(line.subject), time: line.time });
+      }
+    }
+    const missing = entries.filter((e) => e.missing && !e.hash);
+    if (missing.length) {
+      // The reflog still records their hash.
+      const out = await this.git.run(['rev-parse', ...missing.map((e) => e.selector)], { allowFailure: true });
+      const hashes = out.split('\n').map((l) => l.trim()).filter((l) => /^[0-9a-f]{40,64}$/.test(l));
+      if (hashes.length === missing.length) missing.forEach((e, i) => { e.hash = hashes[i]; });
+    }
+    return entries;
+  }
+
+  /**
+   * Lines of the reflog file of `ref`, newest first (index = selector
+   * number), or null when there is none (e.g. the reftable backend).
+   * @returns {Promise<{hash: string, time: number|null, subject: string}[]|null>}
+   */
+  async reflogFile(ref) {
+    let text;
+    try {
+      text = fs.readFileSync(await this.gitPath(`logs/${ref}`), 'utf8');
+    } catch {
+      return null;
+    }
+    // <old> <new> <name> <<email>> <time> <tz>\t<subject>
+    return text.split('\n').filter((l) => l.trim()).reverse().map((l) => {
+      const m = /^\S+ (\S+) [^\t]*> (\d+) [+-]\d{4}(?:\t(.*))?$/.exec(l.replace(/\r$/, ''));
+      return m ? { hash: m[1], time: parseInt(m[2], 10) * 1000, subject: m[3] || '' } : { hash: '', time: null, subject: '' };
+    });
+  }
+
+  /** user.name / user.email ('' when not configured). */
+  async currentUser() {
+    const get = async (key) => (await this.git.run(['config', '--get', key], { allowFailure: true })).trim();
+    const [name, email] = await Promise.all([get('user.name'), get('user.email')]);
+    return { name, email };
   }
 
   /** Commits reachable from `to` but not from `from`. */
@@ -1027,5 +1153,5 @@ class Repository {
 }
 
 module.exports = {
-  Repository, parseStatus, parseCommits, parseRefs, parseNameStatus, splitN, parseSubmoduleField,
+  Repository, parseStatus, parseCommits, parseRefs, parseNameStatus, parseReflog, splitN, parseSubmoduleField,
 };

@@ -21,7 +21,9 @@ import 'dialogs/pull_dialog.dart';
 import 'dialogs/push_dialog.dart';
 import 'dialogs/remotes_dialog.dart';
 import 'dialogs/stash_dialogs.dart';
+import 'log/compare_commits_view.dart';
 import 'log/log_panel.dart';
+import 'log/reflog_panel.dart';
 import 'widgets/split_view.dart';
 
 class WorkspacePage extends StatefulWidget {
@@ -204,6 +206,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
       menuItem('branches', 'Branches…', icon: Icons.call_split, shortcut: 'Ctrl+Shift+`'),
       menuItem('newBranch', 'New Branch…', icon: Icons.add),
       menuItem('checkoutRev', 'Checkout Tag or Revision…', icon: Icons.sell_outlined),
+      menuItem('reflog', 'Show Reflog', icon: Icons.history_toggle_off),
       const PopupMenuDivider(height: 8),
       menuItem('stash', 'Stash Changes…', icon: Icons.inventory_2_outlined),
       menuItem('unstash', 'Unstash Changes…', icon: Icons.unarchive_outlined),
@@ -232,6 +235,8 @@ class _WorkspacePageState extends State<WorkspacePage> {
         newBranchDialog(context, ctrl);
       case 'checkoutRev':
         _checkoutRevision();
+      case 'reflog':
+        ctrl.showReflog();
       case 'stash':
         showStashDialog(context, ctrl);
       case 'unstash':
@@ -570,6 +575,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
                           ),
                         BlameTab(:final path) => BlameView(controller: ctrl, path: path),
                         LinesTab(:final path) => LinesView(controller: ctrl, path: path),
+                        CompareTab() => CompareCommitsView(controller: ctrl, tab: t, settings: widget.settings),
                       },
                     ),
                 ],
@@ -634,6 +640,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
                   builder: (_, s, _) => _BottomTab(
                       s.isEmpty ? 'Stashes' : 'Stashes (${s.length})', tab == 2, () => ctrl.bottomTab.value = 2),
                 ),
+                _BottomTab('Reflog', tab == RepoController.reflogTab, ctrl.showReflog),
                 const Spacer(),
                 ToolButton(
                   icon: Icons.remove,
@@ -650,6 +657,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
                   LogPanel(controller: ctrl),
                   ConsolePanel(controller: ctrl),
                   StashesPanel(controller: ctrl),
+                  ReflogPanel(controller: ctrl),
                 ],
               ),
             ),
@@ -795,6 +803,7 @@ class _EditorTabButtonState extends State<_EditorTabButton> {
                 switch (widget.tab) {
                   BlameTab() => Icons.person_search_outlined,
                   LinesTab() => Icons.checklist,
+                  CompareTab() => Icons.compare_arrows,
                   DiffTab() => Icons.difference_outlined,
                 },
                 size: 14,

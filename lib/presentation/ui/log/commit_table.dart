@@ -8,6 +8,7 @@ import '../actions.dart';
 import '../branches/compare_dialog.dart';
 import '../common.dart';
 import 'graph_painter.dart';
+import 'log_filter_bar.dart';
 
 const _rowHeight = 24.0;
 
@@ -24,21 +25,44 @@ class _CommitTableState extends State<CommitTable> {
   RepoController get ctrl => widget.controller;
   final _scroll = ScrollController();
   final _focus = FocusNode();
-  late final _search = TextEditingController(text: ctrl.logFilter.value.text);
   Set<String> _multi = {};
 
   @override
+  void initState() {
+    super.initState();
+    ctrl.revealCommit.addListener(_reveal);
+  }
+
+  @override
   void dispose() {
+    ctrl.revealCommit.removeListener(_reveal);
     _scroll.dispose();
     _focus.dispose();
-    _search.dispose();
     super.dispose();
+  }
+
+  /// "Show in Log": selects the commit and scrolls it into view when it is
+  /// shown.
+  void _reveal() {
+    final hash = ctrl.revealCommit.value;
+    if (hash == null) return;
+    setState(() => _multi = {hash});
+    final i = _visible().indexWhere((r) => r.$1.hash == hash);
+    if (i < 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scroll.hasClients) return;
+      final pos = _scroll.position;
+      final top = i * _rowHeight;
+      if (top < pos.pixels || top + _rowHeight > pos.pixels + pos.viewportDimension) {
+        _scroll.jumpTo((top - pos.viewportDimension / 3).clamp(0, pos.maxScrollExtent));
+      }
+    });
   }
 
   List<(Commit, GraphRow?)> _visible() {
     final commits = ctrl.commits.value;
     final graph = ctrl.graph.value;
-    final q = ctrl.logFilter.value.text.trim().toLowerCase();
+    final q = ctrl.logFilter.value.messageText.toLowerCase();
     if (q.isEmpty) {
       return [
         for (var i = 0; i < commits.length; i++)
@@ -73,7 +97,7 @@ class _CommitTableState extends State<CommitTable> {
         _multi = {c.hash};
       }
     });
-    ctrl.selectedCommit.value = c;
+    ctrl.selectCommit(c);
   }
 
   void _move(List<(Commit, GraphRow?)> rows, int delta) {
@@ -83,7 +107,7 @@ class _CommitTableState extends State<CommitTable> {
     i = (i + delta).clamp(0, rows.length - 1);
     final c = rows[i].$1;
     setState(() => _multi = {c.hash});
-    ctrl.selectedCommit.value = c;
+    ctrl.selectCommit(c);
     if (_scroll.hasClients) {
       final top = i * _rowHeight;
       final pos = _scroll.position;
@@ -101,7 +125,7 @@ class _CommitTableState extends State<CommitTable> {
   Future<void> _contextMenu(Offset pos, Commit c, List<(Commit, GraphRow?)> rows) async {
     if (!_multi.contains(c.hash)) {
       setState(() => _multi = {c.hash});
-      ctrl.selectedCommit.value = c;
+      ctrl.selectCommit(c);
     }
     final selected = _selectedCommits(rows);
     final isHead = c.hash == ctrl.status.value.headHash;
@@ -116,6 +140,8 @@ class _CommitTableState extends State<CommitTable> {
         await smartCheckout(context, ctrl, 'Checkout ${c.shortHash}', () => ctrl.repo.checkout(c.hash));
       case 'compare':
         await showCompareDialog(context, ctrl, c.hash);
+      case 'compareCommits':
+        ctrl.openCompare(selected[0], selected[1]);
       case 'reset':
         await resetDialog(context, ctrl, c);
       case 'revert':
@@ -179,6 +205,7 @@ class _CommitTableState extends State<CommitTable> {
       menuItem('cherry', 'Cherry-Pick', icon: Icons.local_florist_outlined),
       menuItem('checkout', 'Checkout Revision \'${c.shortHash}\'', icon: Icons.login, enabled: single),
       menuItem('compare', 'Compare with Local', icon: Icons.compare_arrows, enabled: single),
+      menuItem('compareCommits', 'Compare Commits', icon: Icons.difference_outlined, enabled: selected.length == 2),
       const PopupMenuDivider(height: 8),
       menuItem('reset', 'Reset Current Branch to Here…', icon: Icons.restore, enabled: single),
       menuItem('revert', 'Revert Commit', icon: Icons.undo),
@@ -208,7 +235,7 @@ class _CommitTableState extends State<CommitTable> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _filterBar(),
+          LogFilterBar(controller: ctrl),
           const Divider(),
           Expanded(
             child: ListenableBuilder(
@@ -226,7 +253,7 @@ class _CommitTableState extends State<CommitTable> {
                       ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
                       : const EmptyHint('No commits', icon: Icons.history);
                 }
-                final textFilter = ctrl.logFilter.value.text.trim().isNotEmpty;
+                final noGraph = ctrl.logFilter.value.hidesGraph;
                 final head = ctrl.status.value.headHash;
                 final sel = ctrl.selectedCommit.value?.hash;
                 return CallbackShortcuts(
@@ -252,7 +279,7 @@ class _CommitTableState extends State<CommitTable> {
                           final (c, g) = rows[i];
                           return _commitRow(
                             c,
-                            textFilter ? null : g,
+                            noGraph ? null : g,
                             isHead: c.hash == head,
                             selected: c.hash == sel || _multi.contains(c.hash),
                             rows: rows,
@@ -266,77 +293,6 @@ class _CommitTableState extends State<CommitTable> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _filterBar() {
-    return Container(
-      height: 34,
-      color: AppColors.panel,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: ValueListenableBuilder<LogFilter>(
-        valueListenable: ctrl.logFilter,
-        builder: (context, f, _) => Row(
-          children: [
-            SizedBox(
-              width: 240,
-              height: 26,
-              child: TextField(
-                controller: _search,
-                style: const TextStyle(fontSize: 12.5),
-                decoration: const InputDecoration(
-                  prefixIcon: Icon(Icons.search, size: 15),
-                  prefixIconConstraints: BoxConstraints(minWidth: 28),
-                  hintText: 'Text or hash',
-                  contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-                ),
-                onChanged: (v) => ctrl.setLogFilter(f.copyWith(text: v)),
-              ),
-            ),
-            const SizedBox(width: 8),
-            _FilterChip(
-              label: 'Branch: ${f.branch ?? 'All'}',
-              active: f.branch != null,
-              onClear: () => ctrl.setLogFilter(f.copyWith(branch: () => null)),
-              onTap: (pos) async {
-                final names = ['HEAD', ...ctrl.branches.value.map((b) => b.name)];
-                final r = await showContextMenu<String>(context, pos, [
-                  menuItem('__all__', 'All branches'),
-                  const PopupMenuDivider(height: 8),
-                  for (final n in names) menuItem(n, n),
-                ]);
-                if (r != null) ctrl.setLogFilter(f.copyWith(branch: () => r == '__all__' ? null : r));
-              },
-            ),
-            if (f.path != null) ...[
-              const SizedBox(width: 6),
-              _FilterChip(
-                label: 'Path: ${f.path}',
-                active: true,
-                onClear: () => ctrl.setLogFilter(f.copyWith(path: () => null)),
-              ),
-            ],
-            const Spacer(),
-            ValueListenableBuilder<bool>(
-              valueListenable: ctrl.logLoading,
-              builder: (_, loading, _) => loading
-                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 1.5))
-                  : const SizedBox(),
-            ),
-            const SizedBox(width: 6),
-            ValueListenableBuilder<List<Commit>>(
-              valueListenable: ctrl.commits,
-              builder: (_, c, _) => Text('${c.length} commits',
-                  style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
-            ),
-            ToolButton(
-              icon: Icons.refresh,
-              tooltip: 'Refresh',
-              onPressed: () => ctrl.refreshAll(),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -389,54 +345,6 @@ class _CommitTableState extends State<CommitTable> {
             child: Text(c.shortHash, style: monoStyle(size: 12, color: AppColors.textMuted)),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _FilterChip extends StatelessWidget {
-  const _FilterChip({
-    required this.label,
-    required this.active,
-    this.onTap,
-    this.onClear,
-  });
-
-  final String label;
-  final bool active;
-  final void Function(Offset)? onTap;
-  final VoidCallback? onClear;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: onTap == null ? null : (d) => onTap!(d.globalPosition),
-      child: Container(
-        height: 24,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        decoration: BoxDecoration(
-          color: active ? AppColors.selection : null,
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: active ? AppColors.accent : AppColors.border),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 260),
-              child: Text(label, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
-            ),
-            if (onTap != null) const Icon(Icons.arrow_drop_down, size: 16, color: AppColors.textDim),
-            if (active && onClear != null)
-              InkWell(
-                onTap: onClear,
-                child: const Padding(
-                  padding: EdgeInsets.only(left: 2),
-                  child: Icon(Icons.close, size: 13, color: AppColors.textDim),
-                ),
-              ),
-          ],
-        ),
       ),
     );
   }

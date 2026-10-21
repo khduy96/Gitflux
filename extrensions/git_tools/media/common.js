@@ -28,6 +28,12 @@ const gt = (() => {
     return el;
   }
 
+  /** Replaces the children of `el`, skipping null / false and flattening arrays like h(). */
+  function fill(el, ...children) {
+    el.replaceChildren(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
+    return el;
+  }
+
   let menuEl = null;
   function closeMenu() {
     if (menuEl) {
@@ -76,6 +82,18 @@ const gt = (() => {
     return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${time}`;
   }
 
+  /** "5 minutes ago", "3 days ago"… */
+  function relativeTime(ms, now = Date.now()) {
+    const s = Math.max(0, Math.round((now - ms) / 1000));
+    const steps = [[60, 'second'], [60, 'minute'], [24, 'hour'], [30, 'day'], [12, 'month'], [Infinity, 'year']];
+    let n = s;
+    for (const [size, unit] of steps) {
+      if (n < size) return unit === 'second' && n < 10 ? 'just now' : `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+      n = Math.floor(n / size);
+    }
+    return '';
+  }
+
   function basename(p) {
     const i = p.lastIndexOf('/');
     return i < 0 ? p : p.slice(i + 1);
@@ -86,5 +104,5 @@ const gt = (() => {
     return i < 0 ? '' : p.slice(0, i);
   }
 
-  return { h, showMenu, closeMenu, formatDate, basename, dirname };
+  return { h, fill, showMenu, closeMenu, formatDate, relativeTime, basename, dirname };
 })();

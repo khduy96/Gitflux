@@ -5,18 +5,25 @@ import 'package:path/path.dart' as p;
 
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
+import '../../domain/entities/log_query.dart';
 import '../../domain/entities/rebase.dart';
+import '../../domain/entities/reflog.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/graph_layout.dart';
 import '../../domain/logic/line_selection.dart';
+import '../../domain/logic/log_filters.dart';
 import '../../domain/repositories/commit_message_generator.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../../domain/repositories/git_service.dart';
 import '../../domain/usecases/commit_changes.dart';
+import '../../domain/usecases/compare_commits.dart';
 import '../../domain/usecases/generate_commit_message.dart';
 import '../../domain/usecases/get_selected_line_contents.dart';
 import '../../domain/usecases/interactive_rebase.dart';
 import 'app_settings.dart';
+import 'log_filter.dart';
+
+export 'log_filter.dart';
 
 enum GenerateResult { done, needsSetup, failed }
 
@@ -72,29 +79,26 @@ class LinesTab extends EditorTab {
   String get title => '${p.basename(path)} (Commit Lines)';
 }
 
-class LogFilter {
-  const LogFilter({this.branch, this.path, this.text = ''});
+/// Comparison of two commits of the log, with the diff of its files.
+class CompareTab extends EditorTab {
+  CompareTab(this.a, this.b);
 
-  /// Ref to show (null = all branches).
-  final String? branch;
+  /// The two commits in any order (the view puts the older one left).
+  final Commit a;
+  final Commit b;
 
-  /// Show history for this path only.
-  final String? path;
-
-  /// Client side filter on subject / hash / author.
-  final String text;
-
-  LogFilter copyWith({
-    String? Function()? branch,
-    String? Function()? path,
-    String? text,
-  }) =>
-      LogFilter(
-        branch: branch != null ? branch() : this.branch,
-        path: path != null ? path() : this.path,
-        text: text ?? this.text,
-      );
+  @override
+  String get key => 'compare:${([a.hash, b.hash]..sort()).join('..')}';
+  @override
+  String get title {
+    final (left, right) = CompareCommits.olderFirst(a, b);
+    return '${left.shortHash} ↔ ${right.shortHash}';
+  }
 }
+
+/// User / date filters of the log chosen in this session, by repository
+/// root. Not saved across restarts.
+final _sessionLogFilters = <String, (AuthorFilter?, DateFilter)>{};
 
 class RepoController {
   RepoController(
@@ -107,6 +111,10 @@ class RepoController {
     _generateMessage = GenerateCommitMessage(repo, commitMessageAi);
     _selectedContents = GetSelectedLineContents(repo);
     _rebase = InteractiveRebase(repo);
+    compareCommits = CompareCommits(repo);
+    final session = _sessionLogFilters[repo.root];
+    if (session != null) logFilter.value = LogFilter(author: session.$1, date: session.$2);
+    bottomTab.addListener(_onBottomTab);
   }
 
   late final GitRepository repo;
@@ -114,6 +122,7 @@ class RepoController {
   late final GenerateCommitMessage _generateMessage;
   late final GetSelectedLineContents _selectedContents;
   late final InteractiveRebase _rebase;
+  late final CompareCommits compareCommits;
 
   final status = ValueNotifier<RepoStatus>(const RepoStatus());
 
@@ -132,6 +141,17 @@ class RepoController {
   final logFilter = ValueNotifier<LogFilter>(const LogFilter());
   final logLoading = ValueNotifier<bool>(false);
   final selectedCommit = ValueNotifier<Commit?>(null);
+
+  /// Authors of the loaded commits for the "User" filter, most commits
+  /// first (kept while an author filter is active).
+  final logAuthors = ValueNotifier<List<LogAuthor>>(const []);
+
+  /// Hash the commit table should scroll to (set by "Show in Log").
+  final revealCommit = ValueNotifier<String?>(null);
+
+  /// Selected commit that is not in the loaded log (e.g. from the reflog);
+  /// kept when the log reloads.
+  String? _outsideSelection;
 
   final console = ValueNotifier<List<ConsoleEntry>>(const []);
   final busy = ValueNotifier<String?>(null);
@@ -174,6 +194,7 @@ class RepoController {
 
   void dispose() {
     _disposed = true;
+    bottomTab.removeListener(_onBottomTab);
     _generateMessage.cancel();
     _watch?.cancel();
     _debounce?.cancel();
@@ -191,7 +212,10 @@ class RepoController {
       refreshRefs(),
     ]);
     _checkSubmodulesAfterHeadChange(headBefore);
-    await refreshLog();
+    await Future.wait([
+      refreshLog(),
+      if (_reflogShown) refreshReflog(),
+    ]);
   }
 
   /// After checkout / pull / merge / reset of the parent repository, offers
@@ -283,12 +307,14 @@ class RepoController {
       final list = await repo.log(
         revisions: f.branch == null ? null : [f.branch!],
         path: f.path,
+        query: f.query(DateTime.now()),
       );
       if (_disposed || gen != _logGen) return;
       commits.value = list;
-      graph.value = layoutGraph(list);
+      graph.value = f.filtersHistory ? const [] : layoutGraph(list);
+      if (f.author == null || logAuthors.value.isEmpty) logAuthors.value = authorsByCount(list);
       final sel = selectedCommit.value;
-      if (sel != null) {
+      if (sel != null && sel.hash != _outsideSelection) {
         selectedCommit.value =
             list.where((c) => c.hash == sel.hash).firstOrNull;
       }
@@ -302,7 +328,44 @@ class RepoController {
   void setLogFilter(LogFilter f) {
     final old = logFilter.value;
     logFilter.value = f;
-    if (old.branch != f.branch || old.path != f.path) refreshLog();
+    if (old.author != f.author || old.date != f.date) {
+      _sessionLogFilters[root] = (f.author, f.date);
+    }
+    if (f.loadsDifferently(old)) refreshLog();
+  }
+
+  /// Clears every filter of the log.
+  void resetLogFilters() => setLogFilter(const LogFilter());
+
+  /// `user.name` and `user.email` for the "Me" author filter.
+  Future<AuthorFilter?> currentUserFilter() async {
+    final name = await repo.config('user.name');
+    final email = await repo.config('user.email');
+    final patterns = [?name, ?email];
+    return patterns.isEmpty ? null : AuthorFilter('Me', patterns);
+  }
+
+  /// Selects [hash] in the Log and scrolls to it. A commit that is not in
+  /// the loaded log (e.g. unreachable) is selected anyway, so its details
+  /// and files are shown.
+  Future<void> showInLog(String hash) async {
+    bottomTab.value = 0;
+    final loaded = commits.value.where((c) => c.hash == hash).firstOrNull;
+    final c = loaded ?? await repo.findCommit(hash);
+    if (_disposed) return;
+    if (c == null) {
+      notify(AppNotification('Commit not found', details: hash, isError: true));
+      return;
+    }
+    _outsideSelection = loaded == null ? c.hash : null;
+    selectedCommit.value = c;
+    revealCommit.value = null;
+    revealCommit.value = c.hash;
+  }
+
+  void selectCommit(Commit? c) {
+    _outsideSelection = null;
+    selectedCommit.value = c;
   }
 
   void showHistory(String path) {
@@ -553,6 +616,57 @@ class RepoController {
     }
     return true;
   }
+
+  // ---------------------------------------------------------------------------
+  // Reflog
+  // ---------------------------------------------------------------------------
+
+  /// Index of the Reflog tab of the Git tool window.
+  static const reflogTab = 3;
+
+  final reflog = ValueNotifier<List<ReflogEntry>>(const []);
+
+  /// Reflog shown: null for HEAD, else `refs/heads/<branch>`.
+  final reflogRef = ValueNotifier<String?>(null);
+  final reflogLoading = ValueNotifier<bool>(false);
+
+  /// Loaded once the tab was opened, then refreshed with the rest.
+  bool _reflogShown = false;
+  int _reflogGen = 0;
+
+  void showReflog() => bottomTab.value = reflogTab;
+
+  void _onBottomTab() {
+    if (bottomTab.value == reflogTab && !_reflogShown) {
+      _reflogShown = true;
+      refreshReflog();
+    }
+  }
+
+  void setReflogRef(String? ref) {
+    reflogRef.value = ref;
+    refreshReflog();
+  }
+
+  Future<void> refreshReflog() async {
+    final gen = ++_reflogGen;
+    reflogLoading.value = true;
+    try {
+      final list = await repo.reflog(ref: reflogRef.value ?? 'HEAD');
+      if (_disposed || gen != _reflogGen) return;
+      reflog.value = list;
+    } catch (e) {
+      _addConsole(ConsoleEntry('reflog failed: $e', ConsoleKind.error));
+    } finally {
+      if (gen == _reflogGen && !_disposed) reflogLoading.value = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Compare commits
+  // ---------------------------------------------------------------------------
+
+  void openCompare(Commit a, Commit b) => openTab(CompareTab(a, b));
 
   // ---------------------------------------------------------------------------
   // AI commit message

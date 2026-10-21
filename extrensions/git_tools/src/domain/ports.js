@@ -12,13 +12,25 @@
  *
  * @typedef {(line: string, kind: 'command'|'output'|'error'|'info') => void} GitLog
  *
+ * @typedef {object} LogOptions
+ * @property {string[]} [revisions] Revisions to walk (all refs when omitted).
+ * @property {string} [path] History of one file (follows renames).
+ * @property {number} [limit]
+ * @property {string[]} [authors] Substrings of the author name or email, case-insensitive, any of them.
+ * @property {string} [since] git date, committer date after it.
+ * @property {string} [until] git date, committer date before it.
+ * @property {import('./logic/history').ContentSearch} [search] Commits whose diff contains the text (-S) or matches the regex (-G).
+ *
  * @typedef {object} GitRepository Git operations on one repository.
  * @property {string} root
  * @property {string} name
  * @property {() => Promise<import('./entities').Status>} status
  * @property {() => Promise<string|null>} pendingMergeMessage
  *
- * @property {(o?: {revisions?: string[], path?: string, limit?: number}) => Promise<Commit[]>} log
+ * @property {(o?: LogOptions) => Promise<Commit[]>} log
+ * @property {(rev: string) => Promise<Commit|null>} commitInfo One commit, also one no ref reaches.
+ * @property {(ref?: string, limit?: number) => Promise<import('./entities').ReflogEntry[]>} reflog Newest first.
+ * @property {() => Promise<{name: string, email: string}>} currentUser user.name / user.email ('' when unset).
  * @property {(from: string, to: string) => Promise<Commit[]>} commitsBetween Commits reachable from `to` but not from `from`.
  * @property {(ref: string, remote: string, remoteRef: string|null) => Promise<Commit[]>} outgoing
  * @property {(hash: string) => Promise<string>} commitBody

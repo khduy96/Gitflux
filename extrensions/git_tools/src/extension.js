@@ -16,6 +16,7 @@ const { openMergeTool } = require('./presentation/mergeTool');
 const { showSetupGuide } = require('./presentation/guide');
 const { openLineSelection } = require('./presentation/selectLines');
 const { pickAndRebase } = require('./presentation/rebaseView');
+const { ReflogPanel } = require('./presentation/reflogView');
 const cmd = require('./presentation/commands');
 
 /**
@@ -199,6 +200,10 @@ async function activate(context) {
     commitView.focusMessage();
   });
   regFree('gitTools.showLog', () => vscode.commands.executeCommand('gitTools.log.focus'));
+  reg('gitTools.showReflog', async (m) => {
+    if (m !== manager.current) await manager.setCurrent(m);
+    ReflogPanel.show(context, manager, logView);
+  });
   regFree('gitTools.showOutput', () => output.show(true));
 
   reg('gitTools.push', (m) => cmd.push(m));
