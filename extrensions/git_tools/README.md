@@ -12,6 +12,11 @@ Extension cho VS Code mang Git tool window kiểu Android Studio vào VS Code:
 - **Create Patch / Apply Patch**: xuất thay đổi hoặc commit ra file patch, áp dụng patch (kể cả `git am`).
 - Merge tool 3 cột.
 - **Interactive rebase**: sửa message commit cũ, squash, fixup, đổi thứ tự, drop nhiều commit.
+- Hộp thoại **Merge…** với tuỳ chọn fast-forward only, no fast-forward, squash, no commit, commit message.
+- **Clean Working Tree**: xoá file chưa theo dõi, có danh sách xem trước và chọn từng mục.
+- **Worktrees**: nhiều thư mục làm việc cho một repo (`git worktree`).
+- **Bisect**: tìm commit gây lỗi bằng cách đánh dấu good / bad ngay trong Log.
+- **Annotate with Git Blame**: xem từng dòng do commit nào, ai, khi nào viết.
 - **AI tự viết commit message** bằng Claude hoặc Google Gemini.
 
 Phiên bản: 0.4.2 · Yêu cầu: VS Code **1.90 trở lên** và **Git** đã cài (lệnh `git` chạy được trong terminal).
@@ -25,10 +30,10 @@ Phiên bản: 0.4.2 · Yêu cầu: VS Code **1.90 trở lên** và **Git** đã 
 3. [Commit](#3-commit)
 4. [Xem diff](#4-xem-diff)
 5. [Log và lịch sử commit](#5-log-và-lịch-sử-commit)
-6. [Branches](#6-branches)
+6. [Branches](#6-branches) · [Worktrees](#6b-worktrees)
 7. [Push, Update Project, Fetch](#7-push-update-project-fetch)
 8. [Stash](#8-stash) · [Submodules](#8b-submodules-gitmodules) · [Shelve và Shelf](#8c-shelve-và-shelf) · [Patch](#8d-create-patch--apply-patch)
-9. [Merge, rebase và giải quyết conflict](#9-merge-rebase-và-giải-quyết-conflict) · [Interactive rebase](#9b-interactive-rebase-sửa-lịch-sử-commit)
+9. [Merge, rebase và giải quyết conflict](#9-merge-rebase-và-giải-quyết-conflict) · [Interactive rebase](#9b-interactive-rebase-sửa-lịch-sử-commit) · [Bisect](#9c-bisect-tìm-commit-gây-lỗi)
 10. [AI commit message](#10-ai-commit-message)
 11. [Cài đặt (Settings)](#11-cài-đặt-settings)
 12. [Danh sách lệnh](#12-danh-sách-lệnh)
@@ -165,6 +170,7 @@ Nút trên thanh tiêu đề view Commit dùng để chuyển cách hiển thị
 ### Menu chuột phải trên file
 
 - Show Diff
+- Show Staged Diff / Show Unstaged Diff — chỉ có khi file vừa có phần đã stage vừa có phần chưa stage (ví dụ stage bằng công cụ khác rồi sửa tiếp). Xem [mục 4](#4-xem-diff).
 - Open File
 - Resolve Conflicts…
 - Include in Commit / Exclude from Commit
@@ -172,10 +178,11 @@ Nút trên thanh tiêu đề view Commit dùng để chuyển cách hiển thị
 - Shelve Changes… / Create Patch… / Copy as Patch to Clipboard — xem [mục 8c](#8c-shelve-và-shelf) và [mục 8d](#8d-create-patch--apply-patch).
 - Delete… và Add to .gitignore — chỉ có với file chưa được theo dõi.
 - Show History — mở Log lọc theo file.
+- Annotate with Git Blame — xem [mục 4](#annotate-git-blame).
 - Copy Path
 - Reveal in Explorer View
 
-Chuột phải **dòng thư mục** (khi Group by Directory) hoặc **dòng nhóm** (Changes, Unversioned Files) cũng có menu: Include / Exclude, Shelve Changes…, Create Patch…, Copy as Patch to Clipboard, Rollback…, áp dụng cho mọi file bên dưới.
+Chuột phải **dòng thư mục** (khi Group by Directory) hoặc **dòng nhóm** (Changes, Unversioned Files) cũng có menu: Include / Exclude, Shelve Changes…, Create Patch…, Copy as Patch to Clipboard, Rollback…, áp dụng cho mọi file bên dưới. Nhóm **Unversioned Files** có thêm **Clean Unversioned Files…** (xem mục Clean bên dưới).
 
 ### Thanh tiêu đề view Commit
 
@@ -191,8 +198,22 @@ Chuột phải **dòng thư mục** (khi Group by Directory) hoặc **dòng nhó
   - Create Patch from Ticked Files… / Copy Patch of Ticked Files to Clipboard
   - Apply Patch… / Apply Patch from Clipboard
   - Show Shelf
+  - Clean Working Tree…
   - Select Repository
   - AI Commit Message: Configure / Setup Guide
+
+### Clean Working Tree (xoá file chưa theo dõi)
+
+Mở bằng: chuột phải nhóm **Unversioned Files** ▸ **Clean Unversioned Files…**, menu `…` của view Commit ▸ **Clean Working Tree…**, hoặc lệnh **Git Tools: Clean Working Tree…**.
+
+1. Hộp chọn liệt kê đúng những gì `git clean -n` sẽ xoá. Mỗi mục có checkbox, mặc định tick hết; bỏ tick mục nào thì mục đó được giữ lại.
+2. Hai nút trên thanh tiêu đề hộp chọn đổi tuỳ chọn, danh sách được tính lại ngay:
+   - Biểu tượng con mắt — **Include ignored files** (`-x`, mặc định tắt): xoá cả file bị `.gitignore` bỏ qua (thư mục build, file log…).
+   - Biểu tượng thư mục — **Remove untracked directories** (`-d`, mặc định bật): xoá cả thư mục chưa theo dõi. Tắt thì chỉ xoá file.
+3. **Repo lồng nhau** (thư mục có `.git` riêng) được liệt kê nhưng **không tick sẵn**. Nếu bạn tick, extension cảnh báo riêng vì cả lịch sử của repo đó sẽ mất (`git clean -ff`).
+4. Bấm Enter, xác nhận số mục sẽ xoá. **Không hoàn tác được.**
+
+File đã được git theo dõi không bao giờ bị đụng tới. Tuỳ chọn được nhớ trong phiên làm việc.
 
 ### Chọn từng dòng để commit (partial commit)
 
@@ -224,6 +245,17 @@ Diff dùng trình so sánh có sẵn của VS Code, nên có đủ side-by-side 
 - **Diff working tree** có tiêu đề `file (HEAD ↔ Working Tree)`. Bên phải là file thật, sửa trực tiếp được; bạn cũng có thể dùng nút revert từng đoạn của VS Code.
 - **Diff trong commit** có tiêu đề `file (parent ↔ commit)`.
 - File mới hiện bên trái rỗng; file bị xoá hiện bên phải rỗng.
+- File vừa có phần **đã stage** vừa có phần **chưa stage** (trạng thái `MM`): click vẫn mở `HEAD ↔ Working Tree` (toàn bộ thay đổi). Chuột phải ▸ **Show Staged Diff** mở `HEAD ↔ Index` (phần đã stage, nội dung lấy bằng `git show :<file>`), **Show Unstaged Diff** mở `Index ↔ Working Tree` (phần chưa stage).
+
+### Annotate (Git Blame)
+
+Mở bằng lệnh **Annotate with Git Blame**: chuột phải tab editor, chuột phải trong editor, chuột phải file trong Explorer hoặc trong view Commit, hay Command Palette. Chạy lại lệnh để tắt.
+
+- Trước mỗi dòng hiện `hash-ngắn  tác-giả  ngày` (tên tác giả dài bị cắt). Các dòng liền nhau cùng một commit chỉ ghi ở dòng đầu.
+- Màu nền theo tuổi commit: commit cũ nhất của file nhạt nhất, mới nhất đậm nhất. Dòng chưa commit ghi *Not Committed Yet*.
+- File đang sửa chưa lưu vẫn annotate đúng (gửi nội dung editor cho `git blame --contents -`). Annotation tự cập nhật khi bạn gõ, lưu hoặc commit.
+- Rê chuột vào phần annotation (đầu dòng) để xem hash, tác giả, ngày, toàn bộ message, kèm link **Show in Log** và **Show Diff** (diff của file trong commit đó).
+- Click vào annotation của một dòng sẽ chọn commit đó trong Log (khi Log đang hiện).
 
 ---
 
@@ -277,6 +309,8 @@ View **Log** gồm 3 phần:
 | Drop Commits | Xoá một hoặc nhiều commit (chọn nhiều bằng `Ctrl+Click`) khỏi lịch sử branch hiện tại. Hỏi xác nhận trước |
 | Move Commit Up / Move Commit Down | Đổi chỗ commit với commit mới hơn / cũ hơn ngay cạnh nó |
 | Interactively Rebase from Here… | Mở panel **Interactive Rebase** cho commit đó và mọi commit mới hơn, xem [mục 9b](#9b-interactive-rebase-sửa-lịch-sử-commit) |
+| Merge into Current… | Mở hộp thoại **Merge…** để merge commit đó vào branch hiện tại, xem [mục 9](#hộp-thoại-merge). Mờ khi commit đã nằm trong branch hiện tại |
+| Bisect ▸ … | Bắt đầu hoặc tiếp tục bisect, xem [mục 9c](#9c-bisect-tìm-commit-gây-lỗi) |
 | New Branch… / New Tag… | Tạo branch hoặc tag tại commit đó |
 
 Các lệnh sửa lịch sử (từ Edit Commit Message… tới Interactively Rebase from Here…) bị **làm mờ** khi không áp dụng được: commit không nằm trong lịch sử của HEAD, HEAD đang detached, hoặc đang có merge / rebase dở.
@@ -328,7 +362,7 @@ Bấm branch trên thanh trạng thái hoặc chạy lệnh **Git Tools: Branche
 - Danh sách **Local** và **Remote**:
   - Branch hiện tại xếp đầu.
   - `main` / `master` / `develop` được đánh dấu ★.
-  - Mỗi branch hiện số ↑ / ↓ và upstream.
+  - Mỗi branch hiện số ↑ / ↓ và upstream. Branch đang được checkout ở worktree khác ghi thêm `checked out in <thư mục>`.
 - Gõ để tìm branch. Chọn một branch sẽ mở danh sách thao tác.
 
 ### Thao tác trên branch
@@ -342,7 +376,10 @@ Dùng trong popup hoặc khi chuột phải trong cây Branches:
 | Checkout and Rebase onto Current | Checkout branch đó và rebase nó lên branch hiện tại |
 | Compare with Current | Commit hai phía và các file khác nhau. Chọn file để xem diff |
 | Show in Log | Lọc Log theo branch |
-| Rebase Current onto This / Merge into Current | Có thể phát sinh conflict, xem [mục 9](#9-merge-rebase-và-giải-quyết-conflict) |
+| Rebase Current onto This | Có thể phát sinh conflict, xem [mục 9](#9-merge-rebase-và-giải-quyết-conflict) |
+| Merge into Current… | Mở hộp thoại **Merge…** để chọn tuỳ chọn, xem [mục 9](#hộp-thoại-merge) |
+| Quick Merge into Current | Merge ngay với tuỳ chọn mặc định của git, không mở hộp thoại (như trước đây) |
+| Checkout in New Worktree… | Mở branch trong một thư mục làm việc mới, xem [mục 6b](#6b-worktrees) |
 | Update (fast-forward) | Cập nhật branch local từ upstream mà không cần checkout |
 | Push… | Chỉ với branch hiện tại |
 | Rename… / Copy Branch Name | |
@@ -352,10 +389,28 @@ Dùng trong popup hoặc khi chuột phải trong cây Branches:
 
 Trong cây Branches còn có:
 - Branch Local / Remote được gom thành thư mục theo tiền tố trước dấu `/`: `feature/login`, `feature/cart` → **feature** ▸ `login`, `cart`. Thư mục chứa branch hiện tại tự mở sẵn.
-- Mục **Tags**: Checkout, New Branch, Merge, Push Tag, Delete Tag.
+- Mục **Tags**: Checkout, New Branch, Merge into Current… / Quick Merge, Push Tag, Delete Tag.
 - Mục **Stashes**: xem [mục 8](#8-stash).
 - Mục **Shelf**: xem [mục 8c](#8c-shelve-và-shelf).
+- Mục **Worktrees**: xem [mục 6b](#6b-worktrees).
 - Mục **Reflog**: mở panel Reflog, xem [mục 5](#reflog).
+
+## 6b. Worktrees
+
+Worktree là một thư mục làm việc thứ hai (thứ ba…) của cùng một repo, mỗi thư mục checkout một branch riêng. Ví dụ đang làm dở `feature/x` mà cần sửa gấp trên `main`: mở `main` ở worktree khác, không phải stash hay commit tạm.
+
+Mục **Worktrees** trong cây Branches liệt kê mọi worktree (`git worktree list --porcelain`): tên thư mục, branch hoặc `detached at <hash>`, và các nhãn **current** (worktree của cửa sổ này), **main worktree**, **locked**, **prunable** (thư mục đã bị xoá). Rê chuột để xem đường dẫn đầy đủ và lý do lock.
+
+| Thao tác | Cách làm |
+|---|---|
+| Tạo worktree | Nút **+** trên mục Worktrees ▸ **New Worktree…**: chọn branch có sẵn, branch mới (`-b`) từ một điểm bắt đầu, hoặc detached tại một revision; sau đó nhập thư mục (mặc định `../<tên-repo>-<branch>`). Hoặc chuột phải branch ▸ **Checkout in New Worktree…**. Branch remote tạo branch local cùng tên có tracking |
+| Mở worktree | **Open in New Window**: mở thư mục đó trong cửa sổ VS Code mới |
+| Copy Path | Copy đường dẫn |
+| Lock… / Unlock | Khoá để `git worktree prune` không xoá (ví dụ worktree trên ổ USB), có thể ghi lý do |
+| Remove… | Hỏi xác nhận. Nếu worktree còn thay đổi chưa commit, hỏi thêm lần nữa rồi mới xoá bằng `--force`. Không xoá được worktree chính và worktree hiện tại |
+| Prune Worktrees… | Chuột phải mục Worktrees: hiện trước danh sách sẽ dọn (`git worktree prune -n -v`), xác nhận rồi mới dọn |
+
+Một branch chỉ được checkout ở một worktree tại một thời điểm. Checkout branch đang mở ở worktree khác sẽ hiện thông báo rõ ràng kèm nút **Open that Worktree** thay vì lỗi thô của git.
 
 ---
 
@@ -491,6 +546,21 @@ Khi rebase, banner hiện tiến độ, ví dụ **"Rebasing 2/5"**. Nếu rebas
 
 Trong lúc merge, ô message được điền sẵn message mặc định của git (`Merge branch '…'`). Bạn sửa message rồi bấm **Commit** cũng được.
 
+### Hộp thoại Merge…
+
+Mở bằng **Merge '…' into '…'…** trong popup Branches, **Merge into Current…** khi chuột phải branch / tag trong cây Branches, hoặc **Merge into Current…** khi chuột phải commit trong Log.
+
+- Dòng xem trước: `N commits will be merged`, kèm `Fast-forward possible` khi HEAD là tổ tiên của bên được merge. Không có gì để merge thì extension báo ngay.
+- Tuỳ chọn (tick nhiều cái được):
+  - **Fast-forward only** (`--ff-only`): chỉ merge khi fast-forward được, nếu không thì báo lỗi và không thay đổi gì.
+  - **No fast-forward** (`--no-ff`): luôn tạo merge commit.
+  - **Squash** (`--squash`): gom mọi thay đổi thành thay đổi đã stage, **không commit**. Sau đó ô message được điền sẵn nội dung `SQUASH_MSG` của git và extension nhắc bạn bấm Commit.
+  - **No commit** (`--no-commit`): dừng trước khi commit để bạn xem lại (banner Merging hiện ra). Tự kèm `--no-ff`, vì fast-forward không dừng được.
+  - **Commit message…** (`-m`): chỉ dùng được khi merge sẽ tạo merge commit; sau khi bấm Enter sẽ hỏi message.
+- Squash, No fast-forward và Fast-forward only loại trừ nhau: tick cái này thì cái kia tự bỏ. Squash luôn kèm No commit.
+- Tuỳ chọn lần trước được nhớ trong phiên làm việc.
+- **Quick Merge** vẫn có sẵn để merge ngay với tuỳ chọn mặc định.
+
 ### Giải quyết conflict
 
 Mở bằng link **Resolve** ở nhóm Merge Conflicts, hoặc lệnh **Git Tools: Resolve Conflicts…**. Chọn file, sau đó chọn:
@@ -543,6 +613,26 @@ Cách hoạt động:
 - Điều kiện: phải đang ở trên một branch (không detached HEAD) và không có merge / rebase / cherry-pick dở.
 
 Các lệnh nhanh trong menu Log (**Edit Commit Message…**, **Fixup into Previous**, **Squash Commits…**, **Move Commit Up / Down**, **Drop Commits**) dùng cùng cơ chế này, chỉ là không mở panel.
+
+---
+
+## 9c. Bisect (tìm commit gây lỗi)
+
+Bisect tìm commit đầu tiên gây lỗi bằng tìm kiếm nhị phân: bạn cho biết một commit **bad** (có lỗi) và một commit **good** (chưa lỗi); git checkout commit ở giữa để bạn thử, cứ thế cho tới khi tìm ra.
+
+1. Trong Log, chuột phải commit có lỗi (thường là HEAD) ▸ **Bisect ▸ Start: Mark Bad**. Chuột phải một commit cũ chưa có lỗi ▸ **Bisect ▸ Mark Good**. (Bắt đầu bằng Mark Good trước cũng được.)
+2. Git checkout commit cần thử. View Commit hiện banner **"Bisecting: ~N revisions left (~S steps)"** cùng commit đang thử, với các nút:
+   - **Good** / **Bad**: commit đang thử chạy đúng / có lỗi.
+   - **Skip**: commit này không thử được (ví dụ không build được).
+   - **Run…**: chạy một lệnh shell trên từng commit để tự đánh dấu (`git bisect run`: exit code 0 = good, 125 = skip, khác = bad). Output hiện trong Git Console.
+   - **Reset**: kết thúc bisect, quay về branch ban đầu.
+
+   Trong Log cũng có **Bisect ▸ Mark Bad / Mark Good / Skip** cho commit bất kỳ, **Run Script…** và **Reset Bisect**.
+3. Khi git tìm ra, extension báo *"<hash> is the first bad commit"* kèm **Show in Log**. Phiên bisect vẫn giữ (để bạn xem lại) tới khi bấm **Reset**.
+
+Trong Log, các commit đã đánh dấu có nhãn **good** (xanh lá), **bad** (đỏ), **skip**; commit tìm được ghi **first bad**.
+
+Nếu có thay đổi chưa commit cản trở việc checkout commit cần thử, extension báo rõ: hãy commit, stash hoặc shelve rồi đánh dấu lại.
 
 ---
 
@@ -625,6 +715,10 @@ Mở Command Palette (`Ctrl+Shift+P`) và gõ `Git Tools`:
 | Apply Patch… / Apply Patch from Clipboard | Áp dụng patch (`git apply --3way` hoặc `git am --3way`) |
 | Resolve Conflicts… / Continue Merge / Rebase / Abort Merge / Rebase / Skip Commit (Rebase) | Xử lý merge, rebase, `git am` |
 | Interactive Rebase… | Chọn commit cũ nhất rồi mở panel Interactive Rebase |
+| Clean Working Tree… | Xoá file chưa theo dõi, có xem trước (xem [mục 3](#clean-working-tree-xoá-file-chưa-theo-dõi)) |
+| New Worktree… / Prune Worktrees… | Quản lý worktree (xem [mục 6b](#6b-worktrees)) |
+| Bisect: Mark Current Good / Mark Current Bad / Skip Current / Run Script… / Reset | Bisect trên commit đang checkout (xem [mục 9c](#9c-bisect-tìm-commit-gây-lỗi)) |
+| Annotate with Git Blame | Bật / tắt annotation git blame cho file đang mở |
 | Show Git Log / Show History for Current File | Xem lịch sử |
 | Show Reflog | Mở panel Reflog (tìm lại commit bị mất) |
 | Manage Remotes… | Thêm, sửa URL, xoá remote |
@@ -664,7 +758,10 @@ Extension không gán phím tắt mặc định để tránh trùng phím của 
 - Danh sách tác giả trong dropdown User lấy từ các commit đã tải (tối đa 100 người). Tìm theo **Me** dùng `user.name` / `user.email` hiện tại, nên commit cũ với tên / email khác không được tính.
 - Interactive rebase giữ nguyên merge commit (không reword / drop / đổi chỗ merge commit được).
 - `--autostash` của git trả lại thay đổi chưa commit nhưng không giữ phân biệt đã stage / chưa stage: sau khi rebase, mọi thay đổi đều ở trạng thái chưa stage (bước xem trước todo không đụng tới index).
-- Diff khi click file trong view Commit luôn so với `HEAD`, không tách riêng phần đã stage và chưa stage.
+- `git clean` không nhận danh sách đường dẫn qua stdin: các mục đã chọn được truyền trên dòng lệnh, chia thành nhiều lần chạy khi danh sách dài.
+- Số "~N revisions left" của bisect lấy từ `git rev-list --bisect-vars`, không trừ các commit đã skip nên chỉ là ước lượng. Bisect dùng từ khoá mặc định good / bad (chưa hỗ trợ `--term-old` / `--term-new`).
+- Annotate: VS Code không cho click trực tiếp vào phần annotation, nên click ở **đầu dòng** (cột 0) được coi là click annotation. Rê chuột ở ký tự đầu của dòng code cũng hiện hover blame.
+- Danh sách worktree tự làm mới khi `.git/worktrees` thay đổi; thay đổi file bên trong worktree khác không hiện ở cửa sổ này (mở worktree đó trong cửa sổ riêng).
 - Nút ✨ trên Source Control của VS Code dùng danh sách file đang tick của Git Tools, không dùng danh sách *Staged Changes* của VS Code.
 - API key lưu riêng trên từng máy, không đồng bộ.
 

@@ -216,6 +216,15 @@ class _BranchesPopupState extends State<_BranchesPopup> {
                     Text('↑${b.ahead} ', style: const TextStyle(fontSize: 12, color: AppColors.added)),
                   if (b.behind > 0)
                     Text('↓${b.behind} ', style: const TextStyle(fontSize: 12, color: AppColors.modified)),
+                  if (b.worktree != null)
+                    Flexible(
+                      child: Tooltip(
+                        message: 'Checked out in ${b.worktree}',
+                        child: Text('in ${b.worktree!.split('/').last} ',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 11.5, color: AppColors.warning)),
+                      ),
+                    ),
                   if (b.upstream != null && !b.isRemote)
                     Flexible(
                       child: Text(b.upstream!,

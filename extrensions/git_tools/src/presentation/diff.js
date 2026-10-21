@@ -2,10 +2,13 @@
 'use strict';
 
 const vscode = require('vscode');
+const fs = require('fs');
 const path = require('path');
 
 const SCHEME = 'gittools-rev';
 const EMPTY = '__empty__';
+/** The index (staging area) as a revision: `git show :<path>`. */
+const INDEX = '';
 
 /**
  * Serves file contents at a revision: gittools-rev:/path?{root, rev}.
@@ -66,6 +69,32 @@ async function openLocalDiff(model, c, preview = true) {
 }
 
 /**
+ * Staged part of a change: HEAD ↔ Index (the index side is `git show :<path>`).
+ * @param {import('./model').RepoModel} model
+ * @param {import('../domain/entities').FileChange} c
+ */
+async function openStagedDiff(model, c, preview = false) {
+  const root = model.root;
+  const left = c.type === 'added' || !model.status.head
+    ? revUri(root, EMPTY, c.oldPath || c.path)
+    : revUri(root, 'HEAD', c.oldPath || c.path);
+  await vscode.commands.executeCommand('vscode.diff', left, revUri(root, INDEX, c.path),
+    `${path.basename(c.path)} (HEAD ↔ Index)`, { preview });
+}
+
+/**
+ * Unstaged part of a change: Index ↔ Working Tree.
+ * @param {import('./model').RepoModel} model
+ * @param {import('../domain/entities').FileChange} c
+ */
+async function openUnstagedDiff(model, c, preview = false) {
+  const root = model.root;
+  const right = fs.existsSync(path.join(root, c.path)) ? fileUri(root, c.path) : revUri(root, EMPTY, c.path);
+  await vscode.commands.executeCommand('vscode.diff', revUri(root, INDEX, c.path), right,
+    `${path.basename(c.path)} (Index ↔ Working Tree)`, { preview });
+}
+
+/**
  * Diff of a file changed in commit `hash` relative to `parent`.
  * @param {import('./model').RepoModel} model
  * @param {import('../domain/entities').FileChange} f
@@ -92,4 +121,7 @@ async function openCompareWithLocal(model, filePath, rev) {
   await vscode.commands.executeCommand('vscode.diff', left, right, `${path.basename(filePath)} (${short} ↔ Working Tree)`);
 }
 
-module.exports = { SCHEME, EMPTY, RevisionContentProvider, revUri, fileUri, openLocalDiff, openCommitDiff, openCompareWithLocal };
+module.exports = {
+  SCHEME, EMPTY, INDEX, RevisionContentProvider, revUri, fileUri, openLocalDiff, openStagedDiff, openUnstagedDiff, openCommitDiff,
+  openCompareWithLocal,
+};

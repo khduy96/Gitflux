@@ -8,6 +8,7 @@ import '../../../domain/logic/log_filters.dart';
 import '../../state/repo_controller.dart';
 import '../common.dart';
 import '../dialogs/basic_dialogs.dart';
+import 'branch_picker.dart';
 
 /// Filter bar of the Log: search box (message or content), branch, user,
 /// date and path filters.
@@ -24,6 +25,9 @@ class _LogFilterBarState extends State<LogFilterBar> {
   RepoController get ctrl => widget.controller;
   late final _search = TextEditingController(text: ctrl.logFilter.value.text);
   Timer? _debounce;
+
+  /// Open folders of the branch picker.
+  final Set<String> _branchFolders = {'Local', 'Remote'};
 
   /// Delay before a content search runs git.
   static const _changesDelay = Duration(milliseconds: 450);
@@ -66,6 +70,19 @@ class _LogFilterBarState extends State<LogFilterBar> {
       textMode: r == 'message' ? LogTextMode.message : LogTextMode.changes,
       regex: r == 'regex',
     ));
+  }
+
+  /// Branch picker under the chip of [chip]: folders of branch names.
+  Future<void> _branchPicker(BuildContext chip) async {
+    final box = chip.findRenderObject()! as RenderBox;
+    final r = await showBranchPicker(
+      context,
+      anchor: box.localToGlobal(Offset.zero) & box.size,
+      branches: ctrl.branches.value,
+      current: ctrl.logFilter.value.branch,
+      open: _branchFolders,
+    );
+    if (r != null) ctrl.setLogFilter(ctrl.logFilter.value.copyWith(branch: () => r.isEmpty ? null : r));
   }
 
   Future<void> _userMenu(Offset pos, LogFilter f) async {
@@ -172,21 +189,13 @@ class _LogFilterBarState extends State<LogFilterBar> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    LogFilterChip(
-                      label: 'Branch: ${f.branch ?? 'All'}',
-                      active: f.branch != null,
-                      onClear: () => ctrl.setLogFilter(f.copyWith(branch: () => null)),
-                      onTap: (pos) async {
-                        final names = ['HEAD', ...ctrl.branches.value.map((b) => b.name)];
-                        final r = await showContextMenu<String>(context, pos, [
-                          menuItem('__all__', 'All branches'),
-                          const PopupMenuDivider(height: 8),
-                          for (final n in names) menuItem(n, n),
-                        ]);
-                        if (r != null) {
-                          ctrl.setLogFilter(ctrl.logFilter.value.copyWith(branch: () => r == '__all__' ? null : r));
-                        }
-                      },
+                    Builder(
+                      builder: (chip) => LogFilterChip(
+                        label: 'Branch: ${f.branch ?? 'All'}',
+                        active: f.branch != null,
+                        onClear: () => ctrl.setLogFilter(f.copyWith(branch: () => null)),
+                        onTap: (_) => _branchPicker(chip),
+                      ),
                     ),
                     const SizedBox(width: 6),
                     LogFilterChip(

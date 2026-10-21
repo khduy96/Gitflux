@@ -163,6 +163,57 @@
         "category": "Git Tools"
       },
       {
+        "command": "gitTools.cleanWorkingTree",
+        "title": "Clean Working Tree…",
+        "category": "Git Tools",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "gitTools.annotate",
+        "title": "Annotate with Git Blame",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.blame.showInLog",
+        "title": "Show in Log",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.blame.showDiff",
+        "title": "Show Diff",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.bisect.good",
+        "title": "Bisect: Mark Current Good",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.bisect.bad",
+        "title": "Bisect: Mark Current Bad",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.bisect.skip",
+        "title": "Bisect: Skip Current",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.bisect.run",
+        "title": "Bisect: Run Script…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.bisect.reset",
+        "title": "Bisect: Reset",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.bisect.showFirstBad",
+        "title": "Bisect: Show First Bad Commit in Log",
+        "category": "Git Tools"
+      },
+      {
         "command": "gitTools.resolveConflicts",
         "title": "Resolve Conflicts…",
         "category": "Git Tools",
@@ -329,7 +380,17 @@
       },
       {
         "command": "gitTools.branch.merge",
-        "title": "Merge into Current",
+        "title": "Quick Merge into Current (Default Options)",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.branch.mergeDialog",
+        "title": "Merge into Current…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.branch.checkoutInWorktree",
+        "title": "Checkout in New Worktree…",
         "category": "Git Tools"
       },
       {
@@ -396,6 +457,46 @@
         "command": "gitTools.stash.showFiles",
         "title": "Show Changes",
         "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.worktree.new",
+        "title": "New Worktree…",
+        "category": "Git Tools",
+        "icon": "$(add)"
+      },
+      {
+        "command": "gitTools.worktree.prune",
+        "title": "Prune Worktrees…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.worktree.open",
+        "title": "Open in New Window",
+        "category": "Git Tools",
+        "icon": "$(empty-window)"
+      },
+      {
+        "command": "gitTools.worktree.copyPath",
+        "title": "Copy Path",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.worktree.lock",
+        "title": "Lock…",
+        "category": "Git Tools",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "gitTools.worktree.unlock",
+        "title": "Unlock",
+        "category": "Git Tools",
+        "icon": "$(unlock)"
+      },
+      {
+        "command": "gitTools.worktree.remove",
+        "title": "Remove…",
+        "category": "Git Tools",
+        "icon": "$(trash)"
       },
       {
         "command": "gitTools.shelf.unshelve",
@@ -585,6 +686,11 @@
           "group": "2_patch@5"
         },
         {
+          "command": "gitTools.cleanWorkingTree",
+          "when": "view == gitTools.commit",
+          "group": "2_patch@6"
+        },
+        {
           "command": "gitTools.selectRepository",
           "when": "view == gitTools.commit",
           "group": "3_repo@1"
@@ -682,9 +788,19 @@
           "group": "3_integrate@1"
         },
         {
-          "command": "gitTools.branch.merge",
+          "command": "gitTools.branch.mergeDialog",
           "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
           "group": "3_integrate@2"
+        },
+        {
+          "command": "gitTools.branch.merge",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
+          "group": "3_integrate@3"
+        },
+        {
+          "command": "gitTools.branch.checkoutInWorktree",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
+          "group": "1_checkout@4"
         },
         {
           "command": "gitTools.branch.update",
@@ -722,9 +838,14 @@
           "group": "1@2"
         },
         {
-          "command": "gitTools.branch.merge",
+          "command": "gitTools.branch.mergeDialog",
           "when": "view == gitTools.branches && viewItem == tag",
           "group": "1@3"
+        },
+        {
+          "command": "gitTools.branch.merge",
+          "when": "view == gitTools.branches && viewItem == tag",
+          "group": "1@4"
         },
         {
           "command": "gitTools.tag.push",
@@ -760,6 +881,51 @@
           "command": "gitTools.stash.drop",
           "when": "view == gitTools.branches && viewItem == stash",
           "group": "2@2"
+        },
+        {
+          "command": "gitTools.worktree.new",
+          "when": "view == gitTools.branches && viewItem == worktrees",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitTools.worktree.new",
+          "when": "view == gitTools.branches && viewItem == worktrees",
+          "group": "1@1"
+        },
+        {
+          "command": "gitTools.worktree.prune",
+          "when": "view == gitTools.branches && viewItem == worktrees",
+          "group": "1@2"
+        },
+        {
+          "command": "gitTools.worktree.open",
+          "when": "view == gitTools.branches && viewItem =~ /^worktree(-|$)(?!.*-current)/",
+          "group": "inline@1"
+        },
+        {
+          "command": "gitTools.worktree.open",
+          "when": "view == gitTools.branches && viewItem =~ /^worktree(-|$)(?!.*-current)/",
+          "group": "1@1"
+        },
+        {
+          "command": "gitTools.worktree.copyPath",
+          "when": "view == gitTools.branches && viewItem =~ /^worktree(-|$)/",
+          "group": "1@2"
+        },
+        {
+          "command": "gitTools.worktree.lock",
+          "when": "view == gitTools.branches && viewItem =~ /^worktree(-|$)(?!.*-(main|locked))/",
+          "group": "2@1"
+        },
+        {
+          "command": "gitTools.worktree.unlock",
+          "when": "view == gitTools.branches && viewItem =~ /^worktree-.*locked/",
+          "group": "2@2"
+        },
+        {
+          "command": "gitTools.worktree.remove",
+          "when": "view == gitTools.branches && viewItem =~ /^worktree(-|$)(?!.*-(main|current))/",
+          "group": "3@1"
         },
         {
           "command": "gitTools.shelf.unshelve",
@@ -904,6 +1070,11 @@
           "command": "gitTools.selectLines",
           "when": "resourceScheme == file",
           "group": "gitTools@2"
+        },
+        {
+          "command": "gitTools.annotate",
+          "when": "resourceScheme == file",
+          "group": "gitTools@3"
         }
       ],
       "commandPalette": [
@@ -1058,6 +1229,64 @@
         {
           "command": "gitTools.nestedRepo.register",
           "when": "false"
+        },
+        {
+          "command": "gitTools.blame.showInLog",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.blame.showDiff",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.bisect.showFirstBad",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.branch.mergeDialog",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.branch.checkoutInWorktree",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.worktree.open",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.worktree.copyPath",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.worktree.lock",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.worktree.unlock",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.worktree.remove",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.annotate",
+          "when": "resourceScheme == file"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "gitTools.annotate",
+          "when": "resourceScheme == file",
+          "group": "gitTools@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "gitTools.annotate",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "gitTools@1"
         }
       ]
     },

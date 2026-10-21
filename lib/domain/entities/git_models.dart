@@ -286,6 +286,7 @@ class Branch {
     this.ahead = 0,
     this.behind = 0,
     this.gone = false,
+    this.worktree,
   });
 
   /// Short name, e.g. `main` or `origin/main`.
@@ -297,6 +298,10 @@ class Branch {
   final int ahead;
   final int behind;
   final bool gone;
+
+  /// Folder of another worktree that has this branch checked out (git
+  /// refuses to check it out here too).
+  final String? worktree;
 
   String get remoteName =>
       isRemote ? name.substring(0, name.indexOf('/')) : '';

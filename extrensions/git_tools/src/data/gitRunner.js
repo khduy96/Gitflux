@@ -42,7 +42,9 @@ class GitRunner {
 
   /**
    * @param {string[]} args
-   * @param {{log?: boolean, stdin?: string, allowFailure?: boolean, binary?: boolean, env?: Record<string,string>}} [o]
+   * stream: with log, stdout lines are logged as they arrive (long running
+   * commands such as `git bisect run`) instead of once git exits.
+   * @param {{log?: boolean, stdin?: string, allowFailure?: boolean, binary?: boolean, env?: Record<string,string>, stream?: boolean}} [o]
    * @returns {Promise<{code: number, stdout: string, stderr: string, bytes: Buffer}>}
    */
   raw(args, o = {}) {
@@ -56,7 +58,15 @@ class GitRunner {
       /** @type {Buffer[]} */
       const out = [];
       let err = '';
-      child.stdout.on('data', (d) => out.push(d));
+      let partial = '';
+      const streamed = !!(o.log && o.stream);
+      child.stdout.on('data', (d) => {
+        out.push(d);
+        if (!streamed) return;
+        const lines = (partial + d.toString('utf8')).split(/\r?\n|\r/);
+        partial = lines.pop() || '';
+        for (const line of lines) if (line.trim()) this.log(line, 'output');
+      });
       child.stderr.on('data', (d) => {
         const s = d.toString('utf8');
         err += s;
@@ -68,12 +78,13 @@ class GitRunner {
       child.on('close', (code) => {
         const bytes = Buffer.concat(out);
         const stdout = bytes.toString('utf8');
-        if (o.log) {
+        if (streamed && partial.trim()) this.log(partial, 'output');
+        if (o.log && !streamed) {
           const lines = stdout.trim() ? stdout.trim().split(/\r?\n/) : [];
           for (const line of lines.slice(0, 200)) this.log(line, 'output');
           if (lines.length > 200) this.log(`… ${lines.length - 200} more lines`, 'output');
-          if (code !== 0) this.log(`exit code ${code}`, 'error');
         }
+        if (o.log && code !== 0) this.log(`exit code ${code}`, 'error');
         resolve({ code: code ?? -1, stdout, stderr: err, bytes });
       });
       if (o.stdin !== undefined) child.stdin.end(o.stdin);
@@ -84,7 +95,7 @@ class GitRunner {
   /**
    * Runs git and returns stdout; throws GitError on failure.
    * @param {string[]} args
-   * @param {{log?: boolean, stdin?: string, allowFailure?: boolean, env?: Record<string,string>}} [o]
+   * @param {{log?: boolean, stdin?: string, allowFailure?: boolean, env?: Record<string,string>, stream?: boolean}} [o]
    */
   async run(args, o = {}) {
     const r = await this.raw(args, o);

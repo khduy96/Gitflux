@@ -268,7 +268,7 @@
           persist();
           render();
         },
-        oncontextmenu: (e) => nodeMenu(e, g.files),
+        oncontextmenu: (e) => nodeMenu(e, g.files, g.key),
       },
       h('span.chev', { text: isCollapsed ? '▸' : '▾' }),
       g.checkable ? h('input', {
@@ -416,11 +416,15 @@
 
   function renderBanner() {
     banner.replaceChildren();
-    if (!state || state.repoState === 'normal') {
+    if (!state || (state.repoState === 'normal' && !state.bisect)) {
       banner.hidden = true;
       return;
     }
     banner.hidden = false;
+    if (state.repoState === 'normal') {
+      fill(banner, bisectSection(state.bisect));
+      return;
+    }
     const label = {
       merging: 'Merging', rebasing: 'Rebasing', cherryPicking: 'Cherry-picking', reverting: 'Reverting', applyingMailbox: 'Applying patches',
     }[state.repoState];
@@ -438,7 +442,30 @@
         state.repoState === 'rebasing' ? h('button.secondary', { text: 'Skip', title: 'Skip this commit (git rebase --skip)', onclick: () => post('skip') }) : null,
         am ? h('button.secondary', { text: 'Skip', title: 'Skip this patch (git am --skip)', onclick: () => post('skip') }) : null,
         h('button.secondary', { text: 'Abort', onclick: () => post('abort') })),
+      state.bisect ? bisectSection(state.bisect) : null,
     );
+  }
+
+  /** Bisect in progress: where it stands and the Good / Bad / Skip / Reset buttons. */
+  function bisectSection(b) {
+    const bisect = (action) => () => post('bisect', { action });
+    if (b.firstBad) {
+      return h('div.bisect', null,
+        h('div', { text: 'Bisect finished: first bad commit found' }),
+        h('div.muted.ellipsis', { text: b.firstBad, title: b.firstBad }),
+        h('div.row', null,
+          h('button.secondary', { text: 'Show in Log', onclick: bisect('showFirstBad') }),
+          h('button.secondary', { text: 'Reset', title: 'End the bisect and go back to the original branch (git bisect reset)', onclick: bisect('reset') })));
+    }
+    return h('div.bisect', null,
+      h('div', { text: b.title }),
+      b.current ? h('div.muted.ellipsis', { text: `Testing ${b.current}`, title: b.current }) : null,
+      h('div.row', null,
+        h('button.secondary', { text: 'Good', title: 'The checked out commit works (git bisect good)', onclick: bisect('good') }),
+        h('button.secondary', { text: 'Bad', title: 'The checked out commit has the problem (git bisect bad)', onclick: bisect('bad') }),
+        h('button.secondary', { text: 'Skip', title: 'This commit cannot be tested (git bisect skip)', onclick: bisect('skip') }),
+        b.canRun ? h('button.secondary', { text: 'Run…', title: 'Test every commit with a command (git bisect run)', onclick: bisect('run') }) : null,
+        h('button.secondary', { text: 'Reset', title: 'End the bisect and go back to the original branch (git bisect reset)', onclick: bisect('reset') })));
   }
 
   function contextMenu(x, y) {
@@ -450,8 +477,14 @@
     const anyConflict = sel.some((c) => c.type === 'conflicted');
     const items = [
       { label: 'Show Diff', id: 'diff', disabled: anyConflict && !!single },
-      { label: 'Open File', id: 'openFile', disabled: !single || single.type === 'deleted' },
     ];
+    // Staged and unstaged changes in one file (MM): each part on its own.
+    if (single && single.staged && single.unstaged) {
+      items.push(
+        { label: 'Show Staged Diff', id: 'stagedDiff' },
+        { label: 'Show Unstaged Diff', id: 'unstagedDiff' });
+    }
+    items.push({ label: 'Open File', id: 'openFile', disabled: !single || single.type === 'deleted' });
     if (anyConflict) items.push({ label: 'Resolve Conflicts…', id: 'resolve' });
     if (single && single.nestedRepo) {
       items.push('-',
@@ -478,6 +511,9 @@
     items.push('-', ...patchItems(sel));
     items.push('-',
       { label: 'Show History', id: 'history', disabled: !single || single.type === 'untracked' },
+      { label: 'Annotate with Git Blame', id: 'annotate',
+        disabled: !single || ['untracked', 'added', 'deleted', 'conflicted'].includes(single.type) || !!single.nestedRepo ||
+          (single.submoduleInfo !== null && single.submoduleInfo !== undefined) },
       { label: 'Copy Path', id: 'copy' },
       { label: 'Reveal in Explorer View', id: 'reveal', disabled: !single || single.type === 'deleted' });
     showMenu(x, y, items, (action) => post('menu', { action, paths: sel.map((c) => c.path) }));
@@ -495,13 +531,14 @@
   }
 
   /** Context menu of a folder or a group: acts on every file below it. */
-  function nodeMenu(e, files) {
+  function nodeMenu(e, files, groupKey) {
     e.preventDefault();
     e.stopPropagation();
     if (!files.length) return;
     const paths = files.map((c) => c.path);
     const checkable = files.filter((c) => c.type !== 'conflicted');
     showMenu(e.clientX, e.clientY, [
+      ...(groupKey === 'unversioned' ? [{ label: 'Clean Unversioned Files…', id: 'clean', danger: true }, '-'] : []),
       { label: 'Include in Commit', id: 'include', disabled: !checkable.length },
       { label: 'Exclude from Commit', id: 'exclude', disabled: !checkable.length },
       '-',

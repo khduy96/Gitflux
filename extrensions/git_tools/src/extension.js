@@ -19,6 +19,10 @@ const { pickAndRebase } = require('./presentation/rebaseView');
 const { ReflogPanel } = require('./presentation/reflogView');
 const shelfUi = require('./presentation/shelf');
 const patchUi = require('./presentation/patches');
+const { registerWorktreeCommands } = require('./presentation/worktrees');
+const { registerBlame } = require('./presentation/blame');
+const { cleanWorkingTree } = require('./presentation/clean');
+const { bisectAction } = require('./presentation/bisect');
 const cmd = require('./presentation/commands');
 
 const NO_OPERATION = 'No merge, rebase, cherry-pick, revert or patch application in progress.';
@@ -39,6 +43,8 @@ async function activate(context) {
   const branches = new BranchesTreeProvider(manager);
   branches.view = vscode.window.createTreeView('gitTools.branches', { treeDataProvider: branches });
   const statusBar = new BranchStatusBar(manager);
+  registerWorktreeCommands(context, manager);
+  registerBlame(context, manager, logView);
 
   context.subscriptions.push(
     output,
@@ -264,6 +270,7 @@ async function activate(context) {
   branchCmd('gitTools.branch.compare', 'compare');
   branchCmd('gitTools.branch.rebaseOnto', 'rebase');
   branchCmd('gitTools.branch.merge', 'merge');
+  branchCmd('gitTools.branch.mergeDialog', 'mergeDialog');
   branchCmd('gitTools.branch.update', 'update');
   branchCmd('gitTools.branch.push', 'push');
   branchCmd('gitTools.branch.rename', 'rename');
@@ -293,6 +300,15 @@ async function activate(context) {
   reg('gitTools.stash.drop', (m, node) => node && node.stash && cmd.stashDrop(m, node.stash));
   reg('gitTools.stash.branch', (m, node) => node && node.stash && cmd.stashBranch(m, node.stash));
   reg('gitTools.stash.showFiles', (m, node) => node && node.stash && cmd.stashShowFiles(m, node.stash));
+
+  // Clean: untracked files, with a preview.
+  reg('gitTools.cleanWorkingTree', (m) => cleanWorkingTree(m));
+
+  // Bisect on the checked out commit (Commit view banner, command palette).
+  for (const action of ['good', 'bad', 'skip', 'reset', 'run']) {
+    reg(`gitTools.bisect.${action}`, (m) => bisectAction(m, logView, /** @type {any} */ (action)));
+  }
+  reg('gitTools.bisect.showFirstBad', (m) => m.bisect && m.bisect.firstBad && logView.showCommit(m.bisect.firstBad));
 
   // Shelve and patches. From the Commit view title: the ticked files.
   reg('gitTools.shelveChanges', (m) => shelfUi.shelveChanges(m, m.includedChanges()));

@@ -9,6 +9,8 @@ import 'package:git_tools/domain/repositories/settings_store.dart';
 import 'package:git_tools/presentation/state/app_settings.dart';
 import 'package:git_tools/presentation/state/repo_controller.dart';
 import 'package:git_tools/presentation/ui/common.dart';
+import 'package:git_tools/presentation/ui/log/branch_picker.dart';
+import 'package:git_tools/presentation/ui/log/branches_tree.dart';
 import 'package:git_tools/presentation/ui/log/compare_commits_view.dart';
 import 'package:git_tools/presentation/ui/log/log_panel.dart';
 import 'package:git_tools/presentation/ui/log/reflog_panel.dart';
@@ -87,6 +89,40 @@ void main() {
     expect(ctrl.bottomTab.value, RepoController.reflogTab);
     await settle(tester, find.text('never'));
     expect(ctrl.reflog.value.first.action, 'reset');
+  });
+
+  testWidgets('branches in folders: tree and Branch filter picker', (tester) async {
+    // On other commits than HEAD: one row holding every ref chip would overflow.
+    git(['branch', 'feature/cart', 'HEAD~1']);
+    git(['branch', 'feature/ui/login', 'HEAD@{1}']);
+    final ctrl = await open(tester);
+    await tester.pumpWidget(host(LogPanel(controller: ctrl)));
+    await settle(tester, find.text('two'));
+
+    final tree = find.byType(BranchesTree);
+    Finder inTree(String label) => find.descendant(of: tree, matching: find.text(label));
+    expect(inTree('feature'), findsOneWidget);
+    expect(inTree('cart'), findsNothing);
+    await tester.tap(inTree('feature'));
+    await tester.pump();
+    expect(inTree('cart'), findsOneWidget);
+    expect(inTree('ui'), findsOneWidget);
+
+    await tester.tap(find.text('Branch: All'));
+    await tester.pumpAndSettle();
+    Finder inPicker(String label) => find.descendant(
+        of: find.descendant(of: find.byType(BranchPicker), matching: find.byType(HoverRow)), matching: find.text(label));
+    expect(inPicker('feature'), findsOneWidget);
+    await tester.enterText(find.descendant(of: find.byType(BranchPicker), matching: find.byType(TextField)), 'login');
+    await tester.pumpAndSettle();
+    await tester.tap(inPicker('login'));
+    await settle(tester, find.text('Branch: feature/ui/login'));
+    await tester.pump(const Duration(milliseconds: 300)); // closing transition
+    expect(find.byType(BranchPicker), findsNothing);
+    expect(ctrl.logFilter.value.branch, 'feature/ui/login');
+    expect(find.text('Branch: feature/ui/login'), findsOneWidget);
+    // The tree opens the folders down to the branch shown in the Log.
+    expect(inTree('login'), findsOneWidget);
   });
 
   testWidgets('reflog panel lists the entries', (tester) async {

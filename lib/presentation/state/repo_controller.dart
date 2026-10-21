@@ -3,13 +3,17 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 
+import '../../domain/entities/bisect.dart';
+import '../../domain/entities/clean.dart';
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
 import '../../domain/entities/log_query.dart';
+import '../../domain/entities/merge.dart';
 import '../../domain/entities/patch.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/entities/reflog.dart';
 import '../../domain/entities/shelf.dart';
+import '../../domain/entities/worktree.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/graph_layout.dart';
 import '../../domain/logic/line_selection.dart';
@@ -19,11 +23,14 @@ import '../../domain/repositories/commit_message_generator.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../../domain/repositories/git_service.dart';
 import '../../domain/repositories/shelf_repository.dart';
+import '../../domain/usecases/bisect.dart';
+import '../../domain/usecases/clean_working_tree.dart';
 import '../../domain/usecases/commit_changes.dart';
 import '../../domain/usecases/compare_commits.dart';
 import '../../domain/usecases/generate_commit_message.dart';
 import '../../domain/usecases/get_selected_line_contents.dart';
 import '../../domain/usecases/interactive_rebase.dart';
+import '../../domain/usecases/merge_branch.dart';
 import '../../domain/usecases/patches.dart';
 import '../../domain/usecases/shelve_changes.dart';
 import 'app_settings.dart';
@@ -106,6 +113,10 @@ class CompareTab extends EditorTab {
 /// root. Not saved across restarts.
 final _sessionLogFilters = <String, (AuthorFilter?, DateFilter)>{};
 
+/// Options last used in the Merge dialog (without the message), kept for
+/// the session.
+MergeOptions _sessionMergeOptions = const MergeOptions();
+
 class RepoController {
   RepoController(
     String root, {
@@ -123,6 +134,9 @@ class RepoController {
     _unshelve = UnshelveChanges(repo, shelfStore);
     _createPatch = CreatePatch(repo);
     _applyPatch = ApplyPatch(repo);
+    _merge = MergeBranch(repo);
+    _clean = CleanWorkingTree(repo);
+    _bisect = BisectCommits(repo);
     final session = _sessionLogFilters[repo.root];
     if (session != null) logFilter.value = LogFilter(author: session.$1, date: session.$2);
     bottomTab.addListener(_onBottomTab);
@@ -139,6 +153,9 @@ class RepoController {
   late final UnshelveChanges _unshelve;
   late final CreatePatch _createPatch;
   late final ApplyPatch _applyPatch;
+  late final MergeBranch _merge;
+  late final CleanWorkingTree _clean;
+  late final BisectCommits _bisect;
 
   final status = ValueNotifier<RepoStatus>(const RepoStatus());
 
@@ -149,6 +166,12 @@ class RepoController {
   final remotes = ValueNotifier<List<Remote>>(const []);
   final stashes = ValueNotifier<List<Stash>>(const []);
   final submodules = ValueNotifier<List<Submodule>>(const []);
+
+  /// Working trees of the repository, the main one first.
+  final worktrees = ValueNotifier<List<Worktree>>(const []);
+
+  /// Bisect session in progress, or null.
+  final bisect = ValueNotifier<BisectState?>(null);
 
   /// Set to a repository path the workspace should open (e.g. a submodule).
   final openRepoRequest = ValueNotifier<String?>(null);
@@ -260,6 +283,10 @@ class RepoController {
   /// Asks the workspace to open [path] (relative to this repository).
   void openSubmodule(String path) => openRepoRequest.value = p.normalize(p.join(root, path));
 
+  /// Asks the workspace to open the repository at the absolute [path] (e.g.
+  /// another worktree).
+  void openRepo(String path) => openRepoRequest.value = p.normalize(path);
+
   Future<void> refreshStatus() async {
     try {
       final s = await repo.status();
@@ -275,6 +302,8 @@ class RepoController {
         // The rebase may have ended outside this tool (e.g. in a terminal).
         if (busy.value == null) await repo.cleanupRebaseState();
       }
+      final bisecting = await repo.bisectState();
+      if (!_disposed) bisect.value = bisecting;
       // Prefill the prepared message when a merge / cherry-pick starts.
       if (previous == RepoState.normal &&
           s.state != RepoState.normal &&
@@ -304,6 +333,10 @@ class RepoController {
         repo.remotes(),
         repo.stashes(),
         repo.submodules(),
+        repo.worktrees().catchError((Object e) {
+          _addConsole(ConsoleEntry('worktrees failed: $e', ConsoleKind.error));
+          return const <Worktree>[];
+        }),
       ]);
       if (_disposed) return;
       branches.value = results[0] as List<Branch>;
@@ -311,6 +344,7 @@ class RepoController {
       remotes.value = results[2] as List<Remote>;
       stashes.value = results[3] as List<Stash>;
       submodules.value = results[4] as List<Submodule>;
+      worktrees.value = results[5] as List<Worktree>;
     } catch (e) {
       _addConsole(ConsoleEntry('refs failed: $e', ConsoleKind.error));
     }
@@ -524,6 +558,15 @@ class RepoController {
       notify(AppNotification(e.title, details: e.details, isError: true));
       return false;
     } on PatchRejected catch (e) {
+      notify(AppNotification(e.title, details: e.details, isError: true));
+      return false;
+    } on MergeRejected catch (e) {
+      notify(AppNotification(e.title, details: e.details, isError: true));
+      return false;
+    } on CleanRejected catch (e) {
+      notify(AppNotification(e.title, details: e.details, isError: true));
+      return false;
+    } on BisectRejected catch (e) {
       notify(AppNotification(e.title, details: e.details, isError: true));
       return false;
     } catch (e) {
@@ -841,6 +884,130 @@ class RepoController {
       notify(AppNotification(asCommits ? 'Patches applied as commits' : 'Patch applied'));
     }
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Merge
+  // ---------------------------------------------------------------------------
+
+  /// Options last used in the Merge dialog this session (no message).
+  MergeOptions get lastMergeOptions => _sessionMergeOptions;
+
+  /// Commits [ref] would bring and whether it is a fast-forward, or null
+  /// when it cannot be computed.
+  Future<MergePreview?> mergePreview(String ref) async {
+    try {
+      return await _merge.preview(ref);
+    } catch (e) {
+      _addConsole(ConsoleEntry('merge preview failed: $e', ConsoleKind.error));
+      return null;
+    }
+  }
+
+  /// Merges [ref] (shown as [label]) into the current branch. A squash
+  /// merge leaves the changes staged and fills the commit message with
+  /// git's SQUASH_MSG. Returns false when it failed.
+  Future<bool> merge(String ref, MergeOptions options, {String? label}) async {
+    _sessionMergeOptions = options.withMessage(null);
+    final name = label ?? ref;
+    final into = status.value.branch ?? 'HEAD';
+    MergeOutcome? out;
+    final ok = await run('Merge $name into $into', () async => out = await _merge(ref, options));
+    final o = out;
+    if (!ok || o == null) return false;
+    if (options.squash) {
+      final msg = o.squashMessage;
+      if (msg != null && (commitMessage.text.trim().isEmpty || commitMessage.text == _prefilledMessage)) {
+        commitMessage.text = msg;
+        _prefilledMessage = msg;
+      }
+      notify(AppNotification('Squashed $name into the index',
+          details: 'Review the changes and commit them in the Commit panel to finish the squash merge.'));
+    } else if (status.value.conflicts.isNotEmpty) {
+      notify(AppNotification('Conflicts need to be resolved',
+          details: '${status.value.conflicts.length} file(s) have conflicts. Open the Commit panel and click "Resolve".',
+          isError: true));
+    } else if (o.stopped) {
+      notify(AppNotification('Merge of $name prepared',
+          details: 'The merge was not committed. Review the result and commit it in the Commit panel.'));
+    } else {
+      notify(AppNotification('Merged $name into $into'));
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Clean
+  // ---------------------------------------------------------------------------
+
+  /// What `git clean` would remove with [options].
+  Future<List<CleanEntry>> cleanPreview(CleanOptions options) => _clean.preview(options);
+
+  /// Removes [entries] for good. Returns false when it failed.
+  Future<bool> clean(List<CleanEntry> entries, CleanOptions options) async {
+    var n = 0;
+    final ok = await run('Clean working tree', () async => n = await _clean(entries, options));
+    if (ok) notify(AppNotification('Removed $n untracked item${n == 1 ? '' : 's'}'));
+    return ok;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Worktrees
+  // ---------------------------------------------------------------------------
+
+  Future<bool> addWorktree(String path, WorktreeCheckout checkout) => run(
+        'Add worktree',
+        () => repo.addWorktree(path, checkout),
+        success: 'Worktree created at $path',
+      );
+
+  Future<bool> lockWorktree(Worktree w, {String? reason}) =>
+      run('Lock worktree', () => repo.lockWorktree(w.path, reason: reason), success: 'Worktree ${w.name} locked');
+
+  Future<bool> unlockWorktree(Worktree w) =>
+      run('Unlock worktree', () => repo.unlockWorktree(w.path), success: 'Worktree ${w.name} unlocked');
+
+  Future<bool> pruneWorktrees() =>
+      run('Prune worktrees', () => repo.pruneWorktrees(), success: 'Stale worktrees pruned');
+
+  // ---------------------------------------------------------------------------
+  // Bisect
+  // ---------------------------------------------------------------------------
+
+  /// Marks [commit] (the commit under test when null) good, bad or skipped,
+  /// starting a session if none is in progress.
+  Future<bool> bisectMark(BisectMark mark, {Commit? commit}) async {
+    BisectStep? step;
+    final what = commit == null ? 'current commit' : commit.shortHash;
+    final ok = await run('Bisect: mark $what ${mark.name}',
+        () async => step = await _bisect.mark(mark, rev: commit?.hash));
+    _reportBisect(step);
+    return ok;
+  }
+
+  /// `git bisect run <command>`; its output goes to the console.
+  Future<bool> bisectRun(String command) async {
+    BisectStep? step;
+    final ok = await run('Bisect run', () async => step = await _bisect.run(command));
+    _reportBisect(step);
+    return ok;
+  }
+
+  Future<bool> bisectReset() =>
+      run('Reset bisect', _bisect.reset, success: 'Bisect finished, back to the original branch');
+
+  void _reportBisect(BisectStep? step) {
+    final bad = step?.firstBad;
+    if (bad == null) return;
+    final short = shortRef(bad);
+    final subject = bisect.value?.log.firstBadSubject;
+    notify(AppNotification(
+      '$short is the first bad commit',
+      details: '${subject == null || subject.isEmpty ? '' : '$subject\n'}'
+          'The session stays open until you click Reset in the Commit panel.',
+      actionLabel: 'Show in Log',
+      onAction: () => showInLog(bad),
+    ));
   }
 
   // ---------------------------------------------------------------------------

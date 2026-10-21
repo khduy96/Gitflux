@@ -4,10 +4,12 @@
 const vscode = require('vscode');
 const path = require('path');
 const { STATUS_WORD } = require('./shelf');
+const { worktreeWhat } = require('./worktrees');
+const { worktreeOfBranch } = require('../domain/logic/worktree');
 
 /**
- * Tree of HEAD, local / remote branches, tags, stashes, the shelf and the
- * reflog.
+ * Tree of HEAD, local / remote branches, tags, stashes, the shelf,
+ * worktrees and the reflog.
  */
 class BranchesTreeProvider {
   /** @param {import('./model').RepoManager} manager */
@@ -85,6 +87,7 @@ class BranchesTreeProvider {
       this.group('Tags', 'tag', m.tags.map((t) => this.tagNode(t)), false),
       this.group('Stashes', 'archive', m.stashes.map((st) => this.stashNode(st)), false),
       this.shelfGroup(m),
+      this.worktreesGroup(m),
       this.reflogNode(),
       ...(m.repo.hasGitmodules() || m.submodules.length
         ? [{ ...this.group('Submodules', 'repo', m.submodules.map((s) => this.submoduleNode(m, s)), true), kind: 'submodules' }]
@@ -162,8 +165,13 @@ class BranchesTreeProvider {
       ? new vscode.ThemeIcon('tag', new vscode.ThemeColor('charts.yellow'))
       : fav ? new vscode.ThemeIcon('star-full', new vscode.ThemeColor('charts.yellow'))
         : new vscode.ThemeIcon('git-branch', new vscode.ThemeColor(b.remote ? 'charts.purple' : 'charts.green'));
-    item.description = [b.ahead ? `↑${b.ahead}` : '', b.behind ? `↓${b.behind}` : '', b.gone ? 'gone' : ''].filter(Boolean).join(' ');
-    item.tooltip = `${b.name}${b.upstream ? `\nTracking ${b.upstream}` : ''}\n${b.hash.slice(0, 10)}`;
+    // A local branch another worktree has checked out (git refuses to check it out here).
+    const m = this.manager.current;
+    const elsewhere = !b.remote && !b.current && m ? worktreeOfBranch(m.worktrees || [], b.name) : null;
+    item.description = [b.ahead ? `↑${b.ahead}` : '', b.behind ? `↓${b.behind}` : '', b.gone ? 'gone' : '',
+      elsewhere ? `checked out in ${path.basename(elsewhere.path)}` : ''].filter(Boolean).join(' ');
+    item.tooltip = `${b.name}${b.upstream ? `\nTracking ${b.upstream}` : ''}\n${b.hash.slice(0, 10)}` +
+      `${elsewhere ? `\nChecked out in worktree ${elsewhere.path}` : ''}`;
     item.contextValue = b.current ? 'branch-current' : b.remote ? 'branch-remote' : 'branch-local';
     item.command = { command: 'gitTools.branch.showLog', title: 'Show in Log', arguments: [{ branch: b }] };
     return { item, branch: b };
@@ -201,6 +209,42 @@ class BranchesTreeProvider {
     node.item.tooltip = 'Changes put aside with "Shelve Changes…" (Commit view), file by file, outside the stash';
     node.children = m.shelves.map((s) => this.shelfNode(s, node));
     return node;
+  }
+
+  /**
+   * Worktrees: the main one first, the current one marked.
+   * @param {import('./model').RepoModel} m
+   */
+  worktreesGroup(m) {
+    const list = m.worktrees || [];
+    const node = { ...this.group('Worktrees', 'list-tree', [], false, list.length), kind: 'worktrees', model: m };
+    node.item.contextValue = 'worktrees';
+    node.item.tooltip = 'Other working folders of this repository (git worktree), each with its own checked-out branch';
+    node.children = list.map((w) => this.worktreeNode(m, w, node));
+    return node;
+  }
+
+  /** @param {import('./model').RepoModel} m @param {import('../domain/entities').Worktree} w */
+  worktreeNode(m, w, parent) {
+    const item = new vscode.TreeItem(path.basename(w.path) || w.path, vscode.TreeItemCollapsibleState.None);
+    item.iconPath = w.prunable ? new vscode.ThemeIcon('warning', new vscode.ThemeColor('list.warningForeground'))
+      : w.current ? new vscode.ThemeIcon('check', new vscode.ThemeColor('charts.green'))
+        : w.locked ? new vscode.ThemeIcon('lock')
+          : new vscode.ThemeIcon(w.main ? 'repo' : 'folder');
+    item.description = [worktreeWhat(w), w.current ? 'current' : '', w.main ? 'main worktree' : '', w.locked ? 'locked' : '',
+      w.prunable ? 'prunable' : ''].filter(Boolean).join(' · ');
+    item.tooltip = [
+      w.path,
+      w.bare ? 'Bare repository' : w.branch ? `Branch ${w.branch}` : 'Detached HEAD',
+      w.head ? `HEAD ${w.head.slice(0, 10)}` : '',
+      w.main ? 'Main worktree' : '',
+      w.current ? 'Current worktree (this window)' : '',
+      w.locked ? `Locked${w.lockReason ? `: ${w.lockReason}` : ''}` : '',
+      w.prunable ? `Prunable${w.prunableReason ? `: ${w.prunableReason}` : ''}` : '',
+    ].filter(Boolean).join('\n');
+    // Order fixed: package.json menus match it with regexes.
+    item.contextValue = `worktree${w.main ? '-main' : ''}${w.current ? '-current' : ''}${w.locked ? '-locked' : ''}${w.prunable ? '-prunable' : ''}`;
+    return { item, worktree: w, model: m, parent };
   }
 
   /** @param {import('../domain/entities').Shelf} s */

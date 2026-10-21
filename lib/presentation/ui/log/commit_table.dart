@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../domain/entities/bisect.dart';
 import '../../../domain/entities/git_models.dart';
 import '../../../domain/logic/graph_layout.dart';
 import '../../state/repo_controller.dart';
 import '../actions.dart';
 import '../branches/compare_dialog.dart';
 import '../common.dart';
+import '../dialogs/bisect_dialogs.dart';
+import '../dialogs/merge_dialog.dart';
 import '../dialogs/patch_dialogs.dart';
 import 'graph_painter.dart';
 import 'log_filter_bar.dart';
@@ -141,6 +144,10 @@ class _CommitTableState extends State<CommitTable> {
         await smartCheckout(context, ctrl, 'Checkout ${c.shortHash}', () => ctrl.repo.checkout(c.hash));
       case 'compare':
         await showCompareDialog(context, ctrl, c.hash);
+      case 'merge':
+        await showMergeDialog(context, ctrl, c.hash, label: c.shortHash);
+      case 'bisect':
+        await _bisectMenu(pos, c);
       case 'compareCommits':
         ctrl.openCompare(selected[0], selected[1]);
       case 'patch':
@@ -167,6 +174,34 @@ class _CommitTableState extends State<CommitTable> {
         await newBranchDialog(context, ctrl, startPoint: c.hash, startLabel: c.shortHash);
       case 'tag':
         await newTagDialog(context, ctrl, c);
+    }
+  }
+
+  /// Second level of "Bisect ▸": start a session by marking the commit, or
+  /// mark it / reset during one.
+  Future<void> _bisectMenu(Offset pos, Commit c) async {
+    final session = ctrl.bisect.value;
+    final r = await showContextMenu<String>(context, pos, [
+      if (session == null) ...[
+        menuItem('bad', 'Start: Mark Bad', icon: Icons.thumb_down_outlined, color: AppColors.error),
+        menuItem('good', 'Start: Mark Good', icon: Icons.thumb_up_outlined, color: AppColors.success),
+      ] else ...[
+        menuItem('bad', 'Mark Bad', icon: Icons.thumb_down_outlined, color: AppColors.error),
+        menuItem('good', 'Mark Good', icon: Icons.thumb_up_outlined, color: AppColors.success),
+        menuItem('skip', 'Skip', icon: Icons.redo),
+        const PopupMenuDivider(height: 8),
+        menuItem('run', 'Run Script…', icon: Icons.play_arrow_outlined, enabled: session.hasGood && session.hasBad),
+        menuItem('reset', 'Reset Bisect', icon: Icons.stop_circle_outlined),
+      ],
+    ]);
+    if (r == null || !mounted) return;
+    switch (r) {
+      case 'bad' || 'good' || 'skip':
+        await ctrl.bisectMark(BisectMark.values.byName(r), commit: c);
+      case 'run':
+        await showBisectRunDialog(context, ctrl);
+      case 'reset':
+        await ctrl.bisectReset();
     }
   }
 
@@ -209,6 +244,8 @@ class _CommitTableState extends State<CommitTable> {
       menuItem('checkout', 'Checkout Revision \'${c.shortHash}\'', icon: Icons.login, enabled: single),
       menuItem('compare', 'Compare with Local', icon: Icons.compare_arrows, enabled: single),
       menuItem('compareCommits', 'Compare Commits', icon: Icons.difference_outlined, enabled: selected.length == 2),
+      menuItem('merge', 'Merge into Current…', icon: Icons.merge_type,
+          enabled: single && !isHead && ctrl.status.value.state == RepoState.normal),
       menuItem('patch', 'Create Patch…', icon: Icons.save_alt, enabled: selected.any((x) => !x.isMerge)),
       const PopupMenuDivider(height: 8),
       menuItem('reset', 'Reset Current Branch to Here…', icon: Icons.restore, enabled: single),
@@ -226,6 +263,9 @@ class _CommitTableState extends State<CommitTable> {
       menuItem('down', 'Move Commit Down', icon: Icons.arrow_downward, enabled: single && hasPrevious),
       menuItem('rebase', 'Interactively Rebase from Here…', icon: Icons.low_priority,
           enabled: single && branch.contains(c.hash)),
+      const PopupMenuDivider(height: 8),
+      menuItem('bisect', ctrl.bisect.value == null ? 'Bisect ▸' : 'Bisect (in progress) ▸', icon: Icons.troubleshoot,
+          enabled: single),
       const PopupMenuDivider(height: 8),
       menuItem('branch', 'New Branch…', icon: Icons.call_split, enabled: single),
       menuItem('tag', 'New Tag…', icon: Icons.sell_outlined, enabled: single),
@@ -249,6 +289,7 @@ class _CommitTableState extends State<CommitTable> {
                 ctrl.logFilter,
                 ctrl.selectedCommit,
                 ctrl.status,
+                ctrl.bisect,
               ]),
               builder: (context, _) {
                 final rows = _visible();
@@ -260,6 +301,7 @@ class _CommitTableState extends State<CommitTable> {
                 final noGraph = ctrl.logFilter.value.hidesGraph;
                 final head = ctrl.status.value.headHash;
                 final sel = ctrl.selectedCommit.value?.hash;
+                final marks = ctrl.bisect.value?.marks ?? const <String, BisectMark>{};
                 return CallbackShortcuts(
                   bindings: {
                     const SingleActivator(LogicalKeyboardKey.arrowDown): () => _move(rows, 1),
@@ -287,6 +329,7 @@ class _CommitTableState extends State<CommitTable> {
                             isHead: c.hash == head,
                             selected: c.hash == sel || _multi.contains(c.hash),
                             rows: rows,
+                            bisectMark: marks[c.hash],
                           );
                         },
                       ),
@@ -302,7 +345,10 @@ class _CommitTableState extends State<CommitTable> {
   }
 
   Widget _commitRow(Commit c, GraphRow? g,
-      {required bool isHead, required bool selected, required List<(Commit, GraphRow?)> rows}) {
+      {required bool isHead,
+      required bool selected,
+      required List<(Commit, GraphRow?)> rows,
+      BisectMark? bisectMark}) {
     return HoverRow(
       selected: selected,
       height: _rowHeight,
@@ -322,6 +368,7 @@ class _CommitTableState extends State<CommitTable> {
           else
             const SizedBox(width: 10),
           for (final r in c.refs) RefChip(r),
+          if (bisectMark != null) _BisectChip(bisectMark),
           Expanded(
             child: Text(
               c.subject,
@@ -350,6 +397,32 @@ class _CommitTableState extends State<CommitTable> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// `good` / `bad` / `skip` label of a commit marked during a bisect.
+class _BisectChip extends StatelessWidget {
+  const _BisectChip(this.mark);
+
+  final BisectMark mark;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (mark) {
+      BisectMark.good => AppColors.success,
+      BisectMark.bad => AppColors.error,
+      BisectMark.skip => AppColors.textDim,
+    };
+    return Container(
+      margin: const EdgeInsets.only(right: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        border: Border.all(color: color.withValues(alpha: 0.55)),
+        borderRadius: BorderRadius.circular(3),
+      ),
+      child: Text(mark.name, style: TextStyle(fontSize: 11, color: color, height: 1.1)),
     );
   }
 }

@@ -164,3 +164,9 @@
 #info .refs { margin-bottom: 6px; }
 #info .meta { margin: 2px 0; font-size: 0.95em; }
 #info a.hash { color: var(--vscode-textLink-foreground); text-decoration: none; }
+
+/* Bisect marks (good green, bad red) next to the ref labels. */
+.ref.bisect { font-weight: 600; text-transform: lowercase; }
+.ref.bisect.good { color: #73bd79; border-color: rgba(115,189,121,.6); }
+.ref.bisect.bad { color: #e06c75; border-color: rgba(224,108,117,.6); }
+.ref.bisect.skip { color: var(--gt-muted); }

@@ -1,8 +1,12 @@
+import '../entities/bisect.dart';
+import '../entities/clean.dart';
 import '../entities/git_models.dart';
 import '../entities/log_query.dart';
+import '../entities/merge.dart';
 import '../entities/patch.dart';
 import '../entities/rebase.dart';
 import '../entities/reflog.dart';
+import '../entities/worktree.dart';
 
 /// A change noticed in the repository folder.
 enum RepoEvent {
@@ -180,7 +184,14 @@ abstract interface class GitRepository {
   Future<void> renameBranch(String oldName, String newName);
   Future<void> deleteBranch(String name, {bool force = false});
   Future<void> deleteRemoteBranch(Branch b);
-  Future<void> merge(String ref, {bool noFf = false, bool squash = false});
+  Future<void> merge(String ref, {MergeOptions options = const MergeOptions()});
+
+  /// Number of commits reachable from [to] but not from [from].
+  Future<int> countCommits(String from, String to);
+
+  /// First lines of `SQUASH_MSG` (left by `git merge --squash`) without
+  /// comments, or null.
+  Future<String?> squashMessage({int maxLines = 30});
   Future<void> rebase(String onto, {String? branch});
   Future<void> abortOperation(RepoState state);
   Future<void> continueOperation(RepoState state);
@@ -188,6 +199,58 @@ abstract interface class GitRepository {
 
   /// Skips the patch `git am` stopped on.
   Future<void> skipMailboxPatch();
+
+  // ---------------------------------------------------------------------------
+  // Clean
+  // ---------------------------------------------------------------------------
+
+  /// Pathspecs `git clean -n` lists with [options] (directories end with
+  /// `/`). [nested] passes `-ff` so repositories nested in the work tree are
+  /// listed too.
+  Future<List<String>> cleanDryRun(CleanOptions options, {bool nested = false});
+
+  /// Removes exactly [pathspecs] (relative, directories ending with `/`)
+  /// with `git clean -f`, `-ff` when [nested]. Tracked files are never
+  /// touched.
+  Future<void> clean(List<String> pathspecs, CleanOptions options, {bool nested = false});
+
+  // ---------------------------------------------------------------------------
+  // Worktrees
+  // ---------------------------------------------------------------------------
+
+  /// Working trees of the repository, the main one first.
+  Future<List<Worktree>> worktrees();
+
+  /// `git worktree add` at [path] (absolute, or relative to [root]).
+  Future<void> addWorktree(String path, WorktreeCheckout checkout);
+  Future<void> lockWorktree(String path, {String? reason});
+  Future<void> unlockWorktree(String path);
+
+  /// `git worktree remove`; [force] also removes local changes.
+  Future<void> removeWorktree(String path, {bool force = false});
+
+  /// `git worktree prune -v` (with [dryRun], `-n`): what was (or would be)
+  /// removed, one line per worktree.
+  Future<String> pruneWorktrees({bool dryRun = false});
+
+  // ---------------------------------------------------------------------------
+  // Bisect
+  // ---------------------------------------------------------------------------
+
+  /// The bisect session in progress, or null.
+  Future<BisectState?> bisectState();
+  Future<void> bisectStart();
+
+  /// Marks [rev] (HEAD when null) and returns what git printed (it names the
+  /// first bad commit once found).
+  Future<String> bisectMark(BisectMark mark, {String? rev});
+
+  /// Ends the session and checks out the branch it started from.
+  Future<void> bisectReset();
+
+  /// `git bisect run <command>` (run through git's shell); returns its
+  /// output.
+  Future<String> bisectRun(String command);
 
   // ---------------------------------------------------------------------------
   // Remote operations

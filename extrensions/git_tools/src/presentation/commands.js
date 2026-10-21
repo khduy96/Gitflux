@@ -6,6 +6,9 @@ const path = require('path');
 const { GitError } = require('../domain/errors');
 const { openCommitDiff } = require('./diff');
 const { olderFirst } = require('../domain/logic/history');
+const { checkedOutElsewhere, worktreeOfBranch } = require('../domain/logic/worktree');
+const { mergeDialog } = require('./mergeDialog');
+const { newWorktree, openWorktree } = require('./worktrees');
 
 /** @typedef {import('./model').RepoModel} RepoModel */
 /** @typedef {import('../domain/entities').Branch} Branch */
@@ -49,6 +52,16 @@ async function smartCheckout(m, label, checkout) {
     vscode.window.setStatusBarMessage(`$(check) ${label}`, 4000);
   } catch (e) {
     m.busy = null;
+    // The branch is checked out in another worktree: offer to open that one.
+    const elsewhere = e instanceof GitError ? checkedOutElsewhere(e.message) : null;
+    if (elsewhere) {
+      m.log(`${label} failed: ${e.message}`, 'error');
+      const choice = await vscode.window.showWarningMessage(`${label} failed: the branch is already checked out in another worktree.`,
+        { modal: true, detail: `${elsewhere}\n\nA branch can be checked out in one worktree at a time. Open that worktree, or create a new branch from it.` },
+        'Open that Worktree');
+      if (choice) await openWorktree(path.normalize(elsewhere));
+      return;
+    }
     const overwritten = e instanceof GitError &&
       /would be overwritten|commit your changes or stash them/.test(e.stderr);
     if (!overwritten) {
@@ -287,8 +300,10 @@ async function branchActions(m, b) {
   items.push({ label: '$(history) Show in Log', id: 'log' });
   if (!b.current) {
     items.push({ label: `$(git-pull-request) Rebase ${q(cur)} onto ${q(b.name)}`, id: 'rebase' });
-    items.push({ label: `$(git-merge) Merge ${q(b.name)} into ${q(cur)}`, id: 'merge' });
+    items.push({ label: `$(git-merge) Merge ${q(b.name)} into ${q(cur)}…`, id: 'mergeDialog' });
+    items.push({ label: `$(git-merge) Quick Merge ${q(b.name)} into ${q(cur)}`, description: 'default options', id: 'merge' });
   }
+  if (!b.current) items.push({ label: '$(folder-library) Checkout in New Worktree…', id: 'worktree' });
   if (b.current) items.push({ label: '$(arrow-up) Push…', id: 'push' });
   if (!b.current && !b.remote && b.upstream) items.push({ label: `$(arrow-down) Update from ${b.upstream}`, id: 'update' });
   if (!b.remote) items.push({ label: '$(edit) Rename…', id: 'rename' });
@@ -311,6 +326,8 @@ async function runBranchAction(m, b, id) {
       return vscode.commands.executeCommand('gitTools.log.focus');
     case 'rebase': return rebaseOnto(m, b.name);
     case 'merge': return mergeIntoCurrent(m, b.name);
+    case 'mergeDialog': return mergeDialog(m, b.name, b.name.replace(/^refs\/tags\//, ''));
+    case 'worktree': return newWorktree(m, b);
     case 'push': return push(m);
     case 'update': return updateBranch(m, b);
     case 'rename': return renameBranch(m, b);
@@ -330,12 +347,16 @@ async function branchesPopup(m) {
   const sorted = (list) => [...list].sort((a, b) =>
     (b.current - a.current) || (fav(b) - fav(a)) || a.name.localeCompare(b.name));
   const fav = (b) => (/(^|\/)(main|master|develop)$/.test(b.name) ? 1 : 0);
-  const branchItem = (b) => ({
-    label: `${b.current ? '$(tag)' : fav(b) ? '$(star-full)' : '$(git-branch)'} ${b.name}`,
-    description: [b.ahead ? `↑${b.ahead}` : '', b.behind ? `↓${b.behind}` : '', b.upstream && !b.remote ? b.upstream : '']
-      .filter(Boolean).join(' '),
-    branch: b,
-  });
+  const branchItem = (b) => {
+    const elsewhere = !b.remote && !b.current ? worktreeOfBranch(m.worktrees, b.name) : null;
+    return {
+      label: `${b.current ? '$(tag)' : fav(b) ? '$(star-full)' : '$(git-branch)'} ${b.name}`,
+      description: [b.ahead ? `↑${b.ahead}` : '', b.behind ? `↓${b.behind}` : '', b.upstream && !b.remote ? b.upstream : '',
+        elsewhere ? `checked out in ${path.basename(elsewhere.path)}` : '']
+        .filter(Boolean).join(' '),
+      branch: b,
+    };
+  };
   qp.items = [
     { label: '$(arrow-down) Update Project…', id: 'update' },
     { label: '$(check) Commit…', id: 'commit' },
@@ -661,6 +682,8 @@ async function commitAction(m, action, commits) {
       return compareWithCurrent(m, c.hash);
     case 'compareCommits':
       return compareCommits(m, commits);
+    case 'merge':
+      return mergeDialog(m, c.hash, short);
     case 'reset': {
       const mode = /** @type {any} */ (await vscode.window.showQuickPick(RESET_MODES, {
         title: `Reset ${currentLabel(m)} to ${short}`, placeHolder: 'Choose how the working tree and index are changed',
@@ -770,7 +793,7 @@ async function addToGitignore(m, changes) {
 }
 
 module.exports = {
-  validateRefName, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, mergeIntoCurrent, rebaseOnto,
+  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, mergeIntoCurrent, rebaseOnto,
   checkoutAndRebase, compareWithCurrent, compareCommits, updateBranch, branchActions, runBranchAction, branchesPopup, checkoutRevision,
   push, update, fetch, manageRemotes, stash, stashApply, stashDrop, stashBranch, stashShowFiles, resolveConflicts,
   commitAction, rollback, deleteUntracked, addToGitignore, addToVcs, unversion,
