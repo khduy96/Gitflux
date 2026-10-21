@@ -15,6 +15,10 @@
  * @typedef {{name: string, kind: 'head'|'local'|'remote'|'tag'}} RefLabel
  * @typedef {{hash: string, parents: string[], author: string, email: string, time: number, committer: string, commitTime: number, refs: RefLabel[], subject: string}} Commit
  * @typedef {{name: string, remote: boolean, hash: string, current: boolean, upstream: string|null, ahead: number, behind: number, gone: boolean}} Branch
+ * @typedef {{selector: string, index: number, hash: string, action: string, message: string, time: number|null,
+ *   missing: boolean}} ReflogEntry
+ *   One reflog line: selector "HEAD@{2}", action "commit (amend)" and message (the subject around its first ": ").
+ *   `missing`: the commit no longer exists (only selector and hash are known).
  * @typedef {{name: string, hash: string}} Tag
  * @typedef {{name: string, url: string}} Remote
  * @typedef {{index: number, ref: string, hash: string, time: number, message: string}} Stash

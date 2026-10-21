@@ -4,7 +4,7 @@
 const vscode = require('vscode');
 
 /**
- * Tree of HEAD, local / remote branches, tags and stashes.
+ * Tree of HEAD, local / remote branches, tags, stashes and the reflog.
  */
 class BranchesTreeProvider {
   /** @param {import('./model').RepoManager} manager */
@@ -55,6 +55,7 @@ class BranchesTreeProvider {
         this.group(r, 'cloud', list.map((b) => this.branchNode(b, b.name.slice(r.length + 1))), false)), true),
       this.group('Tags', 'tag', m.tags.map((t) => this.tagNode(t)), false),
       this.group('Stashes', 'archive', m.stashes.map((st) => this.stashNode(st)), false),
+      this.reflogNode(),
       ...(m.repo.hasGitmodules() || m.submodules.length
         ? [{ ...this.group('Submodules', 'repo', m.submodules.map((s) => this.submoduleNode(m, s)), true), kind: 'submodules' }]
         : []),
@@ -119,6 +120,16 @@ class BranchesTreeProvider {
     const asBranch = { name: `refs/tags/${t.name}`, remote: false, current: false, hash: t.hash, upstream: null, ahead: 0, behind: 0, gone: false };
     item.command = { command: 'gitTools.branch.showLog', title: 'Show in Log', arguments: [{ branch: asBranch }] };
     return { item, tag: t, branch: asBranch };
+  }
+
+  /** Opens the Reflog panel: where HEAD pointed, to find lost commits. */
+  reflogNode() {
+    const item = new vscode.TreeItem('Reflog', vscode.TreeItemCollapsibleState.None);
+    item.iconPath = new vscode.ThemeIcon('history');
+    item.tooltip = 'Where HEAD pointed (commit, reset, rebase, checkout…): recover commits lost by history rewriting';
+    item.contextValue = 'reflog';
+    item.command = { command: 'gitTools.showReflog', title: 'Show Reflog' };
+    return { item };
   }
 
   stashNode(st) {

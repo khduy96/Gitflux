@@ -5,6 +5,7 @@ const vscode = require('vscode');
 const path = require('path');
 const { GitError } = require('../domain/errors');
 const { openCommitDiff } = require('./diff');
+const { olderFirst } = require('../domain/logic/history');
 
 /** @typedef {import('./model').RepoModel} RepoModel */
 /** @typedef {import('../domain/entities').Branch} Branch */
@@ -205,6 +206,61 @@ async function compareWithCurrent(m, ref) {
   });
   qp.onDidHide(() => qp.dispose());
   qp.show();
+}
+
+const STATUS_LETTER = { modified: 'M', added: 'A', deleted: 'D', renamed: 'R', copied: 'C', typeChanged: 'T', untracked: 'U', conflicted: 'U' };
+
+/**
+ * Files that differ between two commits (any two: neither has to contain
+ * the other), older on the left. Select a file to open its diff; the title
+ * bar button swaps the sides.
+ * @param {RepoModel} m
+ * @param {import('../domain/entities').Commit[]} commits
+ */
+async function compareCommits(m, commits) {
+  if (commits.length !== 2) return;
+  let [left, right] = olderFirst(commits[0], commits[1]);
+  // Same committer date (e.g. a rebase or a script): the ancestor goes left.
+  if (left.commitTime === right.commitTime && await m.repo.isAncestor(right.hash, left.hash)) [left, right] = [right, left];
+  const shortOf = (c) => c.hash.slice(0, 8);
+  const qp = vscode.window.createQuickPick();
+  qp.matchOnDescription = true;
+  qp.ignoreFocusOut = true; // stays open while stepping through the diffs
+  qp.placeholder = 'Select a file to open its diff';
+  qp.buttons = [{ iconPath: new vscode.ThemeIcon('arrow-swap'), tooltip: 'Swap Sides' }];
+  let gen = 0;
+  const load = async () => {
+    const g = ++gen;
+    qp.title = `${shortOf(left)} ${left.subject}  ↔  ${shortOf(right)} ${right.subject}`;
+    qp.busy = true;
+    try {
+      const files = await m.repo.changedFiles(left.hash, right.hash);
+      if (g !== gen) return;
+      qp.items = [
+        sep(`${files.length} file${files.length === 1 ? '' : 's'} changed`),
+        ...files.map((f) => ({
+          label: `${STATUS_LETTER[f.type] || 'M'}  ${path.basename(f.path)}`,
+          description: f.oldPath ? `${f.oldPath} → ${f.path}` : path.posix.dirname(f.path) === '.' ? '' : path.posix.dirname(f.path),
+          file: f,
+        })),
+      ];
+    } catch (e) {
+      if (g === gen) qp.items = [{ label: `$(error) ${String(e.message).split('\n')[0]}` }];
+    } finally {
+      if (g === gen) qp.busy = false;
+    }
+  };
+  qp.onDidTriggerButton(() => {
+    [left, right] = [right, left];
+    load();
+  });
+  qp.onDidAccept(() => {
+    const sel = /** @type {any} */ (qp.selectedItems[0]);
+    if (sel && sel.file) openCommitDiff(m, sel.file, right.hash, left.hash, true);
+  });
+  qp.onDidHide(() => qp.dispose());
+  qp.show();
+  await load();
 }
 
 /** @param {RepoModel} m @param {Branch} b */
@@ -603,6 +659,8 @@ async function commitAction(m, action, commits) {
       return smartCheckout(m, `Checkout ${short}`, () => m.repo.checkout(c.hash));
     case 'compare':
       return compareWithCurrent(m, c.hash);
+    case 'compareCommits':
+      return compareCommits(m, commits);
     case 'reset': {
       const mode = /** @type {any} */ (await vscode.window.showQuickPick(RESET_MODES, {
         title: `Reset ${currentLabel(m)} to ${short}`, placeHolder: 'Choose how the working tree and index are changed',
@@ -713,7 +771,7 @@ async function addToGitignore(m, changes) {
 
 module.exports = {
   validateRefName, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, mergeIntoCurrent, rebaseOnto,
-  checkoutAndRebase, compareWithCurrent, updateBranch, branchActions, runBranchAction, branchesPopup, checkoutRevision,
+  checkoutAndRebase, compareWithCurrent, compareCommits, updateBranch, branchActions, runBranchAction, branchesPopup, checkoutRevision,
   push, update, fetch, manageRemotes, stash, stashApply, stashDrop, stashBranch, stashShowFiles, resolveConflicts,
   commitAction, rollback, deleteUntracked, addToGitignore, addToVcs, unversion,
 };

@@ -1,32 +1,57 @@
 // Log view: commit table with branch graph and commit details.
 (() => {
   const vscode = acquireVsCodeApi();
-  const { h, showMenu, formatDate, basename, dirname } = gt;
+  const { h, fill, showMenu, formatDate, basename, dirname } = gt;
 
   const ROW = 22;
   const LANE = 12;
   const COLORS = ['#4f9ded', '#73bd79', '#e5a54b', '#c678dd', '#e06c75', '#56b6c2', '#d19a66', '#98c379', '#b57edc', '#61afef'];
 
+  const DATE_PRESETS = [['24h', 'Last 24 hours'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days']];
+  /** Shortest text searched in the changes, and the typing pause before it runs. */
+  const MIN_SEARCH = 2;
+  const SEARCH_DELAY = 450;
+
   const saved = vscode.getState() || {};
   let detailsWidth = saved.detailsWidth || 380;
-  let data = { commits: [], graph: [], head: null, loading: true, filter: {}, branches: [], repo: null, canRebase: false };
+  let data = { commits: [], graph: [], head: null, loading: true, filter: {}, authors: [], branches: [], repo: null, canRebase: false };
   let rows = []; // [{c, g}]
   let byHash = new Map();
   /** Loaded commits reachable from HEAD: the ones history rewriting can touch. */
   let ancestors = new Set();
   let text = saved.text || '';
+  /** 'text': filters the loaded commits here; 'content': git log -S / -G. */
+  let searchMode = saved.searchMode === 'content' ? 'content' : 'text';
+  let regex = !!saved.regex;
+  let searchTimer = null;
+  /** Repository of the last log message (undefined before the first one). */
+  let shownRepo;
   let selected = new Set();
   let primary = null;
   let details = null;
   let selectedFile = null;
+  /** Commit shown in the details without being in the loaded log (Reflog ▸ Show in Log). */
+  let extra = null;
 
   // ------------------------------------------------------------- layout
 
-  const search = h('input#search', { type: 'search', placeholder: 'Text or hash', value: text });
+  const modeSel = h('select#searchMode', { title: 'What the text box searches' },
+    h('option', { value: 'text', text: 'Message / hash / author', selected: searchMode === 'text' }),
+    h('option', { value: 'content', text: 'Changes containing text', selected: searchMode === 'content' }));
+  const search = h('input#search', { type: 'search', value: text });
+  const regexBox = h('input#regex', { type: 'checkbox' });
+  regexBox.checked = regex;
+  const regexLabel = h('label#regexLabel', { title: 'Search lines matching a regular expression (git log -G) instead of a text (-S)' },
+    regexBox, ' Regex (-G)');
   const branchSel = h('select#branch');
+  const userSel = h('select#user', { title: 'Author (name or email)' });
+  const dateSel = h('select#date', { title: 'Committer date' });
   const pathChip = h('span.chip#pathChip');
+  const chips = h('span#chips');
   const status = h('span.muted#status');
-  const toolbar = h('div#toolbar', null, search, h('span.muted', { text: 'Branch:' }), branchSel, pathChip, h('span.spacer'), status);
+  const toolbar = h('div#toolbar', null, modeSel, search, regexLabel,
+    h('span.muted', { text: 'Branch:' }), branchSel, h('span.muted', { text: 'User:' }), userSel,
+    h('span.muted', { text: 'Date:' }), dateSel, pathChip, chips, h('span.spacer'), status);
   const spacer = h('div#spacer');
   const rowsEl = h('div#rows');
   const table = h('div#table', { tabindex: '0' }, spacer, rowsEl);
@@ -37,17 +62,58 @@
   detailsEl.style.width = `${detailsWidth}px`;
 
   const post = (type, d = {}) => vscode.postMessage({ type, ...d });
-  const persist = () => vscode.setState({ detailsWidth, text });
+  const persist = () => vscode.setState({ detailsWidth, text, searchMode, regex });
+  const setFilter = (filter) => post('filter', { filter });
 
   // ------------------------------------------------------------- events
 
   search.addEventListener('input', () => {
     text = search.value;
     persist();
+    if (searchMode === 'content') {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(applySearch, SEARCH_DELAY);
+      return;
+    }
     computeRows();
     renderRows();
+    renderFilterControls();
   });
-  branchSel.addEventListener('change', () => post('filter', { branch: branchSel.value || null }));
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && searchMode === 'content') applySearch();
+  });
+  modeSel.addEventListener('change', () => {
+    searchMode = modeSel.value === 'content' ? 'content' : 'text';
+    persist();
+    renderSearchMode();
+    computeRows();
+    renderRows();
+    applySearch();
+  });
+  regexBox.addEventListener('change', () => {
+    regex = regexBox.checked;
+    persist();
+    applySearch();
+  });
+  branchSel.addEventListener('change', () => setFilter({ branch: branchSel.value || null }));
+  userSel.addEventListener('change', () => {
+    const v = userSel.value;
+    if (v === 'select') {
+      renderFilterControls(); // until the input box answers
+      post('pickUser');
+    } else {
+      setFilter({ user: v === 'me' ? { kind: 'me' } : v.startsWith('a:') ? { kind: 'text', text: v.slice(2) } : null });
+    }
+  });
+  dateSel.addEventListener('change', () => {
+    const v = dateSel.value;
+    if (v === 'select') {
+      renderFilterControls();
+      post('pickDate');
+    } else if (v !== 'custom') {
+      setFilter({ date: v ? { preset: v } : null });
+    }
+  });
   table.addEventListener('scroll', renderRows);
   window.addEventListener('resize', renderRows);
 
@@ -84,8 +150,10 @@
     const msg = e.data;
     if (msg.type === 'log') {
       data = msg.data;
+      syncSearch();
       computeAncestors();
       const known = new Set(data.commits.map((c) => c.hash));
+      if (extra) known.add(extra.hash);
       selected = new Set([...selected].filter((x) => known.has(x)));
       if (primary && !known.has(primary)) {
         primary = null;
@@ -95,6 +163,10 @@
       renderToolbar();
       renderRows();
       renderDetails();
+    } else if (msg.type === 'showCommit') {
+      extra = msg.commit;
+      selected = new Set();
+      showDetails(extra.hash);
     } else if (msg.type === 'details') {
       if (msg.details.hash === primary) {
         details = msg.details;
@@ -107,14 +179,54 @@
       if (i >= 0) {
         select(rows[i].c, false, false);
         ensureVisible(i);
+      } else if (byHash.has(msg.hash)) {
+        // Loaded but hidden by the text filter: details only.
+        selected = new Set([msg.hash]);
+        showDetails(msg.hash);
       }
     }
   });
 
   // ------------------------------------------------------------- data
 
+  /** Asks git for the commits whose changes contain the text (content mode), or drops that filter. */
+  function applySearch() {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+    const want = searchMode === 'content' && text.trim().length >= MIN_SEARCH ? { text, regex } : null;
+    const cur = (data.filter && data.filter.search) || null;
+    const same = want === cur || (!!want && !!cur && want.text === cur.text && want.regex === cur.regex);
+    if (!same && data.repo) setFilter({ search: want });
+  }
+
+  /**
+   * Keeps the text box in line with the repository's content search: the
+   * persisted search runs again on the first log, another repository shows
+   * its own (the filters are per repository).
+   */
+  function syncSearch() {
+    if (shownRepo === data.repo) return;
+    const first = !shownRepo;
+    shownRepo = data.repo;
+    const s = data.filter && data.filter.search;
+    if (s) {
+      searchMode = 'content';
+      text = s.text;
+      regex = !!s.regex;
+    } else if (first) {
+      if (searchMode === 'content') applySearch();
+    } else if (searchMode === 'content') {
+      text = '';
+    }
+    search.value = text;
+    regexBox.checked = regex;
+    modeSel.value = searchMode;
+    persist();
+    renderSearchMode();
+  }
+
   function computeRows() {
-    const q = text.trim().toLowerCase();
+    const q = searchMode === 'text' ? text.trim().toLowerCase() : '';
     if (!q) {
       rows = data.commits.map((c, i) => ({ c, g: data.graph[i] }));
       return;
@@ -152,12 +264,23 @@
     } else {
       selected = new Set([c.hash]);
     }
+    extra = null;
     if (primary !== c.hash) {
       primary = c.hash;
       details = null;
       selectedFile = null;
       post('details', { hash: c.hash });
     }
+    renderRows();
+    renderDetails();
+  }
+
+  /** Shows the details of a commit that has no visible row. */
+  function showDetails(hash) {
+    primary = hash;
+    details = null;
+    selectedFile = null;
+    post('details', { hash });
     renderRows();
     renderDetails();
   }
@@ -171,6 +294,32 @@
   // ------------------------------------------------------------- render
 
   function renderToolbar() {
+    renderFilterControls();
+    const f = data.filter || {};
+    const filtered = !!(f.user || f.date || f.search);
+    status.replaceChildren(
+      data.loading ? h('span.spinner') : '',
+      ` ${data.repo ? `${data.commits.length} commit${data.commits.length === 1 ? '' : 's'}${filtered ? ' found' : ''}` : 'No repository'}`,
+    );
+  }
+
+  function renderSearchMode() {
+    regexLabel.hidden = searchMode !== 'content';
+    search.placeholder = searchMode === 'content' ? `Text in changes (${MIN_SEARCH}+ characters)` : 'Text or hash';
+    search.title = searchMode === 'content'
+      ? 'Commits whose changes add or remove this text (git log -S), or a matching line with Regex (-G)'
+      : 'Filters the loaded commits by message, hash, author or ref';
+  }
+
+  const userLabel = (u) => (u.kind === 'me' ? 'Me' : u.text);
+  const dateLabel = (d) => {
+    if (d.preset) return (DATE_PRESETS.find((p) => p[0] === d.preset) || [0, d.preset])[1];
+    if (d.from && d.to) return `${d.from} – ${d.to}`;
+    return d.from ? `Since ${d.from}` : `Until ${d.to}`;
+  };
+
+  /** Branch / User / Date dropdowns and the chips of the active filters. */
+  function renderFilterControls() {
     const f = data.filter || {};
     branchSel.replaceChildren(
       h('option', { value: '', text: 'All' }),
@@ -183,15 +332,60 @@
     if (f.branch && ![...branchSel.options].some((o) => o.value === f.branch)) {
       branchSel.append(h('option', { value: f.branch, text: f.branch, selected: true }));
     }
+    const u = f.user || null;
+    const authors = data.authors || [];
+    const userValue = !u ? '' : u.kind === 'me' ? 'me' : `a:${u.text}`;
+    fill(userSel,
+      h('option', { value: '', text: 'All' }),
+      h('option', { value: 'me', text: 'Me' }),
+      authors.length ? h('optgroup', { label: 'Authors' }, authors.map((a) =>
+        h('option', { value: `a:${a.name}`, text: `${a.name} (${a.count})`, title: a.emails.join(', ') }))) : null,
+      u && u.kind === 'text' && !authors.some((a) => a.name === u.text) ? h('option', { value: userValue, text: u.text }) : null,
+      h('option', { value: 'select', text: 'Select…' }),
+    );
+    userSel.value = userValue;
+    const d = f.date || null;
+    fill(dateSel,
+      h('option', { value: '', text: 'All' }),
+      DATE_PRESETS.map(([id, label]) => h('option', { value: id, text: label })),
+      d && !d.preset ? h('option', { value: 'custom', text: dateLabel(d) }) : null,
+      h('option', { value: 'select', text: 'Select…' }),
+    );
+    dateSel.value = !d ? '' : d.preset || 'custom';
+
     pathChip.replaceChildren();
     pathChip.hidden = !f.path;
     if (f.path) {
-      pathChip.append(h('span', { text: `Path: ${f.path}` }), h('span.x', { text: ' ×', title: 'Clear', onclick: () => post('filter', { path: null }) }));
+      pathChip.append(h('span', { text: `Path: ${f.path}` }), h('span.x', { text: ' ×', title: 'Clear', onclick: () => setFilter({ path: null }) }));
     }
-    status.replaceChildren(
-      data.loading ? h('span.spinner') : '',
-      ` ${data.repo ? `${data.commits.length} commits` : 'No repository'}`,
+    const chip = (label, title, clear) => h('span.chip', { title }, h('span', { text: label }),
+      h('span.x', { text: ' ×', title: 'Clear', onclick: clear }));
+    fill(chips,
+      u ? chip(`User: ${userLabel(u)}`, 'Author name or email contains this (case-insensitive)', () => setFilter({ user: null })) : null,
+      d ? chip(`Date: ${dateLabel(d)}`, 'Committer date', () => setFilter({ date: null })) : null,
+      f.search ? chip(`${f.search.regex ? 'Changes matching' : 'Changes containing'}: ${f.search.text}`,
+        f.search.regex ? 'git log -G' : 'git log -S', () => clearSearch()) : null,
+      f.branch || f.path || u || d || f.search || (searchMode === 'text' && text.trim())
+        ? h('a.reset', { href: '#', text: 'Reset filters', onclick: (e) => { e.preventDefault(); resetFilters(); } }) : null,
     );
+  }
+
+  function clearSearch() {
+    text = '';
+    search.value = '';
+    persist();
+    applySearch();
+  }
+
+  function resetFilters() {
+    clearTimeout(searchTimer);
+    text = '';
+    search.value = '';
+    persist();
+    setFilter({ branch: null, path: null, user: null, date: null, search: null });
+    computeRows();
+    renderRows();
+    renderFilterControls();
   }
 
   function renderRows() {
@@ -285,6 +479,9 @@
     }
     const d = details;
     const files = h('div#files');
+    if (extra && extra.hash === d.hash) {
+      files.append(h('div.dnote', { text: 'Not in the loaded log (e.g. only the reflog still reaches it).' }));
+    }
     files.append(h('div.dhead', null,
       h('span', { text: `${d.files.length} file${d.files.length === 1 ? '' : 's'} changed` }),
       d.parents.length > 1 ? h('span.muted', { text: ' (vs first parent)' }) : null));
@@ -366,6 +563,7 @@
       { label: 'Cherry-Pick', id: 'cherryPick' },
       { label: `Checkout Revision '${c.hash.slice(0, 8)}'`, id: 'checkout', disabled: !single },
       { label: 'Compare with Local', id: 'compare', disabled: !single },
+      { label: 'Compare Commits', id: 'compareCommits', disabled: sel.length !== 2 },
       '-',
       { label: 'Reset Current Branch to Here…', id: 'reset', disabled: !single },
       { label: 'Revert Commit', id: 'revert' },
@@ -385,6 +583,7 @@
     ], (action) => post('commitAction', { action, hashes: sel.map((s) => s.hash) }));
   }
 
+  renderSearchMode();
   renderToolbar();
   renderRows();
   renderDetails();

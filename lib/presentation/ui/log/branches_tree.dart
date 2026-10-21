@@ -8,7 +8,7 @@ import '../common.dart';
 import '../dialogs/basic_dialogs.dart';
 
 /// Left part of the Log tab: HEAD, local and remote branches, tags,
-/// submodules.
+/// submodules and the reflog.
 class BranchesTree extends StatefulWidget {
   const BranchesTree({super.key, required this.controller});
 
@@ -97,6 +97,15 @@ class _BranchesTreeState extends State<BranchesTree> {
               if (!_collapsed.contains('submodules'))
                 for (final sm in ctrl.submodules.value.where((x) => match(x.path))) _submoduleRow(sm),
             ],
+            _row(
+              key: 'reflog',
+              depth: 0,
+              icon: Icons.history_toggle_off,
+              iconColor: AppColors.textDim,
+              label: 'Reflog',
+              onTap: ctrl.showReflog,
+              onSecondary: _reflogMenu,
+            ),
           ];
 
           return Column(
@@ -215,6 +224,17 @@ class _BranchesTreeState extends State<BranchesTree> {
       case 'explorer':
         openFolder('${ctrl.root}/${sm.path}');
     }
+  }
+
+  Future<void> _reflogMenu(Offset pos) async {
+    final branch = ctrl.status.value.branch;
+    final r = await showContextMenu<String>(context, pos, [
+      menuItem('HEAD', 'Show HEAD Reflog', icon: Icons.history_toggle_off),
+      if (branch != null) menuItem('refs/heads/$branch', 'Show Reflog of $branch', icon: Icons.call_split),
+    ]);
+    if (r == null) return;
+    ctrl.setReflogRef(r == 'HEAD' ? null : r);
+    ctrl.showReflog();
   }
 
   Future<void> _submodulesMenu(Offset pos) async {

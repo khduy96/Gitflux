@@ -3,7 +3,8 @@
 Extension cho VS Code mang Git tool window kiểu Android Studio vào VS Code:
 
 - Panel **Commit**: tick chọn file để commit, không cần thao tác staging.
-- **Log** có đồ thị nhánh.
+- **Log** có đồ thị nhánh, lọc theo tác giả / ngày, tìm commit theo nội dung thay đổi, so sánh hai commit bất kỳ.
+- **Reflog**: tìm lại commit bị mất sau reset, rebase, drop, amend.
 - Popup **Branches**.
 - Push / Update Project.
 - Stash.
@@ -82,7 +83,7 @@ code --uninstall-extension local.git-tools-as
 |---|---|---|
 | Activity bar ▸ **Git Tools** ▸ **Source Control Repositories** | Danh sách mọi repository trong workspace, kể cả repo con. Repo đang chọn có dấu ✓ | Danh sách repository / VCS roots |
 | Activity bar ▸ **Git Tools** ▸ **Commit** | Danh sách thay đổi, ô commit message, nút Commit | Commit tool window (Alt+0) |
-| Activity bar ▸ **Git Tools** ▸ **Branches** | HEAD, Local, Remote, Tags, Stashes | Cây branch trong Git tool window |
+| Activity bar ▸ **Git Tools** ▸ **Branches** | HEAD, Local, Remote, Tags, Stashes, Reflog | Cây branch trong Git tool window |
 | Panel dưới ▸ **Git Tools** ▸ **Log** | Lịch sử commit có đồ thị nhánh | Git ▸ Log (Alt+9) |
 | Thanh trạng thái, góc trái: `⑂ main 2↑ 1↓` | Branch hiện tại, số commit chưa push ↑ và chưa pull ↓. Bấm vào để mở popup Branches | Branch widget |
 | Output ▸ **Git Tools** | Mọi lệnh git đã chạy kèm kết quả | Tab Console |
@@ -222,15 +223,22 @@ Diff dùng trình so sánh có sẵn của VS Code, nên có đủ side-by-side 
 View **Log** gồm 3 phần:
 
 1. **Thanh lọc:**
-   - Ô tìm kiếm — lọc ngay theo nội dung message, hash, tác giả, email hoặc tên ref.
+   - Ô tìm kiếm, với dropdown chọn kiểu tìm ở bên trái:
+     - **Message / hash / author** (mặc định) — lọc ngay trong các commit đã tải theo message, hash, tác giả, email hoặc tên ref.
+     - **Changes containing text** — tìm commit có **thay đổi** thêm hoặc bớt đoạn text đó (`git log -S`), trên toàn bộ lịch sử chứ không chỉ các commit đã tải. Tick **Regex (-G)** để tìm commit có dòng thay đổi khớp biểu thức chính quy (`git log -G`). Cần gõ ít nhất 2 ký tự; lệnh chạy sau khi ngừng gõ chưa tới nửa giây, hoặc khi bấm `Enter`. **Không** phân biệt hoa thường (git chạy với `-i`).
    - Dropdown **Branch** — All, HEAD hoặc một branch cụ thể.
+   - Dropdown **User** — All, **Me** (`user.name` / `user.email` trong config git), các tác giả của những commit đã tải (nhiều commit nhất ở trên), hoặc **Select…** để gõ một phần tên hay email. Khớp tên **hoặc** email, không phân biệt hoa thường.
+   - Dropdown **Date** — All, Last 24 hours, Last 7 days, Last 30 days, hoặc **Select…** để nhập ngày bắt đầu / kết thúc dạng `YYYY-MM-DD` (bỏ trống một trong hai được; cả hai ngày đều được tính). Lọc theo ngày commit (committer date).
+   - Lọc User, Date và Changes chạy **trong git** (`--author`, `--since`, `--until`, `-S` / `-G`), nên tìm được cả commit nằm ngoài số commit đã tải (`gitTools.log.maxCommits`). Các bộ lọc kết hợp với nhau và với Branch / Path.
+   - Mỗi bộ lọc đang bật hiện thành chip (`User: Me ×`, `Date: Last 7 days ×`, `Changes containing: foo ×`); bấm `×` để bỏ. **Reset filters** bỏ hết mọi bộ lọc.
+   - Bộ lọc được nhớ riêng cho từng repo đến khi đóng VS Code.
    - Chip **Path** khi đang xem lịch sử một file. Bấm `×` để bỏ lọc.
 2. **Bảng commit:**
    - Đồ thị nhánh có màu.
    - Nhãn ref màu: HEAD vàng, branch local xanh lá, remote tím, tag xanh dương.
    - Các cột message, tác giả, thời gian, hash.
    - Commit HEAD được in đậm.
-   - Khi đang lọc bằng ô tìm kiếm, đồ thị được ẩn đi.
+   - Khi đang lọc bằng ô tìm kiếm, User, Date hoặc Changes, đồ thị được ẩn đi.
 3. **Chi tiết commit** (bên phải, kéo thanh chia để đổi độ rộng):
    - Danh sách file thay đổi. Click để xem diff; với merge commit thì so với parent đầu tiên.
    - Message đầy đủ, tác giả, committer, parent.
@@ -249,6 +257,7 @@ View **Log** gồm 3 phần:
 | Cherry-Pick | Áp dụng commit đã chọn vào branch hiện tại, theo thứ tự cũ đến mới |
 | Checkout Revision | Checkout commit (detached HEAD) |
 | Compare with Local | Liệt kê commit hai phía và các file khác nhau giữa commit đó và HEAD |
+| Compare Commits | Chọn đúng **2 commit** (`Ctrl+Click`), không cần commit này là tổ tiên của commit kia. Mở danh sách file khác nhau (`git diff --name-status -M`, có nhận biết đổi tên) với chữ trạng thái **M / A / D / R**; tiêu đề là `<commit cũ hơn> ↔ <commit mới hơn>` (theo ngày commit). Chọn file để mở diff trong trình so sánh của VS Code; danh sách vẫn mở để xem tiếp file khác. Nút ⇄ **Swap Sides** đổi hai bên |
 | Reset Current Branch to Here… | Chọn chế độ **Soft / Mixed / Hard / Keep**. Hard hỏi xác nhận lại |
 | Revert Commit | Tạo commit đảo ngược |
 | Undo Commit… | Chỉ với commit HEAD. Huỷ commit nhưng giữ thay đổi trong working tree |
@@ -271,6 +280,31 @@ Các lệnh sửa lịch sử (từ Edit Commit Message… tới Interactively R
 - Copy Path
 
 **Xem lịch sử một file:** chuột phải tab editor ▸ **Show History for Current File**, hoặc lệnh **Git Tools: Show History for Current File**.
+
+### Reflog
+
+Reflog ghi lại mọi lần HEAD di chuyển (commit, amend, reset, rebase, checkout…), nên là "lưới an toàn" sau khi sửa lịch sử: commit đã bị reset / drop / amend vẫn còn trong reflog.
+
+Mở bằng: cây **Branches** ▸ **Reflog**, hoặc lệnh **Git Tools: Show Reflog**. Panel **Reflog** liệt kê tối đa 500 mục mới nhất, mỗi dòng gồm:
+- selector `HEAD@{n}`, hash rút gọn;
+- hành động (`commit`, `commit (amend)`, `reset`, `rebase (finish)`, `checkout`…) và message;
+- thời gian tương đối; rê chuột để xem thời gian đầy đủ.
+
+Dropdown **Reflog of** chọn giữa reflog của **HEAD** (mặc định) và của branch hiện tại. Panel tự làm mới cùng repo.
+
+Menu chuột phải trên một mục (double-click = Show in Log):
+
+| Lệnh | Ý nghĩa |
+|---|---|
+| Show in Log | Chọn commit đó trong Log nếu đã tải. Nếu không (commit không còn branch nào chứa), Log vẫn hiện chi tiết commit: file thay đổi và diff |
+| Checkout Revision | Checkout commit (detached HEAD), có Smart Checkout |
+| New Branch Here… | Tạo branch tại commit đó: cách **lấy lại commit bị mất** |
+| Reset Current Branch to Here… | Chọn chế độ Soft / Mixed / Hard / Keep như trong Log |
+| Copy Revision Number | Copy hash |
+
+Mục có commit không còn tồn tại (đã bị `git gc` dọn) hiện mờ, ghi *(commit no longer exists)* và không có thao tác nào.
+
+**Ví dụ lấy lại commit sau khi lỡ `reset --hard`:** Show Reflog ▸ tìm dòng `commit: <message>` của commit bị mất ▸ chuột phải ▸ **New Branch Here…**.
 
 ---
 
@@ -309,6 +343,7 @@ Dùng trong popup hoặc khi chuột phải trong cây Branches:
 Trong cây Branches còn có:
 - Mục **Tags**: Checkout, New Branch, Merge, Push Tag, Delete Tag.
 - Mục **Stashes**: xem [mục 8](#8-stash).
+- Mục **Reflog**: mở panel Reflog, xem [mục 5](#reflog).
 
 ---
 
@@ -520,6 +555,7 @@ Mở Command Palette (`Ctrl+Shift+P`) và gõ `Git Tools`:
 | Resolve Conflicts… / Continue Merge / Rebase / Abort Merge / Rebase / Skip Commit (Rebase) | Xử lý merge, rebase |
 | Interactive Rebase… | Chọn commit cũ nhất rồi mở panel Interactive Rebase |
 | Show Git Log / Show History for Current File | Xem lịch sử |
+| Show Reflog | Mở panel Reflog (tìm lại commit bị mất) |
 | Manage Remotes… | Thêm, sửa URL, xoá remote |
 | Select Repository… / Open Repository… / Reopen Closed Repositories | Chọn, thêm hoặc hiện lại repository |
 | Group by Directory / Group by: None (Flat List) | Đổi cách hiển thị trong view Commit |
@@ -552,6 +588,8 @@ Extension không gán phím tắt mặc định để tránh trùng phím của 
 ## 14. Giới hạn hiện tại
 
 - Chưa có shelve.
+- Reflog chỉ tải 500 mục mới nhất, chưa có "load more".
+- Danh sách tác giả trong dropdown User lấy từ các commit đã tải (tối đa 100 người). Tìm theo **Me** dùng `user.name` / `user.email` hiện tại, nên commit cũ với tên / email khác không được tính.
 - Interactive rebase giữ nguyên merge commit (không reword / drop / đổi chỗ merge commit được).
 - `--autostash` của git trả lại thay đổi chưa commit nhưng không giữ phân biệt đã stage / chưa stage: sau khi rebase, mọi thay đổi đều ở trạng thái chưa stage (bước xem trước todo không đụng tới index).
 - Diff khi click file trong view Commit luôn so với `HEAD`, không tách riêng phần đã stage và chưa stage.
@@ -575,7 +613,8 @@ git_tools/
 │  │  ├─ errors.js         GitError, AiError, StaleSelectionError, CommitRejected
 │  │  ├─ prompt.js         system prompt + dựng prompt sinh commit message
 │  │  ├─ logic/            graph.js (xếp làn đồ thị), conflicts.js (conflict marker), lineSelection.js (chọn từng dòng),
-│  │  │                    rebaseTodo.js (đọc / kiểm tra / dựng todo của interactive rebase)
+│  │  │                    rebaseTodo.js (đọc / kiểm tra / dựng todo của interactive rebase),
+│  │  │                    history.js (bộ lọc Log user / date / nội dung, tách subject reflog, thứ tự Compare Commits)
 │  │  └─ usecases/         commitChanges.js, generateCommitMessage.js, selectedLineContents.js, interactiveRebase.js
 │  ├─ data/                implementation của ports
 │  │  ├─ gitRunner.js      chạy lệnh git
@@ -593,6 +632,7 @@ git_tools/
 │     ├─ mergeTool.js      merge tool 3 cột   (media/merge.*)
 │     ├─ selectLines.js    panel Commit Lines  (media/lines.*)
 │     ├─ rebaseView.js     panel Interactive Rebase, ô soạn message, lệnh sửa lịch sử trong Log (media/rebase.*)
+│     ├─ reflogView.js     panel Reflog       (media/reflog.*)
 │     ├─ diff.js           nội dung file theo revision cho diff editor
 │     ├─ guide.js          trang Setup Guide  (media/guide.*)
 │     └─ webview.js        khung HTML chung cho webview
@@ -610,7 +650,7 @@ Quy tắc:
 - Chạy test (cần Node 18 trở lên và git):
 
   ```bash
-  node --test test/core.test.js test/lineSelection.test.js test/submodule.test.js test/branchUpstream.test.js test/usecases.test.js test/rebaseTodo.test.js test/interactiveRebase.test.js
+  node --test test/core.test.js test/lineSelection.test.js test/submodule.test.js test/branchUpstream.test.js test/usecases.test.js test/rebaseTodo.test.js test/interactiveRebase.test.js test/historyTools.test.js
   ```
 
 - Đóng gói lại file `.vsix` (cần Node và Internet ở lần chạy đầu):

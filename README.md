@@ -47,15 +47,49 @@ flutter build windows --release
 - Xem ảnh hai bên cho file ảnh nhị phân
 
 **Git tool window (Alt+9)**
-- Log: cây branch (HEAD, Local, Remote, Tags), đồ thị commit có màu theo nhánh, ref labels,
-  lọc theo text/hash/author, theo branch, theo file (Show History)
+- Log: cây branch (HEAD, Local, Remote, Tags, Submodules, Reflog), đồ thị commit có màu theo nhánh, ref labels,
+  lọc theo text/hash/author, branch, user, ngày, nội dung thay đổi, theo file (Show History)
+  (xem mục **Lọc Log** bên dưới)
 - Chi tiết commit: danh sách file đã đổi, message, author/committer, các branch chứa commit
-- Menu commit: Cherry-Pick, Checkout Revision, Compare with Local, Reset (soft/mixed/hard/keep),
+- Menu commit: Cherry-Pick, Checkout Revision, Compare with Local, Compare Commits, Reset (soft/mixed/hard/keep),
   Revert, Undo Commit, Edit Commit Message, Fixup into Previous, Squash Commits, Drop Commits,
   Move Commit Up / Down, Interactively Rebase from Here, New Branch, New Tag
-  (xem mục **Interactive rebase** bên dưới)
+  (xem mục **Interactive rebase** và **So sánh hai commit** bên dưới)
 - Console: toàn bộ lệnh git đã chạy và output, có ô chạy lệnh git tuỳ ý
 - Stashes: Pop / Apply / Drop / Clear / Unstash as Branch, xem file và diff trong stash
+- Reflog: lịch sử HEAD đã trỏ tới đâu, để lấy lại commit bị mất (xem mục **Reflog** bên dưới)
+
+**Lọc Log (thanh filter phía trên danh sách commit)**
+- Ô tìm kiếm có 2 chế độ (bấm icon kính lúp để chọn):
+  - **Message / hash / author** (mặc định): lọc ngay trên các commit đã tải, như trước.
+  - **Changes containing text**: tìm commit làm thay đổi số lần xuất hiện của đoạn text (`git log -S`);
+    **Changes matching regex (-G)**: commit có dòng thêm / xoá khớp regex (`git log -G`).
+    Chạy trong git sau khi ngừng gõ ~0,5 giây, cần ít nhất 2 ký tự, không phân biệt hoa thường.
+- **User**: All, Me (`user.name` / `user.email` của repo), các author của các commit đã tải (nhiều commit nhất
+  đứng trước), hoặc Select… để gõ tên / email. Khớp một phần tên hoặc email, không phân biệt hoa thường.
+- **Date**: All, Last 24 hours, Last 7 days, Last 30 days, hoặc Select… chọn từ ngày / đến ngày (có thể bỏ trống một đầu).
+- User / Date / nội dung được lọc ngay trong git (`--author`, `--since`, `--until`, `-S` / `-G`), nên tìm được
+  cả commit nằm ngoài 3000 commit đang tải; kết hợp được với filter branch và file.
+- Mỗi filter đang bật hiện dạng chip có dấu × để bỏ; nút **Reset filters** bỏ tất cả. Khi lọc theo text, user,
+  ngày hoặc nội dung thì đồ thị commit bị ẩn.
+- Filter User / Date được nhớ theo từng repo trong phiên làm việc (mở lại app thì về All).
+
+**So sánh hai commit**
+- Trong Log, Ctrl+click chọn đúng 2 commit ▸ chuột phải ▸ **Compare Commits** (không cần commit này là tổ tiên commit kia).
+- Mở tab mới: tiêu đề `<commit cũ> ↔ <commit mới>` (cũ / mới theo committer date), danh sách file khác nhau
+  (`git diff --name-status -M`, có phát hiện rename) với chữ trạng thái M / A / D / R, click file để xem diff ngay
+  trong tab, double-click để mở diff ở tab riêng.
+- Nút **Swap sides** đổi hai bên của diff.
+
+**Reflog (lưới an toàn khi reset, rebase, drop, amend…)**
+- Mở bằng node **Reflog** trong cây branch của Log, tab **Reflog** của Git tool window, hoặc menu Git ▸ **Show Reflog**.
+- Liệt kê tối đa 500 entry mới nhất của reflog `HEAD` (hoặc của branch hiện tại, chọn ở nút `Reflog: HEAD ▾`):
+  selector (`HEAD@{n}`), hash, thao tác (`commit`, `commit (amend)`, `reset`, `rebase (finish)`, `checkout`…),
+  message, thời gian tương đối (rê chuột để xem giờ chính xác). Tự refresh cùng repo.
+- Chuột phải một entry: **Show in Log** (chọn commit trong Log; commit không còn trên branch nào vẫn xem được
+  file và diff), **Checkout Revision**, **New Branch Here…** (cách lấy lại commit bị mất),
+  **Reset Current Branch to Here…**, **Copy Revision Number**. Double-click = Show in Log.
+- Entry có commit đã bị xoá khỏi repo (gc) hiện mờ và không có thao tác.
 
 **Interactive rebase (chuột phải commit trong Log)**
 
@@ -129,17 +163,18 @@ Clean Architecture, 3 tầng. Phụ thuộc chỉ hướng vào trong: `presenta
 lib/
   main.dart       # composition root: tạo các implementation của data rồi đưa cho presentation
   domain/         # thuần Dart: không import Flutter, dart:io hay data/
-    entities/     # FileChange, Commit, Branch, RepoStatus, RebasePlan, AiConfig, ConsoleEntry, ...
-    logic/        # thuật toán thuần: diff engine, graph layout, conflict parser, line selection, rebase todo
+    entities/     # FileChange, Commit, Branch, RepoStatus, RebasePlan, ReflogEntry, LogQuery, AiConfig, ...
+    logic/        # thuật toán thuần: diff engine, graph layout, conflict parser, line selection, rebase todo,
+                  # parse reflog, filter log (author, ngày)
     repositories/ # interface: GitRepository, GitService, CommitMessageGenerator, SettingsStore
-    usecases/     # CommitChanges, GenerateCommitMessage, GetSelectedLineContents, InteractiveRebase
+    usecases/     # CommitChanges, GenerateCommitMessage, GetSelectedLineContents, InteractiveRebase, CompareCommits
     errors.dart   # GitException, AiException, StaleSelectionException, CommitRejected, RebaseRejected
   data/           # implementation các interface của domain
     datasources/  # GitProcess (chạy git), client Claude / Gemini
     repositories/ # GitCliRepository, GitCliService, JsonFileSettingsStore (%APPDATA%/git_tools)
   presentation/
     app.dart, app_scope.dart  # widget gốc + InheritedWidget cấp GitService / AI cho UI
-    state/        # RepoController (state + gọi use case), AppSettings
+    state/        # RepoController (state + gọi use case), LogFilter, AppSettings
     ui/           # commit/, diff/, log/, branches/, conflicts/, dialogs/, console/, workspace_page.dart
 test/             # unit test domain/use case (repo giả) + test tích hợp chạy git thật trên repo tạm
 ```

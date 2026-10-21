@@ -162,6 +162,12 @@
         "icon": "$(history)"
       },
       {
+        "command": "gitTools.showReflog",
+        "title": "Show Reflog",
+        "category": "Git Tools",
+        "icon": "$(history)"
+      },
+      {
         "command": "gitTools.fileHistory",
         "title": "Show History for Current File",
         "category": "Git Tools",
@@ -500,6 +506,11 @@
           "command": "gitTools.refresh",
           "when": "view == gitTools.branches",
           "group": "navigation@3"
+        },
+        {
+          "command": "gitTools.showReflog",
+          "when": "view == gitTools.branches",
+          "group": "1_history@1"
         },
         {
           "command": "gitTools.fileHistory",
