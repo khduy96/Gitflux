@@ -7,10 +7,12 @@ import '../../domain/entities/git_models.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/rebase_todo.dart';
+import '../../domain/logic/worktree_parser.dart';
 import '../state/repo_controller.dart';
 import 'common.dart';
 import 'dialogs/basic_dialogs.dart';
 import 'dialogs/interactive_rebase_dialog.dart';
+import 'dialogs/worktree_dialogs.dart';
 
 void showInExplorer(String root, String relPath) {
   final full = p.normalize(p.join(root, relPath));
@@ -113,6 +115,14 @@ Future<void> smartCheckout(
     ctrl.notify(AppNotification('$label done'));
   } on GitException catch (e) {
     ctrl.busy.value = null;
+    // The branch is checked out in another worktree: offer to open it
+    // instead of git's raw message.
+    final worktree = worktreeOfCheckoutError(e.stderr);
+    if (worktree != null && context.mounted) {
+      final branch = RegExp(r"'([^'\n]+)' is already").firstMatch(e.stderr)?.group(1) ?? '';
+      await showBranchInWorktreeDialog(context, ctrl, branch, worktree);
+      return;
+    }
     if (_overwritten(e) && context.mounted) {
       final smart = await showDialog<bool>(
         context: context,
@@ -157,6 +167,10 @@ Future<void> smartCheckout(
 Future<void> checkoutBranch(
     BuildContext context, RepoController ctrl, Branch b) async {
   if (b.isCurrent) return;
+  if (!b.isRemote && b.worktree != null) {
+    await showBranchInWorktreeDialog(context, ctrl, b.name, b.worktree!);
+    return;
+  }
   if (!b.isRemote) {
     await smartCheckout(context, ctrl, 'Checkout ${b.name}',
         () => ctrl.repo.checkout(b.name));
@@ -166,7 +180,9 @@ Future<void> checkoutBranch(
   final local = ctrl.branches.value
       .where((x) => !x.isRemote && x.name == b.shortName)
       .firstOrNull;
-  if (local != null) {
+  if (local != null && local.worktree != null) {
+    await showBranchInWorktreeDialog(context, ctrl, local.name, local.worktree!);
+  } else if (local != null) {
     await smartCheckout(context, ctrl, 'Checkout ${local.name}',
         () => ctrl.repo.checkout(local.name));
   } else {
@@ -337,6 +353,7 @@ Future<void> deleteBranchAction(
 String _current(RepoController ctrl) =>
     ctrl.status.value.branch ?? 'HEAD';
 
+/// Merges [ref] right away with git's default options (no dialog).
 Future<void> mergeIntoCurrent(
     BuildContext context, RepoController ctrl, String ref) async {
   await ctrl.run('Merge $ref into ${_current(ctrl)}', () => ctrl.repo.merge(ref),

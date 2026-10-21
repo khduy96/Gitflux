@@ -8,6 +8,7 @@ const cmd = require('./commands');
 const { REBASE_ACTIONS, rebaseAction } = require('./rebaseView');
 const { createPatchFromCommits } = require('./patches');
 const { isDay } = require('../domain/logic/history');
+const { bisectAction } = require('./bisect');
 
 /** Log filter fields the webview may change. */
 const FILTER_KEYS = ['branch', 'path', 'user', 'date', 'search'];
@@ -29,6 +30,8 @@ class LogViewProvider {
     this.view = null;
     /** Last "history can be rewritten" state sent to the webview. */
     this._canRebase = false;
+    /** Last bisect state sent to the webview (JSON). */
+    this._bisect = 'null';
     /** The webview script is running (it posted 'ready'). */
     this._ready = false;
     /** Commit to show once the log is loaded (Reflog ▸ Show in Log). @type {string|null} */
@@ -63,6 +66,8 @@ class LogViewProvider {
     if (!this.view) return;
     const m = this.manager.current;
     this._canRebase = !!m && LogViewProvider.canRebase(m);
+    const bisect = m ? LogViewProvider.bisectData(m) : null;
+    this._bisect = JSON.stringify(bisect);
     this.view.webview.postMessage({
       type: 'log',
       data: m ? {
@@ -75,7 +80,8 @@ class LogViewProvider {
         authors: m.authors.slice(0, MAX_AUTHORS).map((a) => ({ name: a.name, count: a.count, emails: a.emails.slice(0, 3) })),
         branches: m.branches.map((b) => ({ name: b.name, remote: b.remote })),
         canRebase: LogViewProvider.canRebase(m),
-      } : { repo: null, commits: [], graph: [], head: null, loading: false, filter: {}, authors: [], branches: [], canRebase: false },
+        bisect,
+      } : { repo: null, commits: [], graph: [], head: null, loading: false, filter: {}, authors: [], branches: [], canRebase: false, bisect: null },
     });
     if (this._pending && this._ready && m && !m.logLoading) {
       const hash = this._pending;
@@ -89,18 +95,42 @@ class LogViewProvider {
     return m.status.state === 'normal' && !!m.status.branch;
   }
 
-  /** Enables / disables the history rewriting menu items without resending the log. */
+  /** Bisect session for the Log: marks (good / bad / skip labels) and the result. */
+  static bisectData(m) {
+    const b = m.bisect;
+    return b ? { marks: b.marks, firstBad: b.firstBad } : null;
+  }
+
+  /**
+   * Enables / disables the history rewriting and bisect menu items, and
+   * updates the bisect labels, without resending the log.
+   */
   postRepoState() {
     const m = this.manager.current;
     const canRebase = !!m && LogViewProvider.canRebase(m);
-    if (!this.view || canRebase === this._canRebase) return;
+    const bisect = m ? LogViewProvider.bisectData(m) : null;
+    const bisectJson = JSON.stringify(bisect);
+    if (!this.view || (canRebase === this._canRebase && bisectJson === this._bisect)) return;
     this._canRebase = canRebase;
-    this.view.webview.postMessage({ type: 'repoState', canRebase });
+    this._bisect = bisectJson;
+    this.view.webview.postMessage({ type: 'repoState', canRebase, bisect });
   }
 
   /** Selects a commit in the log (e.g. from another view). */
   reveal(hash) {
     if (this.view) this.view.webview.postMessage({ type: 'select', hash });
+  }
+
+  /**
+   * Selects a commit in the Log only when it is already shown, without
+   * moving the focus (e.g. clicking an Annotate line).
+   * @param {string} hash
+   * @returns {boolean} whether the Log was visible
+   */
+  revealIfVisible(hash) {
+    if (!this.view || !this.view.visible || !this._ready) return false;
+    this.reveal(hash);
+    return true;
   }
 
   /**
@@ -215,6 +245,10 @@ class LogViewProvider {
         const commits = msg.hashes.map(find).filter(Boolean);
         if (!commits.length) return;
         if (msg.action === 'createPatch') return createPatchFromCommits(m, commits);
+        // bisectGood / bisectBad / bisectSkip / bisectReset / bisectRun.
+        if (msg.action.startsWith('bisect')) {
+          return bisectAction(m, this, /** @type {any} */ (msg.action.slice(6).toLowerCase()), commits[0].hash);
+        }
         // Edit Commit Message of HEAD keeps the fast amend path.
         if (REBASE_ACTIONS.has(msg.action) && !(msg.action === 'reword' && commits[0].hash === m.status.head)) {
           return rebaseAction(this.context, m, msg.action, commits);

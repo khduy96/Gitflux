@@ -78,8 +78,33 @@
  * @property {(oldName: string, newName: string) => Promise<any>} renameBranch
  * @property {(name: string, force?: boolean) => Promise<any>} deleteBranch
  * @property {(remote: string, branch: string) => Promise<any>} deleteRemoteBranch
- * @property {(ref: string) => Promise<any>} merge
+ * @property {(ref: string, o?: import('./entities').MergeOptions) => Promise<any>} merge Default options: --no-edit.
+ * @property {(ref: string) => Promise<import('./entities').MergePreview>} mergePreview
+ * @property {() => Promise<string|null>} squashMessage SQUASH_MSG left by `merge --squash`, or null.
  * @property {(onto: string, branch?: string) => Promise<any>} rebase
+ *
+ * @property {(o: import('./entities').CleanOptions) => Promise<import('./entities').CleanEntry[]>} cleanPreview
+ *   What `git clean -n` would remove (nested repositories included, flagged).
+ * @property {(o: import('./entities').CleanOptions, entries: import('./entities').CleanEntry[]) => Promise<void>} clean
+ *   git clean -f of exactly these entries (-ff when one is a nested repository).
+ *
+ * @property {() => Promise<import('./entities').Worktree[]>} worktrees
+ * @property {(o: {path: string, branch?: string, newBranch?: string, startPoint?: string, detach?: boolean}) => Promise<any>} addWorktree
+ *   Existing branch, new branch (-b) from startPoint, or detached at startPoint.
+ * @property {(path: string, reason?: string) => Promise<any>} lockWorktree
+ * @property {(path: string) => Promise<any>} unlockWorktree
+ * @property {(path: string, force?: boolean) => Promise<any>} removeWorktree
+ * @property {(dryRun: boolean) => Promise<string[]>} pruneWorktrees Lines of `git worktree prune -v` (-n when dryRun).
+ * @property {(path: string) => Promise<boolean>} worktreeHasChanges Modified or untracked files in that worktree.
+ *
+ * @property {() => Promise<import('./entities').BisectState|null>} bisectState Null when no bisect is in progress.
+ * @property {(mark: 'good'|'bad'|'skip', rev?: string) => Promise<string>} bisectMark
+ *   Starts a session first when none is in progress; returns git's output.
+ * @property {() => Promise<any>} bisectReset Back to the branch the session started from.
+ * @property {(command: string) => Promise<{code: number, output: string}>} bisectRun git bisect run (output streamed to the log).
+ *
+ * @property {(rel: string, contents?: string) => Promise<import('./entities').Blame>} blame
+ *   git blame --porcelain of the committed file, or of `contents` (unsaved editor) with --contents -.
  * @property {(state: import('./entities').RepoState) => Promise<any>} continueOperation
  * @property {(state: import('./entities').RepoState) => Promise<any>} abortOperation
  * @property {() => Promise<any>} skipRebaseCommit

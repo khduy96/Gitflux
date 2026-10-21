@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
 
 import '../../../domain/entities/git_models.dart';
+import '../../../domain/entities/worktree.dart';
 import '../../state/repo_controller.dart';
 import '../actions.dart';
 import '../branches/branch_menu.dart';
 import '../common.dart';
 import '../dialogs/basic_dialogs.dart';
+import '../dialogs/worktree_dialogs.dart';
 
 /// Left part of the Log tab: HEAD, local and remote branches, tags,
-/// submodules and the reflog.
+/// submodules, worktrees and the reflog.
 class BranchesTree extends StatefulWidget {
   const BranchesTree({super.key, required this.controller});
 
@@ -39,7 +41,8 @@ class _BranchesTreeState extends State<BranchesTree> {
     return Container(
       color: AppColors.panel,
       child: ListenableBuilder(
-        listenable: Listenable.merge([ctrl.branches, ctrl.tags, ctrl.logFilter, ctrl.status, ctrl.submodules]),
+        listenable: Listenable.merge(
+            [ctrl.branches, ctrl.tags, ctrl.logFilter, ctrl.status, ctrl.submodules, ctrl.worktrees]),
         builder: (context, _) {
           final q = _search.text.trim().toLowerCase();
           bool match(String n) => q.isEmpty || n.toLowerCase().contains(q);
@@ -97,6 +100,10 @@ class _BranchesTreeState extends State<BranchesTree> {
               if (!_collapsed.contains('submodules'))
                 for (final sm in ctrl.submodules.value.where((x) => match(x.path))) _submoduleRow(sm),
             ],
+            _group('worktrees', 'Worktrees', ctrl.worktrees.value.length,
+                icon: Icons.account_tree, onSecondary: _worktreesMenu),
+            if (!_collapsed.contains('worktrees'))
+              for (final w in ctrl.worktrees.value.where((x) => match(x.path) || match(x.description))) _worktreeRow(w),
             _row(
               key: 'reflog',
               depth: 0,
@@ -226,6 +233,86 @@ class _BranchesTreeState extends State<BranchesTree> {
     }
   }
 
+  Widget _worktreeRow(Worktree w) {
+    final (badge, color) = w.prunable
+        ? ('missing', AppColors.error)
+        : w.locked
+            ? ('locked', AppColors.warning)
+            : ('', AppColors.textMuted);
+    return Tooltip(
+      message: [
+        w.path,
+        if (w.isMain) 'Main worktree',
+        if (w.isCurrent) 'Opened in this window',
+        if (w.locked) 'Locked${w.lockReason == null || w.lockReason!.isEmpty ? '' : ': ${w.lockReason}'}',
+        if (w.prunable) 'Prunable: ${w.prunableReason ?? 'folder is missing'}',
+      ].join('\n'),
+      waitDuration: const Duration(milliseconds: 600),
+      child: _row(
+        key: 'wt:${w.path}',
+        depth: 1,
+        icon: w.isCurrent ? Icons.my_location : Icons.folder_outlined,
+        iconColor: w.isCurrent ? AppColors.headRef : (color == AppColors.textMuted ? AppColors.textDim : color),
+        label: w.name,
+        bold: w.isCurrent,
+        trailing: [
+          Flexible(
+            child: Text(' ${w.description}',
+                overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5, color: AppColors.textMuted)),
+          ),
+          if (badge.isNotEmpty) Text(' $badge', style: TextStyle(fontSize: 11.5, color: color)),
+        ],
+        onDoubleTap: w.isCurrent || w.prunable || w.bare ? null : () => ctrl.openRepo(w.path),
+        onSecondary: (pos) => _worktreeMenu(w, pos),
+      ),
+    );
+  }
+
+  Future<void> _worktreeMenu(Worktree w, Offset pos) async {
+    final r = await showContextMenu<String>(context, pos, [
+      menuItem('open', 'Open', icon: Icons.open_in_new, enabled: !w.isCurrent && !w.prunable && !w.bare),
+      menuItem('copy', 'Copy Path', icon: Icons.copy),
+      menuItem('explorer', 'Show in Explorer', icon: Icons.folder_open_outlined, enabled: !w.prunable),
+      const PopupMenuDivider(height: 8),
+      if (w.locked)
+        menuItem('unlock', 'Unlock', icon: Icons.lock_open, enabled: !w.isMain)
+      else
+        menuItem('lock', 'Lock…', icon: Icons.lock_outline, enabled: !w.isMain),
+      menuItem('remove', 'Remove…', icon: Icons.delete_outline,
+          enabled: !w.isMain && !w.isCurrent, color: w.isMain || w.isCurrent ? null : AppColors.error),
+    ]);
+    if (!mounted) return;
+    switch (r) {
+      case 'open':
+        ctrl.openRepo(w.path);
+      case 'copy':
+        copyToClipboard(context, w.path);
+      case 'explorer':
+        openFolder(w.path);
+      case 'lock':
+        await lockWorktreeAction(context, ctrl, w);
+      case 'unlock':
+        await ctrl.unlockWorktree(w);
+      case 'remove':
+        await removeWorktreeAction(context, ctrl, w);
+    }
+  }
+
+  Future<void> _worktreesMenu(Offset pos) async {
+    final r = await showContextMenu<String>(context, pos, [
+      menuItem('new', 'New Worktree…', icon: Icons.add),
+      menuItem('prune', 'Prune…', icon: Icons.cleaning_services_outlined,
+          enabled: ctrl.worktrees.value.length > 1),
+    ]);
+    if (!mounted) return;
+    switch (r) {
+      case 'new':
+        await showNewWorktreeDialog(context, ctrl);
+      case 'prune':
+        await pruneWorktreesAction(context, ctrl);
+    }
+  }
+
   Future<void> _reflogMenu(Offset pos) async {
     final branch = ctrl.status.value.branch;
     final r = await showContextMenu<String>(context, pos, [
@@ -306,6 +393,14 @@ class _BranchesTreeState extends State<BranchesTree> {
         if (b.ahead > 0) Text('↑${b.ahead}', style: const TextStyle(fontSize: 11.5, color: AppColors.added)),
         if (b.behind > 0) Text(' ↓${b.behind}', style: const TextStyle(fontSize: 11.5, color: AppColors.modified)),
         if (b.gone) const Text(' gone', style: TextStyle(fontSize: 11.5, color: AppColors.error)),
+        if (b.worktree != null)
+          Flexible(
+            child: Tooltip(
+              message: 'Checked out in ${b.worktree}',
+              child: Text(' in ${b.worktree!.split('/').last}',
+                  overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5, color: AppColors.warning)),
+            ),
+          ),
       ],
       selected: filter == b.name,
       onTap: () => _filter(b.name),

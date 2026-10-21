@@ -11,6 +11,11 @@ const { shQuote } = require('../domain/logic/rebaseTodo');
 const { escapeBasicRegex, splitReflogSubject } = require('../domain/logic/history');
 const { shelfStatus } = require('../domain/logic/shelf');
 const { parsePatchStat, appliedWithConflicts } = require('../domain/logic/patch');
+const { cleanEntries, cleanFlags, batchPathspecs } = require('../domain/logic/clean');
+const { mergeArgs } = require('../domain/logic/merge');
+const { parseWorktrees } = require('../domain/logic/worktree');
+const { parseBisectRefs, bisectMarks, parseBisectLog, parseBisectVars } = require('../domain/logic/bisect');
+const { parseBlamePorcelain } = require('../domain/logic/blame');
 
 const FS = '\x1f';
 const RS = '\x1e';
@@ -87,11 +92,15 @@ function parseStatus(out) {
       if (x === 'A') type = y === 'D' ? 'deleted' : 'added';
       else if (x === 'D' || y === 'D') type = 'deleted';
       else if (x === 'T' || y === 'T') type = 'typeChanged';
-      s.changes.push({ path: f[8], type, submodule: parseSubmoduleField(f[2]) });
+      s.changes.push({ path: f[8], type, submodule: parseSubmoduleField(f[2]), staged: x !== '.', unstaged: y !== '.' });
     } else if (e[0] === '2') {
       const f = splitN(e, ' ', 10);
       const orig = parts[++i];
-      s.changes.push({ path: f[9], oldPath: orig, type: f[8].startsWith('C') ? 'copied' : 'renamed', submodule: parseSubmoduleField(f[2]) });
+      const [x, y] = f[1];
+      s.changes.push({
+        path: f[9], oldPath: orig, type: f[8].startsWith('C') ? 'copied' : 'renamed', submodule: parseSubmoduleField(f[2]),
+        staged: x !== '.', unstaged: y !== '.',
+      });
     } else if (e[0] === 'u') {
       const f = splitN(e, ' ', 11);
       s.changes.push({ path: f[10], type: 'conflicted', conflictCode: f[1], submodule: parseSubmoduleField(f[2]) });
@@ -123,7 +132,10 @@ function parseRefs(d) {
     else if (r.startsWith('refs/heads/')) refs.push({ name: r.slice(11), kind: 'local' });
     else if (r.startsWith('refs/remotes/')) {
       if (!r.endsWith('/HEAD')) refs.push({ name: r.slice(13), kind: 'remote' });
-    } else if (!r.startsWith('refs/stash')) refs.push({ name: r, kind: 'local' });
+    } else if (!r.startsWith('refs/stash') && !r.startsWith('refs/bisect/')) {
+      // Bisect marks get their own labels (RepoModel.bisect), not ref chips.
+      refs.push({ name: r, kind: 'local' });
+    }
   }
   return refs;
 }
@@ -865,8 +877,36 @@ class Repository {
     return this.git.run(['push', '--progress', remote, '--delete', branch], { log: true });
   }
 
-  merge(ref) {
-    return this.git.run(['merge', '--no-edit', ref], { log: true });
+  /**
+   * Merges `ref` into the current branch; without options git's defaults
+   * (fast-forward when possible, message not edited).
+   * @param {string} ref
+   * @param {import('../domain/entities').MergeOptions} [o]
+   */
+  merge(ref, o) {
+    return this.git.run(o ? mergeArgs(ref, o) : ['merge', '--no-edit', ref], { log: true });
+  }
+
+  /**
+   * Commits `ref` would bring (HEAD..ref) and whether HEAD can fast-forward to it.
+   * @returns {Promise<import('../domain/entities').MergePreview>}
+   */
+  async mergePreview(ref) {
+    const [count, fastForward] = await Promise.all([
+      this.git.run(['rev-list', '--count', `HEAD..${ref}`, '--'], { allowFailure: true }),
+      this.isAncestor('HEAD', ref),
+    ]);
+    const commits = parseInt(count.trim(), 10) || 0;
+    return { commits, fastForward: fastForward && commits > 0 };
+  }
+
+  /** Message `git merge --squash` prepared (SQUASH_MSG), or null. */
+  async squashMessage() {
+    try {
+      return fs.readFileSync(await this.gitPath('SQUASH_MSG'), 'utf8');
+    } catch {
+      return null;
+    }
   }
 
   /** Rebases `branch` (the current one when omitted) onto `onto`. */
@@ -1532,6 +1572,206 @@ class Repository {
       };
     }
     return null;
+  }
+
+  // ---------------------------------------------------------------- clean
+
+  /**
+   * What `git clean -n` removes with these options. Nested repositories are
+   * only removed with a doubled force: they are listed too (from
+   * `-n -f -f`), flagged nestedRepo.
+   * @param {import('../domain/entities').CleanOptions} o
+   * @returns {Promise<import('../domain/entities').CleanEntry[]>}
+   */
+  async cleanPreview(o) {
+    const flags = cleanFlags(o);
+    const [plain, forced] = await Promise.all([
+      this.git.run(['clean', '-n', ...flags]),
+      // Without -d git does not descend into untracked folders, repositories included.
+      o.directories ? this.git.run(['clean', '-n', '-f', '-f', ...flags]) : Promise.resolve(''),
+    ]);
+    return cleanEntries(plain, forced);
+  }
+
+  /**
+   * `git clean -f` of exactly `entries` (literal pathspecs, in batches:
+   * git clean reads no pathspec file). Nested repositories go through their
+   * own `-f -f` run so the doubled force applies to nothing else. Tracked
+   * files are never touched: git clean only removes untracked paths.
+   * @param {import('../domain/entities').CleanOptions} o
+   * @param {import('../domain/entities').CleanEntry[]} entries
+   */
+  async clean(o, entries) {
+    const flags = cleanFlags(o);
+    const spec = (e) => lit(e.directory ? `${e.path}/` : e.path);
+    const runs = [
+      { force: ['-f'], list: entries.filter((e) => !e.nestedRepo) },
+      { force: ['-f', '-f'], list: entries.filter((e) => e.nestedRepo) },
+    ];
+    for (const r of runs) {
+      for (const batch of batchPathspecs(r.list.map(spec))) {
+        await this.git.run(['clean', ...r.force, ...flags, '--', ...batch], { log: true });
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- worktrees
+
+  /**
+   * Worktrees of the repository (`git worktree list --porcelain -z`), the
+   * main one first, the one at this.root marked current.
+   * @returns {Promise<import('../domain/entities').Worktree[]>}
+   */
+  async worktrees() {
+    let r = await this.git.raw(['worktree', 'list', '--porcelain', '-z']);
+    let out = r.stdout;
+    if (r.code !== 0) {
+      // git before 2.36 has no -z: one attribute per line instead.
+      r = await this.git.raw(['worktree', 'list', '--porcelain']);
+      if (r.code !== 0) return [];
+      out = r.stdout.replace(/\r?\n/g, '\0');
+    }
+    // git's spelling of this folder (long names, forward slashes) to find the current one.
+    const top = (await this.git.run(['rev-parse', '--show-toplevel'], { allowFailure: true })).trim();
+    return parseWorktrees(out, top || this.root).map((w) => ({ ...w, path: path.normalize(w.path) }));
+  }
+
+  /**
+   * Adds a worktree at `o.path`: with an existing branch, a new branch
+   * (`-b`) from `o.startPoint`, or detached at `o.startPoint`.
+   * @param {{path: string, branch?: string, newBranch?: string, startPoint?: string, detach?: boolean}} o
+   */
+  addWorktree(o) {
+    const args = ['worktree', 'add'];
+    if (o.newBranch) args.push('-b', o.newBranch);
+    else if (o.detach) args.push('--detach');
+    args.push('--', o.path);
+    const rev = o.newBranch || o.detach ? o.startPoint : o.branch;
+    if (rev) args.push(rev);
+    return this.git.run(args, { log: true });
+  }
+
+  lockWorktree(p, reason = '') {
+    return this.git.run(['worktree', 'lock', ...(reason.trim() ? ['--reason', reason.trim()] : []), '--', p], { log: true });
+  }
+
+  unlockWorktree(p) {
+    return this.git.run(['worktree', 'unlock', '--', p], { log: true });
+  }
+
+  /** Removes a worktree; `force` also discards its local changes. */
+  removeWorktree(p, force = false) {
+    return this.git.run(['worktree', 'remove', ...(force ? ['--force'] : []), '--', p], { log: true });
+  }
+
+  /**
+   * Prunes the administrative files of worktrees whose folder is gone;
+   * `dryRun` only lists them. Returns git's lines ("Removing worktrees/x: …").
+   */
+  async pruneWorktrees(dryRun) {
+    const r = await this.git.raw(['worktree', 'prune', '-v', ...(dryRun ? ['-n'] : [])], { log: !dryRun });
+    if (r.code !== 0) throw new GitError(['worktree', 'prune'], r.code, r.stderr, r.stdout);
+    return `${r.stdout}\n${r.stderr}`.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  }
+
+  /** Whether the worktree at `p` has modified or untracked files. */
+  async worktreeHasChanges(p) {
+    const r = await new GitRunner(p, { gitPath: this.git.gitPath }).raw(['--no-optional-locks', 'status', '--porcelain']);
+    return r.code !== 0 || !!r.stdout.trim();
+  }
+
+  // ---------------------------------------------------------------- bisect
+
+  /** Text of a file of the git folder (`git rev-parse --git-path`), or null. */
+  async readGitFile(name) {
+    try {
+      return fs.readFileSync(await this.gitPath(name), 'utf8');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The bisect session of this worktree (BISECT_START), or null: marks from
+   * refs/bisect/*, progress from `git rev-list --bisect-vars`, and the
+   * first bad commit once git found it (BISECT_LOG).
+   * @returns {Promise<import('../domain/entities').BisectState|null>}
+   */
+  async bisectState() {
+    const start = await this.readGitFile('BISECT_START');
+    if (start === null) return null;
+    const refs = parseBisectRefs(await this.git.run(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/bisect/'], { allowFailure: true }));
+    const log = parseBisectLog((await this.readGitFile('BISECT_LOG')) || '');
+    // The result line stays in the log: it holds while the bad mark is that commit.
+    const firstBad = log.firstBad && refs.bad === log.firstBad ? log.firstBad : null;
+    let progress = null;
+    if (refs.bad && refs.good.length && !firstBad) {
+      const vars = await this.git.raw(['rev-list', '--bisect-vars', refs.bad, '--not', ...refs.good]);
+      if (vars.code === 0) progress = parseBisectVars(vars.stdout);
+    }
+    const head = await this.git.raw(['log', '-1', '--format=%H%x1f%s', 'HEAD']);
+    const [hash, subject] = head.code === 0 ? head.stdout.trim().split(FS) : [null, ''];
+    return {
+      start: start.trim(),
+      bad: refs.bad,
+      good: refs.good,
+      skipped: refs.skipped,
+      marks: bisectMarks(refs),
+      remaining: progress ? progress.remaining : null,
+      steps: progress ? progress.steps : null,
+      head: hash || null,
+      headSubject: subject || '',
+      firstBad,
+      firstBadSubject: firstBad ? log.firstBadSubject : '',
+    };
+  }
+
+  /**
+   * Marks `rev` (HEAD when omitted) good, bad or skipped, starting a session
+   * first when none is in progress. git checks out the next commit to test
+   * once a good and a bad commit are known. Returns git's output.
+   * @param {'good'|'bad'|'skip'} mark
+   * @param {string} [rev]
+   */
+  async bisectMark(mark, rev) {
+    if ((await this.readGitFile('BISECT_START')) === null) await this.git.run(['bisect', 'start'], { log: true });
+    const args = ['bisect', mark, ...(rev ? [rev] : [])];
+    const r = await this.git.raw(args, { log: true });
+    if (r.code !== 0) throw new GitError(args, r.code, r.stderr, r.stdout);
+    return `${r.stdout}\n${r.stderr}`.trim();
+  }
+
+  /** Ends the session and checks out the branch it started from. */
+  bisectReset() {
+    return this.git.run(['bisect', 'reset'], { log: true });
+  }
+
+  /**
+   * `git bisect run <command>`: git runs the command on each commit to
+   * test, exit code 0 = good, 125 = skip, other = bad. The output is
+   * streamed to the log.
+   * @param {string} command a shell command line
+   */
+  async bisectRun(command) {
+    // git quotes each argument of `bisect run` as one word: a command line
+    // with spaces would be taken as a program name. `sh -c` (git's own shell
+    // on Windows) runs it as a command line and passes the exit code on.
+    const r = await this.git.raw(['bisect', 'run', 'sh', '-c', command], { log: true, stream: true });
+    return { code: r.code, output: `${r.stdout}\n${r.stderr}`.trim() };
+  }
+
+  // ---------------------------------------------------------------- blame
+
+  /**
+   * `git blame --porcelain` of `rel`: the committed file, or `contents` (an
+   * editor with unsaved changes) read from stdin with `--contents -`.
+   * @param {string} rel
+   * @param {string} [contents]
+   * @returns {Promise<import('../domain/entities').Blame>}
+   */
+  async blame(rel, contents) {
+    const args = ['blame', '--porcelain', ...(contents !== undefined ? ['--contents', '-'] : []), '--', rel];
+    return parseBlamePorcelain(await this.git.run(args, { stdin: contents }));
   }
 }
 

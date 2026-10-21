@@ -4,10 +4,12 @@
 const vscode = require('vscode');
 const path = require('path');
 const { webviewHtml } = require('./webview');
-const { openLocalDiff } = require('./diff');
+const { openLocalDiff, openStagedDiff, openUnstagedDiff } = require('./diff');
 const cmd = require('./commands');
 const { shelveChanges } = require('./shelf');
 const { createPatch } = require('./patches');
+const { cleanWorkingTree } = require('./clean');
+const { bisectBanner } = require('./bisect');
 const { describeSubmodule } = require('../domain/entities');
 
 /**
@@ -77,6 +79,7 @@ class CommitViewProvider {
         groupBy: this.groupBy,
         repoState: m.status.state,
         rebase: m.rebaseProgress,
+        bisect: bisectBanner(m),
         hasCommits: !!m.status.head,
         changes: m.status.changes.map((c) => {
           const sel = m.lineSelections.get(c.path);
@@ -140,6 +143,9 @@ class CommitViewProvider {
         return vscode.commands.executeCommand('gitTools.abortOperation');
       case 'skip':
         return vscode.commands.executeCommand('gitTools.skipRebaseCommit');
+      case 'bisect':
+        // Banner buttons: good / bad / skip / reset / run / showFirstBad.
+        return vscode.commands.executeCommand(`gitTools.bisect.${msg.action}`);
       case 'menu':
         return this.menuAction(m, msg.action, changes);
       case 'addToVcs':
@@ -156,6 +162,14 @@ class CommitViewProvider {
       case 'diff':
         for (const c of changes.slice(0, 10)) if (c.type !== 'conflicted') await openLocalDiff(m, c, false);
         return;
+      case 'stagedDiff':
+        return openStagedDiff(m, first);
+      case 'unstagedDiff':
+        return openUnstagedDiff(m, first);
+      case 'annotate':
+        return vscode.commands.executeCommand('gitTools.annotate', { model: m, path: first.path });
+      case 'clean':
+        return cleanWorkingTree(m);
       case 'openFile':
         return vscode.window.showTextDocument(vscode.Uri.file(path.join(m.root, first.path)));
       case 'resolve':

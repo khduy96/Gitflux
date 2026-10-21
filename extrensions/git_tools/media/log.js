@@ -14,7 +14,7 @@
 
   const saved = vscode.getState() || {};
   let detailsWidth = saved.detailsWidth || 380;
-  let data = { commits: [], graph: [], head: null, loading: true, filter: {}, authors: [], branches: [], repo: null, canRebase: false };
+  let data = { commits: [], graph: [], head: null, loading: true, filter: {}, authors: [], branches: [], repo: null, canRebase: false, bisect: null };
   let rows = []; // [{c, g}]
   let byHash = new Map();
   /** Loaded commits reachable from HEAD: the ones history rewriting can touch. */
@@ -183,6 +183,8 @@
       }
     } else if (msg.type === 'repoState') {
       data.canRebase = msg.canRebase;
+      data.bisect = msg.bisect;
+      renderRows();
     } else if (msg.type === 'select') {
       const i = rows.findIndex((r) => r.c.hash === msg.hash);
       if (i >= 0) {
@@ -553,6 +555,7 @@
         },
       },
       g ? graphCanvas(g, isHead) : h('span', { style: { width: '8px', flexShrink: '0' } }),
+      bisectChip(c.hash),
       c.refs.map(refChip),
       h('span.subject.ellipsis', { text: c.subject, title: c.subject }),
       h('span.author.ellipsis', { text: c.author }),
@@ -565,6 +568,16 @@
   function refChip(r) {
     const icon = r.kind === 'head' ? '◉' : r.kind === 'tag' ? '🏷' : '⑂';
     return h(`span.ref.${r.kind}`, { title: r.name }, r.kind === 'head' ? icon : `${icon} ${r.name}`);
+  }
+
+  /** good / bad / skip label of a commit marked during a bisect session. */
+  function bisectChip(hash) {
+    const mark = data.bisect && data.bisect.marks ? data.bisect.marks[hash] : null;
+    if (!mark) return null;
+    const first = data.bisect.firstBad === hash;
+    return h(`span.ref.bisect.${mark}`, {
+      title: first ? 'First bad commit (bisect)' : `Marked ${mark === 'skip' ? 'skipped' : mark} (bisect)`,
+    }, first ? 'first bad' : mark);
   }
 
   function graphCanvas(g, isHead) {
@@ -719,9 +732,31 @@
       { label: 'Move Commit Down', id: 'moveDown', disabled: !rw.moveDown },
       { label: 'Interactively Rebase from Here…', id: 'interactiveRebase', disabled: !rw.interactive },
       '-',
+      { label: `Merge into Current…`, id: 'merge', disabled: !single || isHead || ancestors.has(c.hash) },
+      '-',
+      ...bisectItems(single),
+      '-',
       { label: 'New Branch…', id: 'branch', disabled: !single },
       { label: 'New Tag…', id: 'tag', disabled: !single },
     ], (action) => post('commitAction', { action, hashes: sel.map((s) => s.hash) }));
+  }
+
+  /** Bisect items: start a session on a commit, or mark it while one is in progress. */
+  function bisectItems(single) {
+    if (!data.bisect) {
+      return [
+        { label: 'Bisect ▸ Start: Mark Bad', id: 'bisectBad', disabled: !single },
+        { label: 'Bisect ▸ Start: Mark Good', id: 'bisectGood', disabled: !single },
+      ];
+    }
+    const done = !!data.bisect.firstBad;
+    return [
+      { label: 'Bisect ▸ Mark Bad', id: 'bisectBad', disabled: !single || done },
+      { label: 'Bisect ▸ Mark Good', id: 'bisectGood', disabled: !single || done },
+      { label: 'Bisect ▸ Skip', id: 'bisectSkip', disabled: !single || done },
+      { label: 'Bisect ▸ Run Script…', id: 'bisectRun', disabled: done },
+      { label: 'Bisect ▸ Reset Bisect', id: 'bisectReset' },
+    ];
   }
 
   renderSearchMode();

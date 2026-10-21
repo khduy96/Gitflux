@@ -9,11 +9,13 @@ import '../actions.dart';
 import '../common.dart';
 import '../conflicts/conflicts_dialog.dart';
 import '../dialogs/ai_settings_dialog.dart';
+import '../dialogs/clean_dialog.dart';
 import '../dialogs/patch_dialogs.dart';
 import '../dialogs/push_dialog.dart';
 import '../dialogs/rollback_dialog.dart';
 import '../dialogs/shelve_dialogs.dart';
 import '../dialogs/stash_dialogs.dart';
+import 'bisect_banner.dart';
 
 class _Node {
   _Node.group(this.key, this.label, this.files, {this.checkable = true})
@@ -258,11 +260,18 @@ class _CommitPanelState extends State<CommitPanel> {
   /// acts on all its files.
   Future<void> _nodeMenu(Offset pos, _Node n) async {
     final files = n.files.where(canShelve).toList();
-    if (files.isEmpty) return;
+    final unversioned = n.key == 'unversioned';
+    if (files.isEmpty && !unversioned) return;
     final r = await showContextMenu<String>(context, pos, [
-      menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined,
-          enabled: ctrl.status.value.state == RepoState.normal),
-      menuItem('patch', 'Create Patch…', icon: Icons.save_alt),
+      if (files.isNotEmpty) ...[
+        menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined,
+            enabled: ctrl.status.value.state == RepoState.normal),
+        menuItem('patch', 'Create Patch…', icon: Icons.save_alt),
+      ],
+      if (unversioned) ...[
+        if (files.isNotEmpty) const PopupMenuDivider(height: 8),
+        menuItem('clean', 'Clean Unversioned Files…', icon: Icons.cleaning_services_outlined),
+      ],
     ]);
     if (!mounted) return;
     switch (r) {
@@ -270,6 +279,8 @@ class _CommitPanelState extends State<CommitPanel> {
         await showShelveDialog(context, ctrl, files);
       case 'patch':
         await showCreatePatchDialog(context, ctrl, files);
+      case 'clean':
+        await showCleanDialog(context, ctrl);
     }
   }
 
@@ -337,6 +348,7 @@ class _CommitPanelState extends State<CommitPanel> {
                 ),
               ]),
               if (s.state != RepoState.normal) _StateBanner(controller: ctrl, status: s),
+              BisectBanner(controller: ctrl),
               Expanded(child: _tree(nodes, sel)),
               const Divider(),
               _commitArea(s),

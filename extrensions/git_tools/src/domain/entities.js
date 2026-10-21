@@ -7,7 +7,8 @@
  * @typedef {'modified'|'added'|'deleted'|'renamed'|'copied'|'typeChanged'|'untracked'|'conflicted'} ChangeType
  * @typedef {{newCommits: boolean, modifiedContent: boolean, untrackedContent: boolean}} SubmoduleChange
  * @typedef {{path: string, oldPath?: string, type: ChangeType, conflictCode?: string, nestedRepo?: boolean,
- *   submodule?: SubmoduleChange}} FileChange
+ *   submodule?: SubmoduleChange, staged?: boolean, unstaged?: boolean}} FileChange
+ *   staged / unstaged (tracked changes): the index differs from HEAD / the working tree differs from the index.
  * @typedef {{path: string, sha: string, status: 'upToDate'|'uninitialized'|'outOfDate'|'conflict'|'notRegistered',
  *   url: string, describe: string, declared?: boolean}} Submodule
  * @typedef {'normal'|'merging'|'rebasing'|'cherryPicking'|'reverting'|'applyingMailbox'} RepoState
@@ -38,6 +39,28 @@
  *   A file of a patch to apply; added / deleted lines are null for a binary file.
  * @typedef {{conflicts: string[], error: string|null}} PatchCheck
  *   `git apply --check --3way`: files that would conflict, or why the patch does not apply at all.
+ * @typedef {{ignored: boolean, directories: boolean}} CleanOptions
+ *   git clean -x (ignored files too) / -d (untracked directories).
+ * @typedef {{path: string, directory: boolean, nestedRepo: boolean}} CleanEntry
+ *   A path `git clean -n` lists; nestedRepo: a repository of its own, removed only with -ff.
+ * @typedef {{fastForward: 'default'|'only'|'never', squash: boolean, noCommit: boolean, message: string|null}} MergeOptions
+ *   --ff-only / --no-ff, --squash, --no-commit, -m (null: git's message).
+ * @typedef {{commits: number, fastForward: boolean}} MergePreview
+ *   Commits of HEAD..ref; fastForward: HEAD is an ancestor of ref.
+ * @typedef {{path: string, head: string|null, branch: string|null, detached: boolean, bare: boolean, locked: boolean,
+ *   lockReason: string, prunable: boolean, prunableReason: string, main: boolean, current: boolean}} Worktree
+ *   One `git worktree list --porcelain` record; branch without refs/heads/; main: the first (main) worktree.
+ * @typedef {'good'|'bad'|'skip'} BisectMark
+ * @typedef {{start: string, bad: string|null, good: string[], skipped: string[], marks: Record<string, BisectMark>,
+ *   remaining: number|null, steps: number|null, head: string|null, headSubject: string, firstBad: string|null,
+ *   firstBadSubject: string}} BisectState
+ *   A bisect session: `start` the branch (or commit) it started from; remaining / steps once a good and a bad commit
+ *   are known; firstBad once git found it (the session lasts until reset).
+ * @typedef {{hash: string, author: string, email: string, time: number, summary: string, previous: string|null,
+ *   filename: string, uncommitted: boolean}} BlameCommit
+ *   `time` in ms; previous: the parent the line came from (for Show Diff).
+ * @typedef {{commits: Map<string, BlameCommit>, lines: {hash: string, line: number, origLine: number}[]}} Blame
+ *   lines: 1-based final line numbers, in order.
  * @typedef {'none'|'claude'|'gemini'} AiProvider
  * @typedef {{provider: 'claude'|'gemini', apiKey: string, model: string, language?: string, instructions?: string}} AiConfig
  */

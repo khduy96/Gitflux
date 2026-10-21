@@ -47,6 +47,10 @@ class RepoModel {
     this.submodules = [];
     /** Newest first. @type {import('../domain/entities').Shelf[]} */
     this.shelves = [];
+    /** Main worktree first; `current` marks this one. @type {import('../domain/entities').Worktree[]} */
+    this.worktrees = [];
+    /** Bisect session in progress (Commit view banner, Log labels). @type {import('../domain/entities').BisectState|null} */
+    this.bisect = null;
     /** @type {import('../domain/entities').Commit[]} */
     this.commits = [];
     /** @type {ReturnType<typeof layoutGraph>} */
@@ -147,8 +151,9 @@ class RepoModel {
       if (rel === '.git' || rel.startsWith('.git/')) {
         if (rel.endsWith('.lock') || rel.startsWith('.git/objects') || rel.startsWith('.git/logs')) return;
         // .git/git-tools/shelf: shelves changed here or by the Flutter app.
-        if (rel.startsWith('.git/refs') || /^\.git\/(HEAD|packed-refs|FETCH_HEAD|MERGE_HEAD|ORIG_HEAD)$/.test(rel) || rel.startsWith('.git/rebase-') ||
-            rel.startsWith('.git/git-tools/shelf/')) {
+        // .git/worktrees: worktrees added, removed, locked; BISECT_*: a bisect session.
+        if (rel.startsWith('.git/refs') || /^\.git\/(HEAD|packed-refs|FETCH_HEAD|MERGE_HEAD|ORIG_HEAD|BISECT_\w+)$/.test(rel) ||
+            rel.startsWith('.git/rebase-') || rel.startsWith('.git/git-tools/shelf/') || /^\.git\/worktrees\/[^/]+(\/(locked|gitdir))?$/.test(rel)) {
           this._refsDirty = true;
         } else if (rel !== '.git/index') {
           return;
@@ -223,6 +228,7 @@ class RepoModel {
         // Todo and message files of an interactive rebase that has ended.
         if (!this.busy) await this.repo.cleanupRebaseState().catch(() => {});
       }
+      this.bisect = await this.repo.bisectState().catch(() => null);
       const paths = new Set(this.status.changes.map((c) => c.path));
       for (const p of [...this.excludedTracked]) if (!paths.has(p)) this.excludedTracked.delete(p);
       for (const p of [...this.includedUntracked]) if (!paths.has(p)) this.includedUntracked.delete(p);
@@ -252,11 +258,11 @@ class RepoModel {
 
   async refreshRefs() {
     try {
-      const [branches, tags, remotes, stashes, submodules, shelves] = await Promise.all([
+      const [branches, tags, remotes, stashes, submodules, shelves, worktrees] = await Promise.all([
         this.repo.branches(), this.repo.tags(), this.repo.remotes(), this.repo.stashes(), this.repo.submodules(),
-        this.shelfStore.list().catch(() => []),
+        this.shelfStore.list().catch(() => []), this.repo.worktrees().catch(() => []),
       ]);
-      Object.assign(this, { branches, tags, remotes, stashes, submodules, shelves });
+      Object.assign(this, { branches, tags, remotes, stashes, submodules, shelves, worktrees });
       this.fire('refs');
     } catch (e) {
       this.log(`refs failed: ${e.message}`, 'error');

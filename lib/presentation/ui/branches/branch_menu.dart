@@ -5,7 +5,9 @@ import '../../state/repo_controller.dart';
 import '../actions.dart';
 import '../common.dart';
 import '../dialogs/basic_dialogs.dart';
+import '../dialogs/merge_dialog.dart';
 import '../dialogs/push_dialog.dart';
+import '../dialogs/worktree_dialogs.dart';
 import 'compare_dialog.dart';
 
 /// Branch actions menu (same entries as the Android Studio branch popup).
@@ -34,6 +36,7 @@ Future<String?> pickBranchAction(
   return showContextMenu<String>(context, position, [
     menuItem('checkout', 'Checkout', icon: Icons.login, enabled: !isCurrent),
     menuItem('new', 'New Branch from ${q(b.name)}…', icon: Icons.add),
+    menuItem('worktree', 'Checkout in New Worktree…', icon: Icons.account_tree_outlined),
     if (!isCurrent && !b.isRemote)
       menuItem('checkoutRebase', 'Checkout and Rebase onto ${q(curLabel)}', icon: Icons.low_priority),
     const PopupMenuDivider(height: 8),
@@ -41,7 +44,8 @@ Future<String?> pickBranchAction(
     menuItem('showLog', 'Show in Log', icon: Icons.manage_search),
     const PopupMenuDivider(height: 8),
     menuItem('rebase', 'Rebase ${q(curLabel)} onto ${q(b.name)}', icon: Icons.low_priority, enabled: !isCurrent && cur != null),
-    menuItem('merge', 'Merge ${q(b.name)} into ${q(curLabel)}', icon: Icons.merge_type, enabled: !isCurrent),
+    menuItem('merge', 'Merge ${q(b.name)} into ${q(curLabel)}…', icon: Icons.merge_type, enabled: !isCurrent),
+    menuItem('mergeQuick', 'Quick Merge into ${q(curLabel)} (default options)', icon: Icons.merge, enabled: !isCurrent),
     const PopupMenuDivider(height: 8),
     if (!b.isRemote && isCurrent) menuItem('push', 'Push…', icon: Icons.upload),
     if (!b.isRemote && b.upstream != null && !isCurrent)
@@ -63,6 +67,8 @@ Future<void> runBranchAction(
       await checkoutBranch(context, ctrl, b);
     case 'new':
       await newBranchDialog(context, ctrl, startPoint: b.name);
+    case 'worktree':
+      await showNewWorktreeDialog(context, ctrl, branch: b);
     case 'checkoutRebase':
       await checkoutAndRebase(context, ctrl, b);
     case 'compare':
@@ -73,6 +79,8 @@ Future<void> runBranchAction(
     case 'rebase':
       await rebaseCurrentOnto(context, ctrl, b.name);
     case 'merge':
+      await showMergeDialog(context, ctrl, b.name);
+    case 'mergeQuick':
       await mergeIntoCurrent(context, ctrl, b.name);
     case 'push':
       await showPushDialog(context, ctrl);
@@ -101,7 +109,8 @@ Future<void> showTagMenu(
   final r = await showContextMenu<String>(context, position, [
     menuItem('checkout', 'Checkout Tag', icon: Icons.login),
     menuItem('new', 'New Branch from \'${t.name}\'…', icon: Icons.add),
-    menuItem('merge', 'Merge into Current', icon: Icons.merge_type),
+    menuItem('merge', 'Merge into Current…', icon: Icons.merge_type),
+    menuItem('mergeQuick', 'Quick Merge into Current (default options)', icon: Icons.merge),
     menuItem('push', 'Push Tag to ${ctrl.defaultRemote ?? 'remote'}', icon: Icons.upload, enabled: ctrl.defaultRemote != null),
     menuItem('copy', 'Copy Tag Name', icon: Icons.copy),
     const PopupMenuDivider(height: 8),
@@ -114,6 +123,8 @@ Future<void> showTagMenu(
     case 'new':
       await newBranchDialog(context, ctrl, startPoint: 'refs/tags/${t.name}', startLabel: t.name);
     case 'merge':
+      await showMergeDialog(context, ctrl, 'refs/tags/${t.name}', label: t.name);
+    case 'mergeQuick':
       await mergeIntoCurrent(context, ctrl, 'refs/tags/${t.name}');
     case 'push':
       await ctrl.run('Push tag ${t.name}', () => ctrl.repo.pushTag(ctrl.defaultRemote!, t.name),

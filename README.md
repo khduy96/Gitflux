@@ -18,6 +18,7 @@ flutter build windows --release
 - Click 1 lần mở diff dạng preview, double-click mở tab cố định; group theo thư mục
 - Commit, Commit and Push…, Amend, Sign-off, đổi author (Ctrl+Enter để commit)
 - Rollback (có tuỳ chọn xoá file added), Delete / Add to .gitignore cho file unversioned
+- Chuột phải nhóm "Unversioned Files" ▸ **Clean Unversioned Files…** (xem mục **Clean** bên dưới)
 - **Chọn từng dòng để commit** (chuột phải file ▸ Select Lines to Commit…):
   - Tab "Commit Lines" có checkbox cho từng dòng và từng đoạn thay đổi; dòng không chọn vẫn nằm lại trong working copy.
   - File chọn một phần có checkbox lưng chừng và nhãn `x/y lines`.
@@ -29,6 +30,7 @@ flutter build windows --release
 - Banner Merging / Rebasing / Cherry-picking / Applying patch với Continue / Skip / Abort; khi rebase hiện tiến độ
   (`Rebasing 2/5`) và commit đang dừng để sửa (`Stopped at … for editing — amend, then Continue`);
   khi `git am` dừng hiện `Applying patch 1/3` và tiêu đề patch
+- Banner **Bisecting** (xem mục **Bisect** bên dưới)
 
 **AI commit message (✨ cạnh ô commit message)**
 - Sinh commit message từ diff của các file đã tick (khi Amend thì gồm cả thay đổi của commit trước),
@@ -50,14 +52,14 @@ flutter build windows --release
 - Xem ảnh hai bên cho file ảnh nhị phân
 
 **Git tool window (Alt+9)**
-- Log: cây branch (HEAD, Local, Remote, Tags, Submodules, Reflog), đồ thị commit có màu theo nhánh, ref labels,
+- Log: cây branch (HEAD, Local, Remote, Tags, Submodules, Worktrees, Reflog), đồ thị commit có màu theo nhánh, ref labels,
   lọc theo text/hash/author, branch, user, ngày, nội dung thay đổi, theo file (Show History)
   (xem mục **Lọc Log** bên dưới)
 - Chi tiết commit: danh sách file đã đổi, message, author/committer, các branch chứa commit
 - Menu commit: Cherry-Pick, Checkout Revision, Compare with Local, Compare Commits, Reset (soft/mixed/hard/keep),
   Revert, Undo Commit, Edit Commit Message, Fixup into Previous, Squash Commits, Drop Commits,
-  Move Commit Up / Down, Interactively Rebase from Here, New Branch, New Tag
-  (xem mục **Interactive rebase** và **So sánh hai commit** bên dưới)
+  Move Commit Up / Down, Interactively Rebase from Here, Merge into Current…, Bisect ▸, New Branch, New Tag
+  (xem mục **Interactive rebase**, **So sánh hai commit**, **Merge** và **Bisect** bên dưới)
 - Console: toàn bộ lệnh git đã chạy và output, có ô chạy lệnh git tuỳ ý
 - Stashes: Pop / Apply / Drop / Clear / Unstash as Branch, xem file và diff trong stash
 - Reflog: lịch sử HEAD đã trỏ tới đâu, để lấy lại commit bị mất (xem mục **Reflog** bên dưới)
@@ -181,8 +183,58 @@ Dialog **Interactively Rebase from Here…**:
 
 **Branches (Ctrl+Shift+`)**
 - Popup giống AS: Update Project, Commit, Push, New Branch, Checkout Tag or Revision, danh sách Local/Remote
-- Checkout (Smart Checkout tự stash/unstash khi có thay đổi cục bộ), New Branch from, Checkout and Rebase,
-  Compare with current (commit hai phía + file khác nhau), Rebase onto, Merge into, Rename, Delete (local/remote)
+- Checkout (Smart Checkout tự stash/unstash khi có thay đổi cục bộ), New Branch from, Checkout in New Worktree…,
+  Checkout and Rebase, Compare with current (commit hai phía + file khác nhau), Rebase onto,
+  Merge into… (dialog, xem mục **Merge**), Quick Merge (không mở dialog, tuỳ chọn mặc định của git), Rename,
+  Delete (local/remote)
+- Branch đang được checkout ở worktree khác có nhãn `in <tên worktree>` (rê chuột để xem đường dẫn) trong cây branch
+  và popup. Checkout branch đó không hiện lỗi thô của git mà hiện dialog giải thích, có nút **Open that worktree**.
+
+**Merge (dialog giống Android Studio)**
+- Mở từ menu branch (**Merge 'x' into 'y'…**), menu tag (**Merge into Current…**) và menu commit trong Log
+  (**Merge into Current…**). Bản nhanh **Quick Merge** (không dialog, tuỳ chọn mặc định) vẫn còn trong menu branch / tag.
+- Tuỳ chọn: **Fast-forward only** (`--ff-only`), **No fast-forward** (`--no-ff`), **Squash** (`--squash`),
+  **No commit** (`--no-commit`), **Commit message** (`-m`, chỉ bật khi merge sẽ tạo merge commit).
+- Ba tuỳ chọn Fast-forward only / No fast-forward / Squash loại trừ nhau. Squash luôn kèm No commit (git không
+  commit khi squash): sau khi squash, ô commit message được điền sẵn phần đầu của `SQUASH_MSG` và app nhắc bạn commit.
+- Dòng xem trước: "N commits will be merged", thêm "Fast-forward possible" khi HEAD là tổ tiên của nhánh được merge.
+- Tuỳ chọn lần cuối được nhớ trong phiên làm việc (message thì không).
+- Fast-forward only mà không fast-forward được thì git từ chối và không có gì thay đổi. No commit (không squash)
+  để repo ở trạng thái Merging: kiểm tra rồi commit, hoặc Abort ở banner.
+
+**Clean (xoá file chưa track, `git clean`)**
+- Mở bằng chuột phải nhóm **Unversioned Files** ▸ **Clean Unversioned Files…** hoặc menu Git ▸ **Clean Working Tree…**.
+- Dialog xem trước danh sách `git clean -n` theo tuỳ chọn: **Remove untracked directories** (`-d`, mặc định bật),
+  **Include ignored files** (`-x`, mặc định tắt; file bị ignore có nhãn `ignored`). Đổi tuỳ chọn thì danh sách được tính lại.
+- Mỗi mục có checkbox (mặc định tick hết); bỏ tick thì mục đó được giữ lại. Repo lồng nhau (thư mục có `.git` riêng)
+  vẫn được liệt kê nhưng mặc định **không** tick; tick vào thì có cảnh báo và chỉ mục đó được xoá bằng `git clean -ff`.
+- Bấm **Clean…** có hộp xác nhận nêu số mục và "không thể hoàn tác". File đã track không bao giờ bị đụng tới.
+- Đường dẫn được truyền tường minh (`:(literal)<path>`); `git clean` không có `--pathspec-from-file` nên app chia
+  thành nhiều lệnh khi danh sách dài để không vượt giới hạn độ dài dòng lệnh.
+
+**Worktrees (`git worktree`)**
+- Log ▸ cây branch ▸ **Worktrees**: mọi worktree (`git worktree list --porcelain -z`) với branch / `detached at <hash>` /
+  `bare`, nhãn `locked` (lý do ở tooltip) và `missing` (thư mục đã mất, prune được); worktree đang mở được đánh dấu.
+- Chuột phải nhóm: **New Worktree…**, **Prune…** (hiện trước những gì `git worktree prune -n -v` sẽ xoá rồi mới chạy).
+- **New Worktree…** (cũng có trong menu Git và menu branch ▸ **Checkout in New Worktree…**): đường dẫn mặc định
+  `../<tên-repo>-<tên-branch>` (tự đổi theo branch cho tới khi bạn sửa), checkout branch có sẵn, tạo branch mới (`-b`)
+  từ một start point, hoặc detached HEAD.
+- Chuột phải một worktree: **Open** (mở như một repo trong app, giống Open Submodule; double-click cũng mở),
+  **Copy Path**, **Show in Explorer**, **Lock… / Unlock** (có lý do), **Remove…** (có xác nhận; nếu worktree còn thay đổi
+  chưa commit thì hỏi lần hai rồi mới `--force`). Worktree chính và worktree đang mở không xoá được.
+
+**Bisect (tìm commit gây lỗi, `git bisect`)**
+- Log ▸ chuột phải commit ▸ **Bisect ▸**: chưa có phiên thì **Start: Mark Bad** / **Start: Mark Good**
+  (`git bisect start` rồi `bad` / `good <hash>`); đang bisect thì **Mark Bad / Mark Good / Skip** cho commit được chọn,
+  **Run Script…**, **Reset Bisect**.
+- Banner ở Commit panel (cùng chỗ với banner merge / rebase): "Bisecting: ~N revisions left (~S steps)", hash và tiêu đề
+  commit đang được kiểm tra, các nút **Good / Bad / Skip / Run Script… / Reset** (Reset đưa về branch lúc bắt đầu).
+  Trạng thái đọc từ `BISECT_START` / `BISECT_LOG` (`git rev-parse --git-path`, chạy được với worktree).
+- Khi git báo `<hash> is the first bad commit`: thông báo kèm nút **Show in Log**, banner giữ kết quả cho tới khi bạn Reset.
+- Trong Log, commit đã đánh dấu có nhãn `good` (xanh) / `bad` (đỏ) / `skip` (xám), lấy từ `refs/bisect/*`.
+- **Run Script…**: `git bisect run sh -c "<lệnh>"` (exit 0 = good, 125 = skip, 1–127 khác = bad); output vào Console.
+- Thay đổi cục bộ chặn checkout thì app báo rõ ("Local changes block the bisect checkout") thay vì lỗi thô của git;
+  banner hiện commit cần kiểm tra chưa được checkout và nút **Retry Checkout**.
 
 **Submodules (`.gitmodules`)**
 - Commit panel: submodule hiện kèm mô tả (`submodule · new commits, modified content…`).
@@ -215,14 +267,17 @@ Clean Architecture, 3 tầng. Phụ thuộc chỉ hướng vào trong: `presenta
 lib/
   main.dart       # composition root: tạo các implementation của data rồi đưa cho presentation
   domain/         # thuần Dart: không import Flutter, dart:io hay data/
-    entities/     # FileChange, Commit, Branch, RepoStatus, RebasePlan, ReflogEntry, LogQuery, AiConfig, Shelf, PatchFile, ...
+    entities/     # FileChange, Commit, Branch, RepoStatus, RebasePlan, ReflogEntry, LogQuery, AiConfig, Shelf, PatchFile,
+                  # MergeOptions, CleanEntry, Worktree, BisectState, ...
     logic/        # thuật toán thuần: diff engine, graph layout, conflict parser, line selection, rebase todo,
-                  # parse reflog, filter log (author, ngày), định dạng shelf.json, parse / lọc patch
+                  # parse reflog, filter log (author, ngày), định dạng shelf.json, parse / lọc patch,
+                  # parse git clean -n / worktree list / BISECT_LOG
     repositories/ # interface: GitRepository, GitService, ShelfRepository, CommitMessageGenerator, SettingsStore
     usecases/     # CommitChanges, GenerateCommitMessage, GetSelectedLineContents, InteractiveRebase, CompareCommits,
-                  # ShelveChanges, UnshelveChanges, CreatePatch, ApplyPatch
+                  # ShelveChanges, UnshelveChanges, CreatePatch, ApplyPatch, MergeBranch, CleanWorkingTree,
+                  # BisectCommits
     errors.dart   # GitException, AiException, StaleSelectionException, CommitRejected, RebaseRejected,
-                  # ShelfRejected, PatchRejected
+                  # ShelfRejected, PatchRejected, MergeRejected, CleanRejected, BisectRejected
   data/           # implementation các interface của domain
     datasources/  # GitProcess (chạy git), client Claude / Gemini
     repositories/ # GitCliRepository, GitCliService, FileShelfRepository, JsonFileSettingsStore (%APPDATA%/git_tools)

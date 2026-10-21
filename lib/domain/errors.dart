@@ -86,3 +86,38 @@ class PatchRejected implements Exception {
   @override
   String toString() => details == null ? title : '$title: $details';
 }
+
+/// A merge cannot be started (contradicting options, operation in
+/// progress, ...).
+class MergeRejected implements Exception {
+  MergeRejected(this.title, {this.details});
+
+  final String title;
+  final String? details;
+
+  @override
+  String toString() => details == null ? title : '$title: $details';
+}
+
+/// Nothing to clean, or the selection cannot be cleaned.
+class CleanRejected implements Exception {
+  CleanRejected(this.title, {this.details});
+
+  final String title;
+  final String? details;
+
+  @override
+  String toString() => details == null ? title : '$title: $details';
+}
+
+/// A bisect step cannot be done (no session, local changes block the
+/// checkout, ...).
+class BisectRejected implements Exception {
+  BisectRejected(this.title, {this.details});
+
+  final String title;
+  final String? details;
+
+  @override
+  String toString() => details == null ? title : '$title: $details';
+}

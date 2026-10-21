@@ -3,17 +3,24 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../../domain/entities/bisect.dart';
+import '../../domain/entities/clean.dart';
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
 import '../../domain/entities/log_query.dart';
+import '../../domain/entities/merge.dart';
 import '../../domain/entities/patch.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/entities/reflog.dart';
+import '../../domain/entities/worktree.dart';
 import '../../domain/errors.dart';
+import '../../domain/logic/bisect_parser.dart';
+import '../../domain/logic/clean_parser.dart';
 import '../../domain/logic/log_filters.dart';
 import '../../domain/logic/patch_parser.dart';
 import '../../domain/logic/rebase_todo.dart';
 import '../../domain/logic/reflog_parser.dart';
+import '../../domain/logic/worktree_parser.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../datasources/git_process.dart';
 
@@ -56,6 +63,8 @@ class GitCliRepository implements GitRepository {
           rel == '.git/packed-refs' ||
           rel == '.git/FETCH_HEAD' ||
           rel == '.git/MERGE_HEAD' ||
+          rel.startsWith('.git/BISECT_') ||
+          rel.startsWith('.git/worktrees/') ||
           rel.startsWith('.git/rebase-') ||
           rel.startsWith('.git/git-tools/shelf')) {
         return RepoEvent.refs;
@@ -441,7 +450,7 @@ class GitCliRepository implements GitRepository {
   Future<List<Branch>> branches() async {
     final out = await git.run([
       'for-each-ref',
-      '--format=%(refname)$_fs%(objectname)$_fs%(upstream:short)$_fs%(upstream:track)$_fs%(HEAD)',
+      '--format=%(refname)$_fs%(objectname)$_fs%(upstream:short)$_fs%(upstream:track)$_fs%(HEAD)$_fs%(worktreepath)',
       'refs/heads',
       'refs/remotes',
     ]);
@@ -463,6 +472,8 @@ class GitCliRepository implements GitRepository {
         behind: _trackCount(track, 'behind'),
         gone: track.contains('gone'),
         isCurrent: f[4] == '*',
+        // Checked out in another worktree (this one is marked by %(HEAD)).
+        worktree: f.length > 5 && f[5].isNotEmpty && f[4] != '*' ? f[5] : null,
       ));
     }
     return result;
@@ -1051,14 +1062,30 @@ class GitCliRepository implements GitRepository {
       log: true);
 
   @override
-  Future<void> merge(String ref, {bool noFf = false, bool squash = false}) =>
-      git.run([
-        'merge',
-        '--no-edit',
-        if (noFf) '--no-ff',
-        if (squash) '--squash',
-        ref,
-      ], log: true);
+  Future<void> merge(String ref, {MergeOptions options = const MergeOptions()}) =>
+      git.run(['merge', '--no-edit', ...options.args, ref], log: true);
+
+  @override
+  Future<int> countCommits(String from, String to) async =>
+      int.tryParse((await git.run(['rev-list', '--count', '$from..$to'])).trim()) ?? 0;
+
+  @override
+  Future<String?> squashMessage({int maxLines = 30}) async {
+    final f = File(await _gitPath('SQUASH_MSG'));
+    if (!await f.exists()) return null;
+    final lines = (await f.readAsString()).split('\n').where((l) => !l.startsWith('#')).take(maxLines);
+    final text = lines.join('\n').trim();
+    return text.isEmpty ? null : text;
+  }
+
+  final _gitPaths = <String, String>{};
+
+  /// Absolute `git rev-parse --git-path` of [name] (per worktree).
+  Future<String> _gitPath(String name) async {
+    if (_gitPaths[name] case final path?) return path;
+    final out = (await git.run(['rev-parse', '--git-path', name])).trim();
+    return _gitPaths[name] = p.normalize(p.isAbsolute(out) ? out : p.join(root, out));
+  }
 
   @override
   Future<void> rebase(String onto, {String? branch}) =>
@@ -1107,6 +1134,137 @@ class GitCliRepository implements GitRepository {
 
   @override
   Future<void> skipMailboxPatch() => git.run(['am', '--skip'], log: true);
+
+  // ---------------------------------------------------------------------------
+  // Clean
+  // ---------------------------------------------------------------------------
+
+  @override
+  Future<List<String>> cleanDryRun(CleanOptions options, {bool nested = false}) async => parseCleanDryRun(
+      await git.run(['clean', '-n', if (nested) '-ff', ...options.args]));
+
+  /// Paths go on the command line in chunks: `git clean` has no
+  /// `--pathspec-from-file`.
+  @override
+  Future<void> clean(List<String> pathspecs, CleanOptions options, {bool nested = false}) async {
+    for (final chunk in chunkArgs(pathspecs.map(lit).toList())) {
+      await git.run(['clean', nested ? '-ff' : '-f', ...options.args, '--', ...chunk], log: true);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Worktrees
+  // ---------------------------------------------------------------------------
+
+  String? _topLevel;
+
+  @override
+  Future<List<Worktree>> worktrees() async {
+    final out = await git.run(['worktree', 'list', '--porcelain', '-z']);
+    _topLevel ??= (await git.run(['rev-parse', '--show-toplevel'], allowFailure: true)).trim();
+    return parseWorktrees(out, currentPath: _topLevel!.isEmpty ? root : _topLevel);
+  }
+
+  @override
+  Future<void> addWorktree(String path, WorktreeCheckout checkout) => git.run([
+        'worktree', 'add',
+        ...switch (checkout) {
+          ExistingBranchCheckout(:final branch) => ['--', path, branch],
+          NewBranchCheckout(:final branch, :final startPoint) => ['-b', branch, '--', path, ?startPoint],
+          DetachedCheckout(:final revision) => ['--detach', '--', path, ?revision],
+        },
+      ], log: true);
+
+  @override
+  Future<void> lockWorktree(String path, {String? reason}) => git.run([
+        'worktree', 'lock',
+        if (reason != null && reason.trim().isNotEmpty) ...['--reason', reason.trim()],
+        path,
+      ], log: true);
+
+  @override
+  Future<void> unlockWorktree(String path) => git.run(['worktree', 'unlock', path], log: true);
+
+  @override
+  Future<void> removeWorktree(String path, {bool force = false}) =>
+      git.run(['worktree', 'remove', if (force) '--force', path], log: true);
+
+  /// Git reports what it prunes on stderr.
+  @override
+  Future<String> pruneWorktrees({bool dryRun = false}) async {
+    final args = ['worktree', 'prune', '-v', if (dryRun) '-n'];
+    final r = await git.runRaw(args, log: !dryRun);
+    if (r.exitCode != 0) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+    return [r.stdout.trim(), r.stderr.trim()].where((s) => s.isNotEmpty).join('\n');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bisect
+  // ---------------------------------------------------------------------------
+
+  @override
+  Future<BisectState?> bisectState() async {
+    final start = File(await _gitPath('BISECT_START'));
+    if (!await start.exists()) return null;
+    final logFile = File(await _gitPath('BISECT_LOG'));
+    final log = parseBisectLog(await logFile.exists() ? await logFile.readAsString() : '');
+    final marks = parseBisectRefs(
+        await git.run(['for-each-ref', '--format=%(objectname) %(refname)', 'refs/bisect'], allowFailure: true));
+    int? left, steps;
+    final good = [
+      for (final e in marks.entries)
+        if (e.value == BisectMark.good) e.key,
+    ];
+    if (log.firstBad == null && good.isNotEmpty && await refExists('refs/bisect/bad')) {
+      final vars = await git.runRaw(['rev-list', '--bisect-vars', 'refs/bisect/bad', '--not', ...good]);
+      if (vars.exitCode == 0) (:left, :steps) = parseBisectVars(vars.stdout);
+    }
+    final head = (await git.run(['log', '-1', '--format=%H$_fs%s'], allowFailure: true)).trim().split(_fs);
+    final expectedFile = File(await _gitPath('BISECT_EXPECTED_REV'));
+    final expected = await expectedFile.exists() ? (await expectedFile.readAsString()).trim() : '';
+    return BisectState(
+      startRef: (await start.readAsString()).trim(),
+      marks: marks,
+      log: log,
+      revisionsLeft: left,
+      steps: steps,
+      currentHash: head.first.isEmpty ? null : head.first,
+      currentSubject: head.length > 1 ? head.sublist(1).join(_fs) : null,
+      expectedHash: expected.isEmpty ? null : expected,
+    );
+  }
+
+  /// Exit code 2 with this text: only skipped commits are left; git lists
+  /// the possible first bad commits and the session goes on.
+  static bool _bisectOnlySkipped(GitResult r) =>
+      r.exitCode == 2 && '${r.stdout}${r.stderr}'.contains("only 'skip'ped commits left");
+
+  @override
+  Future<void> bisectStart() => git.run(['bisect', 'start'], log: true);
+
+  @override
+  Future<String> bisectMark(BisectMark mark, {String? rev}) async {
+    final args = ['bisect', mark.name, ?rev];
+    final r = await git.runRaw(args, log: true);
+    if (r.exitCode != 0 && !_bisectOnlySkipped(r)) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+    return [r.stdout.trim(), r.stderr.trim()].where((s) => s.isNotEmpty).join('\n');
+  }
+
+  @override
+  Future<void> bisectReset() => git.run(['bisect', 'reset'], log: true);
+
+  /// [command] runs through `sh -c` (git quotes each argument it is given),
+  /// so it may contain arguments, pipes and redirections.
+  @override
+  Future<String> bisectRun(String command) async {
+    final args = ['bisect', 'run', 'sh', '-c', command];
+    final r = await git.runRaw(args, log: true);
+    final output = [r.stdout.trim(), r.stderr.trim()].where((s) => s.isNotEmpty).join('\n');
+    if (r.exitCode != 0 && firstBadCommitIn(output) == null && !_bisectOnlySkipped(r)) {
+      throw GitException(args, r.exitCode, r.stderr, r.stdout);
+    }
+    return output;
+  }
 
   // ---------------------------------------------------------------------------
   // Remote operations

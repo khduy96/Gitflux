@@ -18,12 +18,14 @@ import 'diff/diff_view.dart';
 import 'dialogs/ai_settings_dialog.dart';
 import 'dialogs/ai_setup_guide.dart';
 import 'dialogs/basic_dialogs.dart';
+import 'dialogs/clean_dialog.dart';
 import 'dialogs/pull_dialog.dart';
 import 'dialogs/push_dialog.dart';
 import 'dialogs/patch_dialogs.dart';
 import 'dialogs/remotes_dialog.dart';
 import 'dialogs/shelve_dialogs.dart';
 import 'dialogs/stash_dialogs.dart';
+import 'dialogs/worktree_dialogs.dart';
 import 'log/compare_commits_view.dart';
 import 'log/log_panel.dart';
 import 'log/reflog_panel.dart';
@@ -211,11 +213,13 @@ class _WorkspacePageState extends State<WorkspacePage> {
       menuItem('newBranch', 'New Branch…', icon: Icons.add),
       menuItem('checkoutRev', 'Checkout Tag or Revision…', icon: Icons.sell_outlined),
       menuItem('reflog', 'Show Reflog', icon: Icons.history_toggle_off),
+      menuItem('worktree', 'New Worktree…', icon: Icons.account_tree),
       const PopupMenuDivider(height: 8),
       menuItem('stash', 'Stash Changes…', icon: Icons.inventory_2_outlined),
       menuItem('unstash', 'Unstash Changes…', icon: Icons.unarchive_outlined),
       menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined),
       menuItem('shelf', 'Show Shelf', icon: Icons.shelves),
+      menuItem('clean', 'Clean Working Tree…', icon: Icons.cleaning_services_outlined),
       const PopupMenuDivider(height: 8),
       menuItem('applyPatch', 'Apply Patch…', icon: Icons.file_open_outlined),
       menuItem('applyClipboard', 'Apply Patch from Clipboard', icon: Icons.content_paste_go),
@@ -246,6 +250,8 @@ class _WorkspacePageState extends State<WorkspacePage> {
         _checkoutRevision();
       case 'reflog':
         ctrl.showReflog();
+      case 'worktree':
+        showNewWorktreeDialog(context, ctrl);
       case 'stash':
         showStashDialog(context, ctrl);
       case 'unstash':
@@ -254,6 +260,8 @@ class _WorkspacePageState extends State<WorkspacePage> {
         showShelveDialog(context, ctrl, ctrl.includedChanges);
       case 'shelf':
         ctrl.showShelf();
+      case 'clean':
+        showCleanDialog(context, ctrl);
       case 'applyPatch':
         showApplyPatchDialog(context, ctrl);
       case 'applyClipboard':
