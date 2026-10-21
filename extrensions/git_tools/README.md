@@ -226,7 +226,7 @@ View **Log** gồm 3 phần:
    - Ô tìm kiếm, với dropdown chọn kiểu tìm ở bên trái:
      - **Message / hash / author** (mặc định) — lọc ngay trong các commit đã tải theo message, hash, tác giả, email hoặc tên ref.
      - **Changes containing text** — tìm commit có **thay đổi** thêm hoặc bớt đoạn text đó (`git log -S`), trên toàn bộ lịch sử chứ không chỉ các commit đã tải. Tick **Regex (-G)** để tìm commit có dòng thay đổi khớp biểu thức chính quy (`git log -G`). Cần gõ ít nhất 2 ký tự; lệnh chạy sau khi ngừng gõ chưa tới nửa giây, hoặc khi bấm `Enter`. **Không** phân biệt hoa thường (git chạy với `-i`).
-   - Dropdown **Branch** — All, HEAD hoặc một branch cụ thể.
+   - Dropdown **Branch** — All, HEAD hoặc một branch cụ thể. Branch hiện dạng cây thư mục theo tên (`Local ▸ feature ▸ login`, `Remote ▸ origin ▸ main`). Bấm thư mục để mở / đóng, trạng thái được nhớ lại. Gõ vào ô tìm để lọc branch. Phím: ↑ / ↓ chọn, ← / → đóng / mở thư mục, Enter áp dụng, Esc đóng.
    - Dropdown **User** — All, **Me** (`user.name` / `user.email` trong config git), các tác giả của những commit đã tải (nhiều commit nhất ở trên), hoặc **Select…** để gõ một phần tên hay email. Khớp tên **hoặc** email, không phân biệt hoa thường.
    - Dropdown **Date** — All, Last 24 hours, Last 7 days, Last 30 days, hoặc **Select…** để nhập ngày bắt đầu / kết thúc dạng `YYYY-MM-DD` (bỏ trống một trong hai được; cả hai ngày đều được tính). Lọc theo ngày commit (committer date).
    - Lọc User, Date và Changes chạy **trong git** (`--author`, `--since`, `--until`, `-S` / `-G`), nên tìm được cả commit nằm ngoài số commit đã tải (`gitTools.log.maxCommits`). Các bộ lọc kết hợp với nhau và với Branch / Path.

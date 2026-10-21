@@ -2,7 +2,7 @@
   "name": "git-tools-as",
   "displayName": "Git Tools (Android Studio style)",
   "description": "Android Studio style Git tool window for VS Code: commit panel with checkboxes, log with branch graph, branches popup, push/pull dialogs, stashes and AI commit messages (Claude / Gemini).",
-  "version": "0.4.2",
+  "version": "0.4.6",
   "publisher": "local",
   "license": "UNLICENSED",
   "private": true,

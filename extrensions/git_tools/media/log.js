@@ -32,6 +32,10 @@
   let selectedFile = null;
   /** Commit shown in the details without being in the loaded log (Reflog ▸ Show in Log). */
   let extra = null;
+  /** Open folders of the branch picker, by key ("Local/feature", "Remote/origin"). */
+  const branchOpen = new Set(saved.branchOpen || ['Local', 'Remote']);
+  /** Branch picker while open: {el, input, list, rows, active}. */
+  let picker = null;
 
   // ------------------------------------------------------------- layout
 
@@ -43,14 +47,15 @@
   regexBox.checked = regex;
   const regexLabel = h('label#regexLabel', { title: 'Search lines matching a regular expression (git log -G) instead of a text (-S)' },
     regexBox, ' Regex (-G)');
-  const branchSel = h('select#branch');
+  const branchLabel = h('span.ellipsis');
+  const branchBtn = h('button.dropdown#branch', null, branchLabel, h('span.chev', { text: '▾' }));
   const userSel = h('select#user', { title: 'Author (name or email)' });
   const dateSel = h('select#date', { title: 'Committer date' });
   const pathChip = h('span.chip#pathChip');
   const chips = h('span#chips');
   const status = h('span.muted#status');
   const toolbar = h('div#toolbar', null, modeSel, search, regexLabel,
-    h('span.muted', { text: 'Branch:' }), branchSel, h('span.muted', { text: 'User:' }), userSel,
+    h('span.muted', { text: 'Branch:' }), branchBtn, h('span.muted', { text: 'User:' }), userSel,
     h('span.muted', { text: 'Date:' }), dateSel, pathChip, chips, h('span.spacer'), status);
   const spacer = h('div#spacer');
   const rowsEl = h('div#rows');
@@ -62,7 +67,7 @@
   detailsEl.style.width = `${detailsWidth}px`;
 
   const post = (type, d = {}) => vscode.postMessage({ type, ...d });
-  const persist = () => vscode.setState({ detailsWidth, text, searchMode, regex });
+  const persist = () => vscode.setState({ detailsWidth, text, searchMode, regex, branchOpen: [...branchOpen] });
   const setFilter = (filter) => post('filter', { filter });
 
   // ------------------------------------------------------------- events
@@ -95,7 +100,11 @@
     persist();
     applySearch();
   });
-  branchSel.addEventListener('change', () => setFilter({ branch: branchSel.value || null }));
+  branchBtn.addEventListener('click', () => (picker ? closePicker() : openPicker()));
+  document.addEventListener('mousedown', (e) => {
+    if (picker && !picker.el.contains(e.target) && !branchBtn.contains(e.target)) closePicker();
+  });
+  window.addEventListener('blur', () => closePicker());
   userSel.addEventListener('change', () => {
     const v = userSel.value;
     if (v === 'select') {
@@ -318,19 +327,150 @@
     return d.from ? `Since ${d.from}` : `Until ${d.to}`;
   };
 
+  // ------------------------------------------------------------- branch picker
+
+  /**
+   * Branches as a tree of folders split on the `/` of their names
+   * (Remote ▸ origin ▸ feature ▸ a), folders before branches.
+   */
+  function branchFolder(key, label, branches, skip = 0) {
+    const folders = new Map();
+    const leaves = [];
+    for (const b of branches) {
+      const rest = b.name.slice(skip);
+      const i = rest.indexOf('/');
+      if (i < 0) {
+        leaves.push({ kind: 'branch', key: b.name, label: rest });
+        continue;
+      }
+      const dir = rest.slice(0, i);
+      if (!folders.has(dir)) folders.set(dir, []);
+      folders.get(dir).push(b);
+    }
+    const children = [...folders].map(([dir, list]) => branchFolder(`${key}/${dir}`, dir, list, skip + dir.length + 1));
+    return { kind: 'folder', key, label, count: branches.length, children: [...children, ...leaves] };
+  }
+
+  /** Visible rows of the picker. While searching: the matching branches, their folders open. */
+  function pickerRows(query) {
+    const q = query.trim().toLowerCase();
+    const out = q ? [] : [{ kind: 'branch', key: '', label: 'All', depth: 0 }, { kind: 'branch', key: 'HEAD', label: 'HEAD', depth: 0 }];
+    const walk = (node, depth) => {
+      if (node.kind === 'branch') {
+        if (!q || node.key.toLowerCase().includes(q)) out.push({ ...node, depth });
+        return;
+      }
+      if (!node.count) return;
+      const at = out.length;
+      const open = !!q || branchOpen.has(node.key);
+      out.push({ kind: 'folder', key: node.key, label: node.label, count: node.count, open, depth });
+      if (open) node.children.forEach((c) => walk(c, depth + 1));
+      if (q && out.length === at + 1) out.pop(); // nothing matches inside
+    };
+    walk(branchFolder('Local', 'Local', data.branches.filter((b) => !b.remote)), 0);
+    walk(branchFolder('Remote', 'Remote', data.branches.filter((b) => b.remote)), 0);
+    return out;
+  }
+
+  function openPicker() {
+    const current = (data.filter || {}).branch || '';
+    // Opens the folders down to the branch shown.
+    const b = data.branches.find((x) => x.name === current);
+    if (b) {
+      const root = b.remote ? 'Remote' : 'Local';
+      branchOpen.add(root);
+      for (let i = b.name.indexOf('/'); i >= 0; i = b.name.indexOf('/', i + 1)) branchOpen.add(`${root}/${b.name.slice(0, i)}`);
+    }
+    const input = h('input', { type: 'search', placeholder: 'Search branches' });
+    const list = h('div.list');
+    const el = h('div.menu.picker', null, input, list);
+    document.body.append(el);
+    picker = { el, input, list, rows: pickerRows(''), active: 0 };
+    picker.active = Math.max(0, picker.rows.findIndex((r) => r.kind === 'branch' && r.key === current));
+
+    input.addEventListener('input', () => {
+      picker.rows = pickerRows(input.value);
+      picker.active = Math.max(0, picker.rows.findIndex((r) => r.kind === 'branch'));
+      renderPicker();
+    });
+    input.addEventListener('keydown', (e) => {
+      const r = picker.rows[picker.active];
+      const toggle = r && r.kind === 'folder' && !input.value && (e.key === 'ArrowRight' ? !r.open : e.key === 'ArrowLeft' && r.open);
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        picker.active += e.key === 'ArrowDown' ? 1 : -1;
+        renderPicker();
+      } else if ((e.key === 'Enter' && r) || toggle) {
+        pickRow(r);
+      } else if (e.key === 'Escape') {
+        closePicker();
+        branchBtn.focus();
+      } else {
+        return;
+      }
+      e.preventDefault();
+    });
+
+    const anchor = branchBtn.getBoundingClientRect();
+    el.style.top = `${anchor.bottom + 2}px`;
+    el.style.maxHeight = `${Math.max(120, window.innerHeight - anchor.bottom - 8)}px`;
+    renderPicker();
+    el.style.left = `${Math.max(0, Math.min(anchor.left, window.innerWidth - el.offsetWidth - 4))}px`;
+    input.focus();
+  }
+
+  function closePicker() {
+    if (!picker) return;
+    picker.el.remove();
+    picker = null;
+  }
+
+  /** A folder opens / closes; a branch becomes the filter. */
+  function pickRow(r) {
+    if (r.kind === 'folder') {
+      if (picker.input.value) return; // all open while searching
+      if (r.open) branchOpen.delete(r.key);
+      else branchOpen.add(r.key);
+      persist();
+      picker.rows = pickerRows('');
+      renderPicker();
+      return;
+    }
+    closePicker();
+    branchBtn.focus();
+    if (r.key !== ((data.filter || {}).branch || '')) setFilter({ branch: r.key || null });
+  }
+
+  function renderPicker() {
+    if (!picker) return;
+    const current = (data.filter || {}).branch || '';
+    picker.active = Math.max(0, Math.min(picker.active, picker.rows.length - 1));
+    fill(picker.list, picker.rows.length ? picker.rows.map((r, i) => h(
+      `div.pitem${r.kind === 'folder' ? '.folder' : ''}${i === picker.active ? '.active' : ''}${r.kind === 'branch' && r.key === current ? '.current' : ''}`,
+      {
+        title: r.kind === 'branch' && r.key ? r.key : null,
+        style: { paddingLeft: `${4 + r.depth * 14}px` },
+        onmousedown: (e) => e.preventDefault(), // keeps the focus in the search box
+        onclick: () => {
+          picker.active = i;
+          pickRow(r);
+        },
+      },
+      h('span.chev', { text: r.kind === 'folder' ? (r.open ? '▾' : '▸') : '' }),
+      h('span.ellipsis', { text: r.label }),
+      r.kind === 'folder' ? h('span.count.muted', { text: String(r.count) }) : null,
+    )) : h('div.empty', { text: 'No branches' }));
+    const active = picker.list.children[picker.active];
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+  }
+
   /** Branch / User / Date dropdowns and the chips of the active filters. */
   function renderFilterControls() {
     const f = data.filter || {};
-    branchSel.replaceChildren(
-      h('option', { value: '', text: 'All' }),
-      h('option', { value: 'HEAD', text: 'HEAD', selected: f.branch === 'HEAD' }),
-      h('optgroup', { label: 'Local' }, data.branches.filter((b) => !b.remote).map((b) =>
-        h('option', { value: b.name, text: b.name, selected: f.branch === b.name }))),
-      h('optgroup', { label: 'Remote' }, data.branches.filter((b) => b.remote).map((b) =>
-        h('option', { value: b.name, text: b.name, selected: f.branch === b.name }))),
-    );
-    if (f.branch && ![...branchSel.options].some((o) => o.value === f.branch)) {
-      branchSel.append(h('option', { value: f.branch, text: f.branch, selected: true }));
+    branchLabel.textContent = f.branch || 'All';
+    branchBtn.title = f.branch ? `Branch: ${f.branch}` : 'All branches';
+    if (picker) {
+      picker.rows = pickerRows(picker.input.value);
+      renderPicker();
     }
     const u = f.user || null;
     const authors = data.authors || [];
