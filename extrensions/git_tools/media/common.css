@@ -112,6 +112,10 @@ input[type=checkbox] {
   border: 1px solid var(--vscode-menu-border, var(--gt-border));
   border-radius: 5px;
   box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0,0,0,.35));
+  /* Long menus (the commit menu in the low Log panel) scroll instead of going off the view. */
+  max-height: calc(100vh - 8px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .menu .item {
   padding: 4px 20px 4px 12px;

@@ -123,7 +123,7 @@ Mỗi repo chiếm một dòng, gồm:
 | Chọn repo làm việc | Click vào dòng. View Commit, Branches, Log và thanh trạng thái chuyển sang repo đó |
 | Mở popup Branches của repo | Click vào branch widget `⑂ main ▾` |
 | Fetch / Pull / Push nhanh | Các nút ⟳ ↙ ↗ hiện ở cuối dòng khi rê chuột. Thao tác chạy trên đúng repo đó, kể cả khi repo không được chọn |
-| Menu chuột phải | Select Repository, Branches…, Fetch, Update Project / Pull…, Push…, Refresh, Open in Integrated Terminal, Reveal in File Explorer, Close Repository |
+| Menu chuột phải | Select Repository, Branches…, Fetch, Update Project / Pull…, **Drop Local and Take origin/x…** (khi branch hiện tại ↑ và ↓ so với upstream; **Abort and Take origin/x…** khi pull đang dừng vì conflict), Push…, Refresh, Open in Integrated Terminal, Reveal in File Explorer, Close Repository |
 | Thêm repo ngoài workspace | Nút **+ Open Repository…** trên thanh tiêu đề view |
 | Ẩn repo khỏi danh sách | **Close Repository**. Lựa chọn được nhớ theo workspace |
 | Hiện lại repo đã ẩn | `…` trên thanh tiêu đề ▸ **Reopen Closed Repositories** |
@@ -428,7 +428,7 @@ Dùng trong popup hoặc khi chuột phải trong cây Branches:
 | Quick Merge into Current | Merge ngay với tuỳ chọn mặc định của git, không mở hộp thoại (như trước đây) |
 | Checkout in New Worktree… | Mở branch trong một thư mục làm việc mới, xem [mục 6b](#6b-worktrees) |
 | Update (fast-forward) | Cập nhật branch local từ upstream mà không cần checkout |
-| Drop Local and Take origin/x… | Chỉ hiện khi branch local và upstream **đều** có commit mới (↑ và ↓): thay vì pull rồi xử lý conflict, bỏ bản local và lấy đúng bản origin. Fetch, hỏi xác nhận (liệt kê commit chưa push sẽ bị bỏ), xoá branch local và checkout lại từ origin (vẫn tracking origin). Thay đổi chưa commit được stash rồi trả lại; không áp dụng lại được thì giữ trong stash. Khi Update Project / Pull đã dừng vì conflict, thông báo conflict và **Resolve Conflicts** có thêm **Abort and Take origin/x…** |
+| Drop Local and Take origin/x… | Chỉ hiện khi branch local và upstream **đều** có commit mới (↑ và ↓): thay vì pull rồi xử lý conflict, bỏ bản local và lấy đúng bản origin. Fetch, hỏi xác nhận (liệt kê commit chưa push sẽ bị bỏ), xoá branch local và checkout lại từ origin (vẫn tracking origin). Thay đổi chưa commit được stash rồi trả lại; không áp dụng lại được thì giữ trong stash. Khi Update Project / Pull đã dừng vì conflict, thông báo conflict và **Resolve Conflicts** có thêm **Abort and Take origin/x…**. Cho branch hiện tại còn có ở menu chuột phải của **Source Control Repositories** và menu `…` của view **Source Control** của VS Code (**Drop Local and Take Upstream…**, chỉ hiện khi áp dụng được) |
 | Push… | Chỉ với branch hiện tại |
 | Rename… / Copy Branch Name | |
 | Delete | Branch chưa merge sẽ hỏi lại trước khi xoá hẳn. Branch remote sẽ đẩy lệnh xoá lên remote |

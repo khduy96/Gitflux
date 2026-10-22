@@ -65,9 +65,10 @@ const gt = (() => {
         },
       }))));
     document.body.append(menuEl);
+    // At most the view high (CSS), scrolling inside: it fits once moved up.
     const r = menuEl.getBoundingClientRect();
-    menuEl.style.left = `${Math.max(0, Math.min(x, window.innerWidth - r.width - 4))}px`;
-    menuEl.style.top = `${Math.max(0, Math.min(y, window.innerHeight - r.height - 4))}px`;
+    menuEl.style.left = `${Math.max(4, Math.min(x, window.innerWidth - r.width - 4))}px`;
+    menuEl.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
   }
 
   function formatDate(ms) {

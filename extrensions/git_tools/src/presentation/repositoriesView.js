@@ -18,6 +18,7 @@ const STATE_LABEL = {
 const ACTIONS = {
   fetch: 'gitTools.fetch',
   update: 'gitTools.update',
+  takeUpstream: 'gitTools.takeUpstream',
   push: 'gitTools.push',
   refresh: 'gitTools.refresh',
   terminal: 'gitTools.repo.openTerminal',
@@ -64,12 +65,14 @@ class RepositoriesViewProvider {
     view.onDidDispose(() => { this.view = null; });
   }
 
-  post() {
+  async post() {
     if (!this.view) return;
     const folders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
-    const repos = this.manager.list().map((m) => {
+    const repos = await Promise.all(this.manager.list().map(async (m) => {
       const s = m.status;
       const parent = folders.find((f) => m.root.toLowerCase().startsWith(f.toLowerCase() + path.sep));
+      // "Drop Local and Take origin/x…" in the menu of the row, when it applies.
+      const take = await cmd.takeUpstreamTarget(m).catch(() => null);
       return {
         root: m.root,
         name: m.name,
@@ -84,9 +87,10 @@ class RepositoriesViewProvider {
         conflicts: s.changes.filter((c) => c.type === 'conflicted').length,
         state: STATE_LABEL[s.state] || '',
         busy: m.busy,
+        takeLabel: take ? `${take.abort ? 'Abort and Take' : 'Drop Local and Take'} ${take.upstream}…` : null,
       };
-    });
-    this.view.webview.postMessage({ type: 'repos', repos });
+    }));
+    if (this.view) this.view.webview.postMessage({ type: 'repos', repos });
   }
 
   async onMessage(msg) {

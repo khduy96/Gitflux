@@ -407,6 +407,33 @@ async function takeRemote(m, name, ref, abortState = null) {
   }
 }
 
+/**
+ * What "Drop Local and Take <upstream>" does for the repository now: the
+ * pull stopped on conflicts (`abort`: its state, aborted first), or the
+ * current branch diverged from its upstream; null when neither.
+ * @param {RepoModel} m
+ * @returns {Promise<{branch: string, upstream: string, abort: string|null}|null>}
+ */
+async function takeUpstreamTarget(m) {
+  const s = m.status;
+  if (s.state !== 'normal') {
+    const pull = s.changes.some((c) => c.type === 'conflicted') ? await m.repo.pullInProgress().catch(() => null) : null;
+    return pull ? { ...pull, abort: s.state } : null;
+  }
+  const b = m.branches.find((x) => x.current);
+  return b && divergedFromUpstream(b) ? { branch: b.name, upstream: b.upstream, abort: null } : null;
+}
+
+/** Source Control (VS Code's and the Repositories view): "Drop Local and Take <upstream>" of the current branch. @param {RepoModel} m */
+async function takeCurrentUpstream(m) {
+  const t = await takeUpstreamTarget(m);
+  if (!t) {
+    vscode.window.showInformationMessage('The current branch has not diverged from its upstream, and no pull is stopped on conflicts.');
+    return;
+  }
+  return takeRemote(m, t.branch, t.upstream, t.abort);
+}
+
 /** "Drop Local and Take <upstream>" of a local branch diverged from its upstream. @param {RepoModel} m @param {Branch} b */
 async function takeUpstream(m, b) {
   if (!divergedFromUpstream(b)) return;
@@ -954,7 +981,7 @@ async function addToGitignore(m, changes) {
 }
 
 module.exports = {
-  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, deleteBranches, takeRemote, takeUpstream, mergeIntoCurrent, rebaseOnto,
+  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, deleteBranches, takeRemote, takeUpstream, takeUpstreamTarget, takeCurrentUpstream, mergeIntoCurrent, rebaseOnto,
   checkoutAndRebase, compareWithCurrent, compareCommits, updateBranch, branchActions, runBranchAction, branchesPopup, checkoutRevision,
   push, update, fetch, manageRemotes, stash, stashApply, stashDrop, stashBranch, stashShowFiles, resolveConflicts,
   commitAction, rollback, deleteUntracked, addToGitignore, addToVcs, unversion,

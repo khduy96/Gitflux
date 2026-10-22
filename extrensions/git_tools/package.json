@@ -2,7 +2,7 @@
   "name": "git-tools-as",
   "displayName": "Git Tools (Android Studio style)",
   "description": "Android Studio style Git tool window for VS Code: commit panel with checkboxes, log with branch graph, branches popup, push/pull dialogs, stashes, shelf, patches and AI commit messages (Claude / Gemini).",
-  "version": "0.4.13",
+  "version": "0.4.15",
   "publisher": "local",
   "license": "UNLICENSED",
   "private": true,
@@ -98,6 +98,12 @@
         "title": "Update Project / Pull…",
         "category": "Git Tools",
         "icon": "$(arrow-down)"
+      },
+      {
+        "command": "gitTools.takeUpstream",
+        "title": "Drop Local and Take Upstream…",
+        "category": "Git Tools",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "gitTools.fetch",
@@ -1376,6 +1382,11 @@
           "command": "gitTools.ai.generate",
           "when": "scmProvider == git",
           "group": "navigation@0"
+        },
+        {
+          "command": "gitTools.takeUpstream",
+          "when": "scmProvider == git && gitTools.canTakeUpstream",
+          "group": "1_gitTools@1"
         }
       ],
       "editor/title/context": [
@@ -1652,6 +1663,10 @@
         {
           "command": "gitTools.lineHistory",
           "when": "editorIsOpen"
+        },
+        {
+          "command": "gitTools.takeUpstream",
+          "when": "gitTools.canTakeUpstream"
         }
       ],
       "editor/context": [

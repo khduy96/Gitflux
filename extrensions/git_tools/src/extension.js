@@ -289,6 +289,17 @@ async function activate(context) {
   branchCmd('gitTools.branch.mergeDialog', 'mergeDialog');
   branchCmd('gitTools.branch.update', 'update');
   branchCmd('gitTools.branch.takeUpstream', 'takeUpstream');
+  // Source Control (VS Code's "…" menu, the Repositories view): for the current branch.
+  reg('gitTools.takeUpstream', (m) => cmd.takeCurrentUpstream(m));
+  const updateTakeContext = async () => {
+    const m = manager.current;
+    const can = !!m && !!await cmd.takeUpstreamTarget(m).catch(() => null);
+    vscode.commands.executeCommand('setContext', 'gitTools.canTakeUpstream', can);
+  };
+  context.subscriptions.push(
+    manager.onDidChangeRepositories(updateTakeContext),
+    manager.onDidChangeCurrent(updateTakeContext),
+  );
   branchCmd('gitTools.branch.push', 'push');
   branchCmd('gitTools.branch.rename', 'rename');
   // Context menu: (clicked node, selected nodes); Delete key: nothing, the selection of the tree.
