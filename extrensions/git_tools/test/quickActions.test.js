@@ -304,3 +304,22 @@ test('mergedBranches and blame of one line', async (t) => {
   const dirty = await r.repo.blame('f.txt', 'a\nB\nnew\n', { start: 3, end: 3 });
   assert.equal(dirty.commits.get(dirty.lines[0].hash)?.uncommitted, true);
 });
+
+test('lastHeadAction / lastCommitMessage: a commit made in a terminal is told from a checkout', async () => {
+  const r = setup();
+  try {
+    assert.equal(await r.repo.lastHeadAction(), null);
+    r.commit('Nội dung đầu tiên');
+    assert.equal(await r.repo.lastHeadAction(), 'commit (initial)');
+    r.commit('Nội dung thứ hai');
+    assert.equal(await r.repo.lastHeadAction(), 'commit');
+    assert.equal(await r.repo.lastCommitMessage(), 'Nội dung thứ hai');
+    r.git('commit', '-q', '--amend', '-m', 'Sửa lại');
+    assert.equal(await r.repo.lastHeadAction(), 'commit (amend)');
+    r.git('checkout', '-q', '-b', 'other');
+    r.git('checkout', '-q', 'HEAD~1');
+    assert.equal(await r.repo.lastHeadAction(), 'checkout');
+  } finally {
+    r.cleanup();
+  }
+});

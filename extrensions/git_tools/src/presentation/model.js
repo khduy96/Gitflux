@@ -92,6 +92,8 @@ class RepoModel {
     this.message = '';
     this.amend = false;
     this._prefilled = null;
+    /** Set while the refresh after an operation of this extension runs: HEAD moved by us, not by a terminal. */
+    this._ownRefresh = false;
     /** Commit options: sign (null = follow commit.gpgsign) and Signed-off-by. @type {boolean|null} */
     this.sign = null;
     this.signOff = false;
@@ -292,6 +294,7 @@ class RepoModel {
   async refreshStatus() {
     try {
       const previous = this.status.state;
+      const previousHead = this.status.head;
       this.status = await this.repo.status();
       if (this.status.state === 'rebasing' || this.status.state === 'applyingMailbox') {
         this.rebaseProgress = await this.repo.rebaseProgress().catch(() => null);
@@ -323,6 +326,8 @@ class RepoModel {
         this.message = '';
         this._prefilled = null;
         this.fire('message');
+      } else if (previousHead && this.status.head && this.status.head !== previousHead && !this._ownRefresh) {
+        await this.loadExternalCommitMessage();
       }
       this.fire('status');
     } catch (e) {
@@ -553,6 +558,21 @@ class RepoModel {
     }
   }
 
+  /**
+   * HEAD moved outside this extension: when it was a commit (e.g.
+   * `git commit -m` in a terminal) and the message box is empty, the box
+   * shows that commit's message.
+   */
+  async loadExternalCommitMessage() {
+    if (this.message.trim() || !vscode.workspace.getConfiguration('gitTools').get('commit.loadExternalMessage')) return;
+    const action = await this.repo.lastHeadAction().catch(() => null);
+    if (!action || !/^commit\b/.test(action)) return;
+    const msg = await this.repo.lastCommitMessage().catch(() => '');
+    if (!msg || this.message.trim()) return;
+    this.message = msg;
+    this.fire('message');
+  }
+
   async refreshRefs() {
     try {
       const [branches, tags, remotes, stashes, submodules, shelves, worktrees, signing] = await Promise.all([
@@ -720,7 +740,14 @@ class RepoModel {
     } finally {
       this.busy = null;
       this.fire('busy');
-      if (o.refresh !== false) await this.refreshAll();
+      if (o.refresh !== false) {
+        this._ownRefresh = true;
+        try {
+          await this.refreshAll();
+        } finally {
+          this._ownRefresh = false;
+        }
+      }
     }
   }
 

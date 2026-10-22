@@ -1767,6 +1767,11 @@
           "default": true,
           "description": "Refresh automatically when files or the .git folder change."
         },
+        "gitTools.commit.loadExternalMessage": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a commit is made outside Git Tools (e.g. `git commit -m` in a terminal) and the Commit message box is empty, show that commit's message in the box."
+        },
         "gitTools.ai.provider": {
           "type": "string",
           "enum": [
