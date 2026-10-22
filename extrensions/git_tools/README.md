@@ -36,7 +36,7 @@ Phiên bản: 0.4.2 · Yêu cầu: VS Code **1.90 trở lên** và **Git** đã 
 6. [Branches](#6-branches) · [Worktrees](#6b-worktrees)
 7. [Push, Update Project, Fetch](#7-push-update-project-fetch)
 8. [Stash](#8-stash) · [Submodules](#8b-submodules-gitmodules) · [Shelve và Shelf](#8c-shelve-và-shelf) · [Patch](#8d-create-patch--apply-patch) · [Git LFS](#8e-git-lfs)
-9. [Merge, rebase và giải quyết conflict](#9-merge-rebase-và-giải-quyết-conflict) · [Interactive rebase](#9b-interactive-rebase-sửa-lịch-sử-commit) · [Bisect](#9c-bisect-tìm-commit-gây-lỗi)
+9. [Merge, rebase và giải quyết conflict](#9-merge-rebase-và-giải-quyết-conflict) · [Interactive rebase](#9b-interactive-rebase-sửa-lịch-sử-commit) · [Bisect](#9c-bisect-tìm-commit-gây-lỗi) · [Thao tác nhanh](#9d-thao-tác-nhanh)
 10. [AI commit message](#10-ai-commit-message) · [Ký commit](#10b-ký-commit-gpg--ssh--x509)
 11. [Cài đặt (Settings)](#11-cài-đặt-settings)
 12. [Danh sách lệnh](#12-danh-sách-lệnh)
@@ -428,6 +428,7 @@ Dùng trong popup hoặc khi chuột phải trong cây Branches:
 | Quick Merge into Current | Merge ngay với tuỳ chọn mặc định của git, không mở hộp thoại (như trước đây) |
 | Checkout in New Worktree… | Mở branch trong một thư mục làm việc mới, xem [mục 6b](#6b-worktrees) |
 | Update (fast-forward) | Cập nhật branch local từ upstream mà không cần checkout |
+| Drop Local and Take origin/x… | Chỉ hiện khi branch local và upstream **đều** có commit mới (↑ và ↓): thay vì pull rồi xử lý conflict, bỏ bản local và lấy đúng bản origin. Fetch, hỏi xác nhận (liệt kê commit chưa push sẽ bị bỏ), xoá branch local và checkout lại từ origin (vẫn tracking origin). Thay đổi chưa commit được stash rồi trả lại; không áp dụng lại được thì giữ trong stash. Khi Update Project / Pull đã dừng vì conflict, thông báo conflict và **Resolve Conflicts** có thêm **Abort and Take origin/x…** |
 | Push… | Chỉ với branch hiện tại |
 | Rename… / Copy Branch Name | |
 | Delete | Branch chưa merge sẽ hỏi lại trước khi xoá hẳn. Branch remote sẽ đẩy lệnh xoá lên remote |
@@ -704,6 +705,38 @@ Nếu có thay đổi chưa commit cản trở việc checkout commit cần th�
 
 ---
 
+## 9d. Thao tác nhanh
+
+Các phím tắt dạng chord: bấm `Ctrl+Alt+G` (macOS `Cmd+Alt+G`), thả ra, rồi bấm phím thứ hai.
+
+| Thao tác | Phím | Ở đâu khác | Làm gì |
+|---|---|---|---|
+| **Switch to Recent Branch…** | `Ctrl+Alt+G` `B` | Popup Branches, menu `…` của Branches | Các branch vừa checkout gần đây (đọc từ reflog), mới nhất trước. Chọn là checkout luôn (có Smart Checkout nếu đang có thay đổi). |
+| **Checkout Previous Branch** | `Ctrl+Alt+G` `P` | menu `…` của Branches | Như `git checkout -`: nhảy qua lại giữa 2 branch. |
+| **Amend Last Commit (Keep Message)** | `Ctrl+Alt+G` `A` | menu `…` của Commit | Gộp các file đang tick (kể cả dòng đã chọn) vào commit cuối, giữ nguyên message, không mở dialog. Ô message giữ nguyên bản nháp. |
+| **WIP Commit** | `Ctrl+Alt+G` `W` | menu `…` của Commit | Lưu **mọi** thay đổi (cả file chưa theo dõi) vào commit `WIP on <branch> (…) [skip ci]`, không chạy hook, không ký. Dùng khi cần đổi branch gấp. |
+| **Unwip** | `Ctrl+Alt+G` `Shift+W` | menu `…` của Commit | Gỡ commit WIP ở HEAD, thay đổi quay lại working tree. Khi checkout sang branch có HEAD là commit WIP, extension hỏi có Unwip không. |
+| **Undo Last Git Action…** | `Ctrl+Alt+G` `Z` | menu `…` của Commit | Hoàn tác thao tác gần nhất theo reflog (xem bên dưới). Luôn hỏi xác nhận, liệt kê các commit sẽ rời khỏi branch. |
+| **Show History for Selected Lines** | `Ctrl+Alt+G` `L` | chuột phải trong editor | Lịch sử của riêng các dòng đang chọn (`git log -L`, theo cả khi đổi tên file). Chọn commit để mở diff; nút trên mỗi dòng: **Show in Log**, **Copy Hash**. |
+| **Compare File with Branch…** | `Ctrl+Alt+G` `C` | chuột phải editor / tab / Explorer | So sánh file với cùng file ở một branch, tag hoặc revision bất kỳ. |
+| **Clean Merged Branches…** | | menu `…` của Branches | Liệt kê branch local đã merge vào `main` / `master` / `develop` (đổi được) hoặc có upstream đã bị xoá trên remote (*upstream gone*). Branch đang checkout ở worktree khác không bị liệt kê. Nút ☁ chạy Fetch (prune) rồi tải lại. Branch chưa merge cần xác nhận lần hai. |
+
+**Undo Last Git Action** xử lý theo loại thao tác:
+
+- *commit*, *commit (amend)*: đưa branch về trước commit đó, thay đổi vẫn nằm trong working tree (`reset --soft`). Với amend thì commit cũ (trước amend) quay lại.
+- *merge*, *pull*, *rebase* (cả `pull --rebase`), *reset*, *cherry-pick*, *revert*: đưa branch về trạng thái trước thao tác, giữ thay đổi chưa commit (`reset --keep`). Nếu thay đổi chưa commit đụng vào file liên quan, git từ chối và extension đề nghị **Move Branch Only** (`reset --mixed`).
+- *checkout*: checkout lại branch trước đó.
+- Commit đầu tiên, clone, hoặc khi đang có merge / rebase dở thì không hoàn tác được (rebase dở thì dùng **Abort**).
+- Chạy Undo hai lần liên tiếp sẽ làm lại thao tác vừa hoàn tác (lần hai hoàn tác chính lần *reset* của lần một).
+
+**Inline blame:** cuối dòng có con trỏ hiện mờ `tác giả, 3 days ago • tiêu đề commit`. Rê chuột vào đó để xem toàn bộ message, kèm **Show in Log**, **Show Diff**, **Copy Hash**. Tắt / bật bằng **Toggle Inline Blame** hoặc setting `gitTools.inlineBlame.enabled`. Khi file đang bật Annotate thì inline blame tự ẩn.
+
+**Copy commit** (menu chuột phải commit trong Log): Copy Revision Number, Copy Short Hash, Copy Subject, Copy Short Hash and Subject, Copy Full Message. Chọn nhiều commit thì mỗi commit một dòng.
+
+**Tạo branch với tiền tố:** khi tạo branch, gõ tên (ví dụ `login`) rồi chọn `feature/login`, `bugfix/login`… Tiền tố dùng lần trước được xếp đầu. Gõ sẵn tên có `/` thì giữ nguyên. Danh sách tiền tố nằm trong `gitTools.branchPrefixes`; để trống thì quay về ô nhập tên như cũ.
+
+---
+
 ## 10. AI commit message
 
 Nút **✨** viết commit message từ diff của các file đang tick. Message hiện dần vào ô commit; bấm **■** để dừng. Message cũ được giữ lại nếu bạn dừng hoặc có lỗi.
@@ -791,6 +824,8 @@ Vào Settings, tìm `gitTools.ai`:
 | `gitTools.ai.geminiModel` | *(trống)* | Model Gemini |
 | `gitTools.ai.language` | *(trống)* | Ngôn ngữ của commit message |
 | `gitTools.ai.instructions` | *(trống)* | Hướng dẫn thêm cho AI |
+| `gitTools.inlineBlame.enabled` | `true` | Hiện blame của dòng có con trỏ ở cuối dòng |
+| `gitTools.branchPrefixes` | `feature/`, `bugfix/`, `hotfix/`, `release/`, `chore/` | Tiền tố gợi ý khi tạo branch (trống = ô nhập tên thường) |
 
 ---
 
@@ -826,8 +861,13 @@ Mở Command Palette (`Ctrl+Shift+P`) và gõ `Git Tools`:
 | Refresh | Làm mới |
 | AI Commit Message: Configure… / Set API Key… / Remove API Key… / Test Connection / Setup Guide | Cấu hình AI |
 | Generate Commit Message | Sinh message (giống nút ✨) |
+| Switch to Recent Branch… / Checkout Previous Branch | Đổi branch nhanh (xem [mục 9d](#9d-thao-tác-nhanh)) |
+| Amend Last Commit (Keep Message) / WIP Commit / Unwip / Undo Last Git Action… | Sửa nhanh (xem [mục 9d](#9d-thao-tác-nhanh)) |
+| Show History for Selected Lines / Compare File with Branch… | Lịch sử dòng, so sánh file với branch |
+| Clean Merged Branches… | Xoá hàng loạt branch đã merge / upstream đã xoá |
+| Toggle Inline Blame | Bật / tắt inline blame |
 
-Extension không gán phím tắt mặc định để tránh trùng phím của VS Code. Muốn gán phím tắt kiểu Android Studio thì vào **File ▸ Preferences ▸ Keyboard Shortcuts** và tìm `gitTools`. Ví dụ: `gitTools.focusCommit`, `gitTools.push`, `gitTools.update`, `gitTools.branches`.
+Extension chỉ gán sẵn phím tắt cho các thao tác nhanh, dưới prefix `Ctrl+Alt+G` (xem [mục 9d](#9d-thao-tác-nhanh)), một prefix VS Code mặc định không dùng. Các lệnh khác không có phím tắt mặc định để tránh trùng phím của VS Code. Muốn gán thêm hoặc đổi phím thì vào **File ▸ Preferences ▸ Keyboard Shortcuts** và tìm `gitTools`. Ví dụ: `gitTools.focusCommit`, `gitTools.push`, `gitTools.update`, `gitTools.branches`.
 
 ---
 

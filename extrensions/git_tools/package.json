@@ -680,6 +680,70 @@
         "title": "Collapse All",
         "category": "Git Tools",
         "icon": "$(collapse-all)"
+      },
+      {
+        "command": "gitTools.switchRecentBranch",
+        "title": "Switch to Recent Branch…",
+        "category": "Git Tools",
+        "icon": "$(history)"
+      },
+      {
+        "command": "gitTools.checkoutPreviousBranch",
+        "title": "Checkout Previous Branch",
+        "category": "Git Tools",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "gitTools.wip",
+        "title": "WIP Commit (Save All Changes)",
+        "category": "Git Tools",
+        "icon": "$(save-all)"
+      },
+      {
+        "command": "gitTools.unwip",
+        "title": "Unwip (Undo WIP Commit)",
+        "category": "Git Tools",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "gitTools.amendNoEdit",
+        "title": "Amend Last Commit (Keep Message)",
+        "category": "Git Tools",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "gitTools.undoLastAction",
+        "title": "Undo Last Git Action…",
+        "category": "Git Tools",
+        "icon": "$(reply)"
+      },
+      {
+        "command": "gitTools.lineHistory",
+        "title": "Show History for Selected Lines",
+        "category": "Git Tools",
+        "icon": "$(history)"
+      },
+      {
+        "command": "gitTools.compareFileWithBranch",
+        "title": "Compare File with Branch…",
+        "category": "Git Tools",
+        "icon": "$(compare-changes)"
+      },
+      {
+        "command": "gitTools.cleanMergedBranches",
+        "title": "Clean Merged Branches…",
+        "category": "Git Tools",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "gitTools.toggleInlineBlame",
+        "title": "Toggle Inline Blame",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.blame.copyHash",
+        "title": "Copy Commit Hash",
+        "category": "Git Tools"
       }
     ],
     "submenus": [
@@ -700,6 +764,48 @@
         "key": "delete",
         "mac": "cmd+backspace",
         "when": "focusedView == gitTools.branches && !inputFocus"
+      },
+      {
+        "command": "gitTools.switchRecentBranch",
+        "key": "ctrl+alt+g b",
+        "mac": "cmd+alt+g b"
+      },
+      {
+        "command": "gitTools.checkoutPreviousBranch",
+        "key": "ctrl+alt+g p",
+        "mac": "cmd+alt+g p"
+      },
+      {
+        "command": "gitTools.wip",
+        "key": "ctrl+alt+g w",
+        "mac": "cmd+alt+g w"
+      },
+      {
+        "command": "gitTools.unwip",
+        "key": "ctrl+alt+g shift+w",
+        "mac": "cmd+alt+g shift+w"
+      },
+      {
+        "command": "gitTools.amendNoEdit",
+        "key": "ctrl+alt+g a",
+        "mac": "cmd+alt+g a"
+      },
+      {
+        "command": "gitTools.undoLastAction",
+        "key": "ctrl+alt+g z",
+        "mac": "cmd+alt+g z"
+      },
+      {
+        "command": "gitTools.lineHistory",
+        "key": "ctrl+alt+g l",
+        "mac": "cmd+alt+g l",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "gitTools.compareFileWithBranch",
+        "key": "ctrl+alt+g c",
+        "mac": "cmd+alt+g c",
+        "when": "editorTextFocus"
       }
     ],
     "menus": {
@@ -908,6 +1014,41 @@
           "command": "gitTools.refresh",
           "when": "view == gitTools.log",
           "group": "navigation@3"
+        },
+        {
+          "command": "gitTools.amendNoEdit",
+          "when": "view == gitTools.commit",
+          "group": "1_quick@1"
+        },
+        {
+          "command": "gitTools.wip",
+          "when": "view == gitTools.commit",
+          "group": "1_quick@2"
+        },
+        {
+          "command": "gitTools.unwip",
+          "when": "view == gitTools.commit",
+          "group": "1_quick@3"
+        },
+        {
+          "command": "gitTools.undoLastAction",
+          "when": "view == gitTools.commit",
+          "group": "1_quick@4"
+        },
+        {
+          "command": "gitTools.switchRecentBranch",
+          "when": "view == gitTools.branches",
+          "group": "0_switch@1"
+        },
+        {
+          "command": "gitTools.checkoutPreviousBranch",
+          "when": "view == gitTools.branches",
+          "group": "0_switch@2"
+        },
+        {
+          "command": "gitTools.cleanMergedBranches",
+          "when": "view == gitTools.branches",
+          "group": "3_cleanup@1"
         }
       ],
       "view/item/context": [
@@ -1252,6 +1393,11 @@
           "command": "gitTools.annotate",
           "when": "resourceScheme == file",
           "group": "gitTools@3"
+        },
+        {
+          "command": "gitTools.compareFileWithBranch",
+          "when": "resourceScheme == file",
+          "group": "gitTools@4"
         }
       ],
       "commandPalette": [
@@ -1498,6 +1644,14 @@
         {
           "command": "gitTools.branch.takeUpstream",
           "when": "false"
+        },
+        {
+          "command": "gitTools.blame.copyHash",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.lineHistory",
+          "when": "editorIsOpen"
         }
       ],
       "editor/context": [
@@ -1505,6 +1659,16 @@
           "command": "gitTools.annotate",
           "when": "resourceScheme == file",
           "group": "gitTools@1"
+        },
+        {
+          "command": "gitTools.lineHistory",
+          "when": "resourceScheme == file",
+          "group": "gitTools@2"
+        },
+        {
+          "command": "gitTools.compareFileWithBranch",
+          "when": "resourceScheme == file",
+          "group": "gitTools@3"
         }
       ],
       "explorer/context": [
@@ -1512,6 +1676,11 @@
           "command": "gitTools.annotate",
           "when": "resourceScheme == file && !explorerResourceIsFolder",
           "group": "gitTools@1"
+        },
+        {
+          "command": "gitTools.compareFileWithBranch",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "gitTools@2"
         }
       ]
     },
@@ -1586,6 +1755,25 @@
           "type": "boolean",
           "default": true,
           "description": "After Update Project / Pull, run \"git submodule update --init --recursive\" when the repository has submodules."
+        },
+        "gitTools.inlineBlame.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the author, date and summary of the last commit that changed the line with the cursor, after the line."
+        },
+        "gitTools.branchPrefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "feature/",
+            "bugfix/",
+            "hotfix/",
+            "release/",
+            "chore/"
+          ],
+          "description": "Prefixes offered when creating a branch (the last used one first). Empty: a plain name box."
         }
       }
     }

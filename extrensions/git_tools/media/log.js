@@ -952,6 +952,10 @@
     const rw = rewriteState(sel, c);
     showMenu(x, y, [
       { label: 'Copy Revision Number', id: 'copy' },
+      { label: 'Copy Short Hash', id: 'copyShort' },
+      { label: 'Copy Subject', id: 'copySubject' },
+      { label: 'Copy Short Hash and Subject', id: 'copyShortSubject' },
+      { label: 'Copy Full Message', id: 'copyMessage' },
       '-',
       { label: 'Cherry-Pick', id: 'cherryPick' },
       { label: 'Create Patch…', id: 'createPatch' },

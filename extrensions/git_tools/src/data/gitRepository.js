@@ -16,6 +16,7 @@ const { mergeArgs } = require('../domain/logic/merge');
 const { parseWorktrees } = require('../domain/logic/worktree');
 const { parseBisectRefs, bisectMarks, parseBisectLog, parseBisectVars } = require('../domain/logic/bisect');
 const { parseBlamePorcelain } = require('../domain/logic/blame');
+const { parseLineLog } = require('../domain/logic/quickActions');
 const {
   signArgs, SIGNING_CONFIG_REGEX, parseSigningConfig, makeSignature, tagVerification, hasTagSignature,
 } = require('../domain/logic/signing');
@@ -1915,14 +1916,66 @@ class Repository {
 
   /**
    * `git blame --porcelain` of `rel`: the committed file, or `contents` (an
-   * editor with unsaved changes) read from stdin with `--contents -`.
+   * editor with unsaved changes) read from stdin with `--contents -`;
+   * `lines`: only these lines (1-based, included).
    * @param {string} rel
    * @param {string} [contents]
+   * @param {{start: number, end: number}} [lines]
    * @returns {Promise<import('../domain/entities').Blame>}
    */
-  async blame(rel, contents) {
-    const args = ['blame', '--porcelain', ...(contents !== undefined ? ['--contents', '-'] : []), '--', rel];
+  async blame(rel, contents, lines) {
+    const args = ['blame', '--porcelain', ...(lines ? ['-L', `${lines.start},${lines.end}`] : []),
+      ...(contents !== undefined ? ['--contents', '-'] : []), '--', rel];
     return parseBlamePorcelain(await this.git.run(args, { stdin: contents }));
+  }
+
+  // ---------------------------------------------------------------- quick actions
+
+  /**
+   * The branch checked out before the current one (`@{-1}`): its name, or
+   * null with the commit when it was a detached HEAD; null when there is none.
+   * @returns {Promise<{name: string|null, hash: string}|null>}
+   */
+  async previousCheckout() {
+    const hash = (await this.git.run(['rev-parse', '--verify', '-q', '@{-1}'], { allowFailure: true })).trim();
+    if (!hash) return null;
+    const full = (await this.git.run(['rev-parse', '--symbolic-full-name', '@{-1}'], { allowFailure: true })).trim();
+    return { name: full.startsWith('refs/heads/') ? full.slice(11) : null, hash };
+  }
+
+  /**
+   * Commits every change, untracked files included, without running hooks
+   * or signing: a temporary commit, undone by a mixed reset. `exclude`:
+   * paths left out (nested repositories, which `add` would turn into gitlinks).
+   * @param {string} message
+   * @param {string[]} [exclude]
+   */
+  async wipCommit(message, exclude = []) {
+    await this.git.run(['add', '-A', '--', '.', ...exclude.map((p) => `:(exclude,literal)${p}`)], { log: true });
+    await this.git.run(['commit', '--no-verify', '--no-gpg-sign', '-m', message], { log: true });
+  }
+
+  /** HEAD is already on its upstream (amending or undoing it rewrites pushed history). */
+  async headPushed() {
+    const r = await this.git.raw(['rev-parse', '--verify', '-q', '@{upstream}']);
+    return r.code === 0 && this.isAncestor('HEAD', r.stdout.trim());
+  }
+
+  /**
+   * Commits that changed lines `start`…`end` (1-based) of `rel` at HEAD,
+   * newest first (git log -L, renames followed).
+   * @returns {Promise<import('../domain/logic/quickActions').LineHistoryEntry[]>}
+   */
+  async lineHistory(rel, start, end, limit = 200) {
+    const out = await this.git.run(['log', '-n', String(limit), `-L${start},${end}:${rel}`,
+      `--format=${RS}%H${FS}%P${FS}%an${FS}%at${FS}%s`, '--no-color', '--no-ext-diff']);
+    return parseLineLog(out, FS, RS);
+  }
+
+  /** Local branches merged into `base` (git branch --merged). */
+  async mergedBranches(base) {
+    const out = await this.git.run(['for-each-ref', `--merged=${base}`, '--format=%(refname:short)', 'refs/heads']);
+    return out.split('\n').map((l) => l.trim()).filter(Boolean);
   }
 }
 

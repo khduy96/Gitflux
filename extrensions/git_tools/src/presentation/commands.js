@@ -11,6 +11,8 @@ const { divergedFromUpstream } = require('../domain/logic/divergence');
 const { mergeDialog } = require('./mergeDialog');
 const { newWorktree, openWorktree } = require('./worktrees');
 const { signChoice, askSignTag } = require('./signing');
+const { pickBranchName } = require('./branchName');
+const { commitCopyText } = require('../domain/logic/quickActions');
 
 /** @typedef {import('./model').RepoModel} RepoModel */
 /** @typedef {import('../domain/entities').Branch} Branch */
@@ -116,18 +118,16 @@ async function checkoutBranch(m, b) {
 /** @param {RepoModel} m */
 async function newBranch(m, startPoint, startLabel) {
   const existing = m.branches.filter((b) => !b.remote).map((b) => b.name);
-  const name = await vscode.window.showInputBox({
+  const branch = await pickBranchName({
     title: startPoint ? `New Branch from ${startLabel || startPoint}` : 'Create New Branch',
-    prompt: 'New branch name',
-    validateInput: (v) => validateRefName(v, existing),
+    validate: (v) => validateRefName(v, existing),
   });
-  if (!name) return;
+  if (!branch) return;
   const pick = await vscode.window.showQuickPick(
     [{ label: '$(check) Create and checkout', id: true }, { label: 'Create without checkout', id: false }],
-    { title: `Create branch ${name.trim()}` },
+    { title: `Create branch ${branch}` },
   );
   if (!pick) return;
-  const branch = name.trim();
   const fromRemote = !!startPoint && m.branches.some((b) => b.remote && b.name === startPoint);
   const create = () => m.repo.createBranch(branch, { startPoint, checkout: pick.id, fromRemote });
   if (pick.id) await smartCheckout(m, `Create branch ${branch}`, create);
@@ -498,6 +498,7 @@ async function branchesPopup(m) {
     sep(''),
     { label: '$(add) New Branch…', id: 'new' },
     { label: '$(tag) Checkout Tag or Revision…', id: 'revision' },
+    { label: '$(history) Recent Branches…', id: 'recent' },
     sep('Local'),
     ...sorted(m.branches.filter((b) => !b.remote)).map(branchItem),
     sep('Remote'),
@@ -514,6 +515,7 @@ async function branchesPopup(m) {
       case 'push': return push(m);
       case 'new': return newBranch(m);
       case 'revision': return checkoutRevision(m);
+      case 'recent': return vscode.commands.executeCommand('gitTools.switchRecentBranch');
     }
   });
   qp.onDidHide(() => qp.dispose());
@@ -810,8 +812,20 @@ async function commitAction(m, action, commits) {
   const short = c.hash.slice(0, 8);
   switch (action) {
     case 'copy':
-      await vscode.env.clipboard.writeText(commits.map((x) => x.hash).join(' '));
+      await vscode.env.clipboard.writeText(commitCopyText('full', commits));
       return vscode.window.setStatusBarMessage('Revision number copied', 3000);
+    case 'copyShort':
+    case 'copySubject':
+    case 'copyShortSubject':
+    case 'copyMessage': {
+      const kind = /** @type {import('../domain/logic/quickActions').CopyKind} */ (
+        { copyShort: 'short', copySubject: 'subject', copyShortSubject: 'shortSubject', copyMessage: 'message' }[action]);
+      const bodies = kind === 'message'
+        ? new Map(await Promise.all(commits.map(async (x) => /** @type {[string, string]} */ ([x.hash, await m.repo.commitBody(x.hash)]))))
+        : undefined;
+      await vscode.env.clipboard.writeText(commitCopyText(kind, commits, bodies));
+      return vscode.window.setStatusBarMessage(`$(check) Copied ${commits.length === 1 ? short : `${commits.length} commits`}`, 3000);
+    }
     case 'cherryPick':
       await m.run(commits.length > 1 ? `Cherry-pick ${commits.length} commits` : `Cherry-pick ${short}`, async () => {
         for (const x of [...commits].reverse()) {

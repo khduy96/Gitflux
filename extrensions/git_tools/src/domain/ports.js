@@ -105,8 +105,17 @@
  * @property {() => Promise<any>} bisectReset Back to the branch the session started from.
  * @property {(command: string) => Promise<{code: number, output: string}>} bisectRun git bisect run (output streamed to the log).
  *
- * @property {(rel: string, contents?: string) => Promise<import('./entities').Blame>} blame
- *   git blame --porcelain of the committed file, or of `contents` (unsaved editor) with --contents -.
+ * @property {(rel: string, contents?: string, lines?: {start: number, end: number}) => Promise<import('./entities').Blame>} blame
+ *   git blame --porcelain of the committed file, or of `contents` (unsaved editor) with --contents -; `lines` limits it (-L).
+ *
+ * @property {() => Promise<{name: string|null, hash: string}|null>} previousCheckout
+ *   `@{-1}`: the branch checked out before (name null when it was a detached HEAD).
+ * @property {(message: string, exclude?: string[]) => Promise<void>} wipCommit
+ *   Commits everything (untracked too) but `exclude`, no hooks, no signing.
+ * @property {() => Promise<boolean>} headPushed HEAD is already on its upstream.
+ * @property {(rel: string, start: number, end: number, limit?: number) => Promise<import('./logic/quickActions').LineHistoryEntry[]>} lineHistory
+ *   git log -L of lines start…end (1-based) of the file at HEAD.
+ * @property {(base: string) => Promise<string[]>} mergedBranches Local branches merged into `base`.
  * @property {(state: import('./entities').RepoState, sign?: boolean|null) => Promise<any>} continueOperation
  *   sign: -S / --no-gpg-sign for the commit that concludes a merge.
  * @property {(state: import('./entities').RepoState) => Promise<any>} abortOperation

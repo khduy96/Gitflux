@@ -26,6 +26,9 @@ const { bisectAction } = require('./presentation/bisect');
 const { registerChangelistCommands } = require('./presentation/changelists');
 const { registerLfsCommands } = require('./presentation/lfs');
 const { registerSigningCommands, signChoice } = require('./presentation/signing');
+const { registerInlineBlame } = require('./presentation/inlineBlame');
+const { useMemento } = require('./presentation/branchName');
+const quick = require('./presentation/quickActions');
 const cmd = require('./presentation/commands');
 
 const NO_OPERATION = 'No merge, rebase, cherry-pick, revert or patch application in progress.';
@@ -47,7 +50,9 @@ async function activate(context) {
   branches.view = vscode.window.createTreeView('gitTools.branches', { treeDataProvider: branches, canSelectMany: true });
   const statusBar = new BranchStatusBar(manager);
   registerWorktreeCommands(context, manager);
-  registerBlame(context, manager, logView);
+  const annotate = registerBlame(context, manager, logView);
+  registerInlineBlame(context, manager, annotate);
+  useMemento(context.globalState);
   registerChangelistCommands(context, manager, commitView);
   registerLfsCommands(context, manager);
   registerSigningCommands(context, manager);
@@ -331,6 +336,17 @@ async function activate(context) {
 
   // Clean: untracked files, with a preview.
   reg('gitTools.cleanWorkingTree', (m) => cleanWorkingTree(m));
+
+  // Quick actions.
+  reg('gitTools.switchRecentBranch', (m) => quick.switchRecentBranch(m));
+  reg('gitTools.checkoutPreviousBranch', (m) => quick.checkoutPrevious(m));
+  reg('gitTools.wip', (m) => quick.wip(m));
+  reg('gitTools.unwip', (m) => quick.unwip(m));
+  reg('gitTools.amendNoEdit', (m) => quick.amendNoEdit(m));
+  reg('gitTools.undoLastAction', (m) => quick.undoLastAction(m));
+  reg('gitTools.cleanMergedBranches', (m) => quick.cleanMergedBranches(m));
+  regFree('gitTools.lineHistory', () => quick.lineHistory(manager, logView));
+  regFree('gitTools.compareFileWithBranch', (uri) => quick.compareFileWithRef(manager, uri));
 
   // Bisect on the checked out commit (Commit view banner, command palette).
   for (const action of ['good', 'bad', 'skip', 'reset', 'run']) {

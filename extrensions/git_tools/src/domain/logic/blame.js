@@ -190,11 +190,36 @@ function hoverMarkdown(c, message, root) {
     `[Show Diff](${commandUri('gitTools.blame.showDiff', {
       root, hash: c.hash, path: c.filename, previous: c.previous,
     })} "Changes of this file in the commit")`,
+    `[Copy Hash](${commandUri('gitTools.blame.copyHash', { hash: c.hash })} "Copy the full commit hash")`,
   ].join(' &nbsp;·&nbsp; ');
   return `\`${c.hash.slice(0, 8)}\` &nbsp; **${author}** &nbsp; ${fullDate(c.time)}\n\n${body}\n\n---\n\n${links}`;
 }
 
+/** "5 minutes ago", "3 days ago"… */
+function relativeTime(ms, now = Date.now()) {
+  let n = Math.max(0, Math.round((now - ms) / 1000));
+  const steps = [[60, 'second'], [60, 'minute'], [24, 'hour'], [30, 'day'], [12, 'month'], [Infinity, 'year']];
+  for (const [size, unit] of steps) {
+    if (n < size) return unit === 'second' && n < 10 ? 'just now' : `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+    n = Math.floor(n / size);
+  }
+  return '';
+}
+
+/**
+ * Inline blame shown after the line with the cursor: "Jane Doe, 3 days ago
+ * • Fix the parser", the summary cut to `maxSummary` characters.
+ * @param {BlameCommit} c
+ * @param {number} [now]
+ * @param {number} [maxSummary]
+ */
+function inlineBlameText(c, now = Date.now(), maxSummary = 60) {
+  if (c.uncommitted) return 'You • Not Committed Yet';
+  const s = c.summary.length > maxSummary ? `${c.summary.slice(0, maxSummary - 1)}…` : c.summary;
+  return `${c.author}, ${relativeTime(c.time, now)} • ${s}`;
+}
+
 module.exports = {
   parseBlamePorcelain, annotationText, commitAges, ageBucket, shortDate, UNCOMMITTED,
-  fullDate, annotationLines, escapeMarkdown, commandUri, hoverMarkdown,
+  fullDate, annotationLines, escapeMarkdown, commandUri, hoverMarkdown, relativeTime, inlineBlameText,
 };
