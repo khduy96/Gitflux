@@ -6,6 +6,7 @@ const path = require('path');
 const { STATUS_WORD } = require('./shelf');
 const { worktreeWhat } = require('./worktrees');
 const { worktreeOfBranch } = require('../domain/logic/worktree');
+const { divergedFromUpstream } = require('../domain/logic/divergence');
 
 /**
  * Tree of HEAD, local / remote branches, tags, stashes, the shelf,
@@ -210,7 +211,8 @@ class BranchesTreeProvider {
       elsewhere ? `checked out in ${path.basename(elsewhere.path)}` : ''].filter(Boolean).join(' ');
     item.tooltip = `${b.name}${b.upstream ? `\nTracking ${b.upstream}` : ''}\n${b.hash.slice(0, 10)}` +
       `${elsewhere ? `\nChecked out in worktree ${elsewhere.path}` : ''}`;
-    item.contextValue = b.current ? 'branch-current' : b.remote ? 'branch-remote' : 'branch-local';
+    // "-diverged": local and upstream both moved on, the menu offers "Drop Local and Take <upstream>".
+    item.contextValue = `${b.current ? 'branch-current' : b.remote ? 'branch-remote' : 'branch-local'}${divergedFromUpstream(b) ? '-diverged' : ''}`;
     item.command = { command: 'gitTools.branch.showLog', title: 'Show in Log', arguments: [{ branch: b }] };
     return { item, branch: b };
   }

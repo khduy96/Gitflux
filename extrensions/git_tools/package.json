@@ -2,7 +2,7 @@
   "name": "git-tools-as",
   "displayName": "Git Tools (Android Studio style)",
   "description": "Android Studio style Git tool window for VS Code: commit panel with checkboxes, log with branch graph, branches popup, push/pull dialogs, stashes, shelf, patches and AI commit messages (Claude / Gemini).",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "publisher": "local",
   "license": "UNLICENSED",
   "private": true,
@@ -446,6 +446,11 @@
       {
         "command": "gitTools.branch.update",
         "title": "Update (Fast-forward from Upstream)",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.branch.takeUpstream",
+        "title": "Drop Local and Take Upstream…",
         "category": "Git Tools"
       },
       {
@@ -918,12 +923,12 @@
         },
         {
           "command": "gitTools.branch.checkoutRebase",
-          "when": "view == gitTools.branches && viewItem == branch-local",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-local(-diverged)?$/",
           "group": "1_checkout@3"
         },
         {
           "command": "gitTools.branch.compare",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
           "group": "2_compare@1"
         },
         {
@@ -933,37 +938,42 @@
         },
         {
           "command": "gitTools.branch.rebaseOnto",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
           "group": "3_integrate@1"
         },
         {
           "command": "gitTools.branch.mergeDialog",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
           "group": "3_integrate@2"
         },
         {
           "command": "gitTools.branch.merge",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
           "group": "3_integrate@3"
         },
         {
           "command": "gitTools.branch.checkoutInWorktree",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
           "group": "1_checkout@4"
         },
         {
           "command": "gitTools.branch.update",
-          "when": "view == gitTools.branches && viewItem == branch-local",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-local(-diverged)?$/",
           "group": "4_remote@1"
         },
         {
+          "command": "gitTools.branch.takeUpstream",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|current)-diverged$/",
+          "group": "4_remote@2"
+        },
+        {
           "command": "gitTools.branch.push",
-          "when": "view == gitTools.branches && viewItem == branch-current",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-current(-diverged)?$/",
           "group": "4_remote@2"
         },
         {
           "command": "gitTools.branch.rename",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|current)$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|current)(-diverged)?$/",
           "group": "5_edit@1"
         },
         {
@@ -973,7 +983,7 @@
         },
         {
           "command": "gitTools.branch.delete",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
           "group": "5_edit@3"
         },
         {
@@ -1483,6 +1493,10 @@
         },
         {
           "command": "gitTools.branches.collapseAll",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.branch.takeUpstream",
           "when": "false"
         }
       ],

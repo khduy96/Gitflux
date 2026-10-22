@@ -927,6 +927,51 @@ class Repository {
     return this.git.run(['fetch', '--progress', '--prune', '--all'], { log: true });
   }
 
+  /** Fetches one branch of `remote` into its remote-tracking branch. */
+  fetchBranch(remote, branch) {
+    return this.git.run(['fetch', '--progress', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`], { log: true });
+  }
+
+  /**
+   * Checks the local branch `name` out again from `ref`, tracking it, as if
+   * deleted and recreated (`git checkout -B`): its commits not on `ref` are
+   * dropped. The working tree must be clean.
+   */
+  async checkoutFrom(name, ref) {
+    await this.git.run(['checkout', '-B', name, ref], { log: true });
+    await this.git.run(['branch', `--set-upstream-to=${ref}`, name], { log: true });
+  }
+
+  /**
+   * The pull of a branch from its upstream that stopped on conflicts: a merge
+   * of the upstream (MERGE_HEAD is its tip) or a rebase of the branch onto
+   * it. Null for any other merge or rebase.
+   * @returns {Promise<{branch: string, upstream: string}|null>}
+   */
+  async pullInProgress() {
+    const rev = async (ref) => (await this.git.run(['rev-parse', '--verify', '-q', ref], { allowFailure: true })).trim();
+    let branch = '';
+    let target = await rev('MERGE_HEAD');
+    if (target) {
+      branch = (await this.git.run(['symbolic-ref', '--short', '-q', 'HEAD'], { allowFailure: true })).trim();
+    } else {
+      for (const name of ['rebase-merge', 'rebase-apply']) {
+        const dir = await this.gitPath(name);
+        try {
+          branch = fs.readFileSync(path.join(dir, 'head-name'), 'utf8').trim().replace(/^refs\/heads\//, '');
+          target = fs.readFileSync(path.join(dir, 'onto'), 'utf8').trim();
+          break;
+        } catch {
+          // Not this kind of rebase.
+        }
+      }
+    }
+    if (!branch || !target) return null;
+    const upstream = (await this.git.run(['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { allowFailure: true })).trim();
+    if (!upstream || await rev(upstream) !== target) return null;
+    return { branch, upstream };
+  }
+
   /** Fetches a remote branch directly into a local branch (fast-forward only). */
   fetchInto(remote, remoteBranch, localBranch) {
     return this.git.run(['fetch', remote, `${remoteBranch}:${localBranch}`], { log: true });

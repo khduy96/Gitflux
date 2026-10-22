@@ -7,6 +7,7 @@ const { GitError } = require('../domain/errors');
 const { openCommitDiff } = require('./diff');
 const { olderFirst } = require('../domain/logic/history');
 const { checkedOutElsewhere, worktreeOfBranch } = require('../domain/logic/worktree');
+const { divergedFromUpstream } = require('../domain/logic/divergence');
 const { mergeDialog } = require('./mergeDialog');
 const { newWorktree, openWorktree } = require('./worktrees');
 const { signChoice, askSignTag } = require('./signing');
@@ -32,10 +33,14 @@ const currentLabel = (m) => m.status.branch || 'HEAD';
 
 function warnConflicts(m) {
   const n = m.status.changes.filter((c) => c.type === 'conflicted').length;
-  if (n) {
-    vscode.window.showWarningMessage(`${n} file(s) have conflicts.`, 'Resolve…')
-      .then((r) => { if (r) vscode.commands.executeCommand('gitTools.resolveConflicts'); });
-  }
+  if (!n) return;
+  // A pull that conflicts can also be given up for the remote branch as it is.
+  m.repo.pullInProgress().catch(() => null).then(async (pull) => {
+    const take = pull ? `Drop Local and Take ${pull.upstream}…` : null;
+    const r = await vscode.window.showWarningMessage(`${n} file(s) have conflicts.`, 'Resolve…', ...(take ? [take] : []));
+    if (r === 'Resolve…') vscode.commands.executeCommand('gitTools.resolveConflicts');
+    else if (r && r === take) await takeRemote(m, pull.branch, pull.upstream, m.status.state);
+  });
 }
 
 // ---------------------------------------------------------------- branches
@@ -343,6 +348,75 @@ async function updateBranch(m, b) {
   { success: `${b.name} updated` });
 }
 
+/**
+ * "Drop Local and Take origin/x": instead of a pull that conflicts, the local
+ * branch is deleted and checked out again from its upstream, fetched first.
+ * Its commits not on the upstream are listed and dropped after confirmation.
+ * Uncommitted changes go along (stash, checkout, unstash; left in the stash
+ * when they do not apply). `abortState`: a pull stopped on conflicts, whose
+ * merge / rebase is aborted first.
+ * @param {RepoModel} m @param {string} name @param {string} ref
+ * @param {string|null} [abortState]
+ */
+async function takeRemote(m, name, ref, abortState = null) {
+  const slash = ref.indexOf('/');
+  if (!await m.run(`Fetch ${ref}`, () => m.repo.fetchBranch(ref.slice(0, slash), ref.slice(slash + 1)))) return;
+  const lost = await m.repo.commitsBetween(ref, name);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const op = abortState === 'rebasing' ? 'rebase' : 'merge';
+  const detail = [
+    `${name} is deleted and checked out again from ${ref}.`,
+    abortState ? `The ${op} of the pull is aborted first: its conflicts are dropped.` : '',
+    lost.length
+      ? `${plural(lost.length, 'local commit')} not on ${ref} will be dropped (git's reflog keeps them for a while):\n${
+        lost.slice(0, 8).map((c) => `  ${c.hash.slice(0, 8)} ${c.subject}`).join('\n')}${lost.length > 8 ? '\n  …' : ''}`
+      : `No commit is lost: ${ref} has all of ${name}.`,
+    'Uncommitted changes are kept: stashed, then put back on the new branch (left in the stash if they do not apply).',
+  ].filter(Boolean).join('\n\n');
+  const button = `Take ${ref}`;
+  const ok = await vscode.window.showWarningMessage(
+    `${abortState ? `Abort the ${op} and take` : 'Drop local'} ${name}${abortState ? ` from ${ref}` : ` and take ${ref}`}?`,
+    { modal: true, detail }, button);
+  if (ok !== button) return;
+  let stashed = false;
+  let restored = true;
+  const done = await m.run(`Take ${ref}`, async () => {
+    if (abortState) await m.repo.abortOperation(abortState);
+    if ((await m.repo.status()).changes.length) {
+      await m.repo.stash({ message: `Uncommitted changes before taking ${ref}`, includeUntracked: true });
+      stashed = true;
+    }
+    try {
+      await m.repo.checkoutFrom(name, ref);
+    } finally {
+      if (stashed) {
+        try {
+          await m.repo.stashPop();
+        } catch {
+          restored = false;
+        }
+      }
+    }
+  });
+  await m.refreshAll();
+  if (!done) return;
+  if (restored) {
+    vscode.window.setStatusBarMessage(`$(check) ${name} taken from ${ref}${stashed ? ' (local changes restored)' : ''}`, 4000);
+  } else {
+    vscode.window.showWarningMessage(`${name} was taken from ${ref}, but your uncommitted changes did not apply cleanly on it: they are kept in the stash (stash@{0}), maybe partly applied. Resolve the conflicts, then drop that stash.`);
+  }
+}
+
+/** "Drop Local and Take <upstream>" of a local branch diverged from its upstream. @param {RepoModel} m @param {Branch} b */
+async function takeUpstream(m, b) {
+  if (!divergedFromUpstream(b)) return;
+  if (m.status.state !== 'normal') {
+    vscode.window.showWarningMessage('Finish or abort the merge / rebase in progress first.');
+    return;
+  }
+  return takeRemote(m, b.name, b.upstream);
+}
+
 /** @param {RepoModel} m @param {Branch} b */
 async function branchActions(m, b) {
   const cur = currentLabel(m);
@@ -362,6 +436,9 @@ async function branchActions(m, b) {
   if (!b.current) items.push({ label: '$(folder-library) Checkout in New Worktree…', id: 'worktree' });
   if (b.current) items.push({ label: '$(arrow-up) Push…', id: 'push' });
   if (!b.current && !b.remote && b.upstream) items.push({ label: `$(arrow-down) Update from ${b.upstream}`, id: 'update' });
+  if (divergedFromUpstream(b)) {
+    items.push({ label: `$(cloud-download) Drop Local and Take ${q(b.upstream)}…`, description: `↑${b.ahead} ↓${b.behind}: instead of a pull that may conflict`, id: 'takeUpstream' });
+  }
   if (!b.remote) items.push({ label: '$(edit) Rename…', id: 'rename' });
   items.push({ label: '$(copy) Copy Branch Name', id: 'copy' });
   if (!b.current) items.push({ label: '$(trash) Delete', id: 'delete' });
@@ -386,6 +463,7 @@ async function runBranchAction(m, b, id) {
     case 'worktree': return newWorktree(m, b);
     case 'push': return push(m);
     case 'update': return updateBranch(m, b);
+    case 'takeUpstream': return takeUpstream(m, b);
     case 'rename': return renameBranch(m, b);
     case 'copy':
       await vscode.env.clipboard.writeText(b.name);
@@ -676,11 +754,20 @@ async function resolveConflicts(m, openMergeTool) {
   const side = (ch) => ({ D: 'deleted', A: 'added' }[ch] || 'modified');
   const yours = m.status.state === 'rebasing' ? 'upstream' : 'yours';
   const theirs = m.status.state === 'rebasing' ? 'your commit' : 'theirs';
-  const pick = /** @type {any} */ (await vscode.window.showQuickPick(conflicts.map((c) => {
-    const code = c.conflictCode || 'UU';
-    return { label: `$(warning) ${c.path}`, description: `${yours}: ${side(code[0])} · ${theirs}: ${side(code[1])}`, change: c };
-  }), { title: `Conflicts (${conflicts.length})` }));
+  // Conflicts of a pull: one more way out, the remote branch as it is.
+  const pull = await m.repo.pullInProgress().catch(() => null);
+  const pick = /** @type {any} */ (await vscode.window.showQuickPick([
+    ...conflicts.map((c) => {
+      const code = c.conflictCode || 'UU';
+      return { label: `$(warning) ${c.path}`, description: `${yours}: ${side(code[0])} · ${theirs}: ${side(code[1])}`, change: c };
+    }),
+    ...(pull ? [
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      { label: `$(cloud-download) Abort and Take ${pull.upstream}…`, description: `drop the local commits of ${pull.branch}, keep uncommitted changes`, take: pull },
+    ] : []),
+  ], { title: `Conflicts (${conflicts.length})` }));
   if (!pick) return;
+  if (pick.take) return takeRemote(m, pick.take.branch, pick.take.upstream, m.status.state);
   const c = pick.change;
   const canMerge = !(c.conflictCode || '').includes('D');
   const action = /** @type {any} */ (await vscode.window.showQuickPick([
@@ -853,7 +940,7 @@ async function addToGitignore(m, changes) {
 }
 
 module.exports = {
-  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, deleteBranches, mergeIntoCurrent, rebaseOnto,
+  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, deleteBranches, takeRemote, takeUpstream, mergeIntoCurrent, rebaseOnto,
   checkoutAndRebase, compareWithCurrent, compareCommits, updateBranch, branchActions, runBranchAction, branchesPopup, checkoutRevision,
   push, update, fetch, manageRemotes, stash, stashApply, stashDrop, stashBranch, stashShowFiles, resolveConflicts,
   commitAction, rollback, deleteUntracked, addToGitignore, addToVcs, unversion,

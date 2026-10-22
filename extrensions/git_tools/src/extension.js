@@ -283,6 +283,7 @@ async function activate(context) {
   branchCmd('gitTools.branch.merge', 'merge');
   branchCmd('gitTools.branch.mergeDialog', 'mergeDialog');
   branchCmd('gitTools.branch.update', 'update');
+  branchCmd('gitTools.branch.takeUpstream', 'takeUpstream');
   branchCmd('gitTools.branch.push', 'push');
   branchCmd('gitTools.branch.rename', 'rename');
   // Context menu: (clicked node, selected nodes); Delete key: nothing, the selection of the tree.
