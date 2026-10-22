@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "active": "20260301-101500-a1b2c3",
+  "lists": [
+    {
+      "id": "default",
+      "name": "Changes",
+      "comment": "",
+      "files": [
+        "README.md"
+      ]
+    },
+    {
+      "id": "20260301-101500-a1b2c3",
+      "name": "Feature X",
+      "comment": "Add feature X\n\nWith a body line.",
+      "files": [
+        "lib/a.dart",
+        "lib/b.dart"
+      ],
+      "color": "blue"
+    },
+    {
+      "id": "20260302-080000-0f0f0f",
+      "name": "Later",
+      "comment": "",
+      "files": []
+    }
+  ],
+  "writer": "git_tools flutter"
+}

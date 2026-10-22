@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -350,24 +351,28 @@ class RefChip extends StatelessWidget {
       RefKind.tag => Icons.sell_outlined,
       _ => Icons.call_split,
     };
-    return Container(
-      margin: const EdgeInsets.only(right: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
-        border: Border.all(color: color.withValues(alpha: 0.55)),
-        borderRadius: BorderRadius.circular(3),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 11, color: color),
-          if (label.kind != RefKind.head) ...[
-            const SizedBox(width: 3),
-            Text(label.name,
-                style: TextStyle(fontSize: 11, color: color, height: 1.1)),
+    return HoverCopy(
+      text: label.kind == RefKind.head ? null : label.name,
+      what: label.kind == RefKind.tag ? 'tag name' : 'branch name',
+      child: Container(
+        margin: const EdgeInsets.only(right: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.14),
+          border: Border.all(color: color.withValues(alpha: 0.55)),
+          borderRadius: BorderRadius.circular(3),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 11, color: color),
+            if (label.kind != RefKind.head) ...[
+              const SizedBox(width: 3),
+              Text(label.name,
+                  style: TextStyle(fontSize: 11, color: color, height: 1.1)),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -490,6 +495,73 @@ void copyToClipboard(BuildContext context, String text, {String? label}) {
     behavior: SnackBarBehavior.floating,
     width: 320,
   ));
+}
+
+/// Ctrl+C (⌘C on macOS) copies [text] while the mouse is over [child], e.g.
+/// a branch name. A text selected in a focused field is copied as usual.
+class HoverCopy extends StatefulWidget {
+  const HoverCopy({super.key, required this.text, this.what = 'branch name', required this.child});
+
+  /// Copied text; null or empty: nothing.
+  final String? text;
+
+  /// What [text] is, for the message: "Copied branch name: main".
+  final String what;
+  final Widget child;
+
+  @override
+  State<HoverCopy> createState() => _HoverCopyState();
+}
+
+class _HoverCopyState extends State<HoverCopy> {
+  /// Regions under the mouse, innermost last. The key handler is installed
+  /// while there is one.
+  static final _hovered = <_HoverCopyState>[];
+
+  static bool _onKey(KeyEvent e) {
+    if (e is! KeyDownEvent || e.logicalKey != LogicalKeyboardKey.keyC || _hovered.isEmpty) return false;
+    final k = HardwareKeyboard.instance;
+    final mac = defaultTargetPlatform == TargetPlatform.macOS;
+    final shortcut = mac
+        ? k.isMetaPressed && !k.isControlPressed
+        : k.isControlPressed && !k.isMetaPressed;
+    if (!shortcut || k.isShiftPressed || k.isAltPressed || _textSelected()) return false;
+    final s = _hovered.last;
+    final text = s.widget.text;
+    if (!s.mounted || text == null || text.isEmpty) return false;
+    copyToClipboard(s.context, text, label: 'Copied ${s.widget.what}: $text');
+    return true;
+  }
+
+  /// A focused text field with a selection keeps its Ctrl+C.
+  static bool _textSelected() {
+    final field = FocusManager.instance.primaryFocus?.context?.findAncestorStateOfType<EditableTextState>();
+    return field != null && !field.textEditingValue.selection.isCollapsed;
+  }
+
+  void _enter() {
+    if (_hovered.isEmpty) HardwareKeyboard.instance.addHandler(_onKey);
+    _hovered
+      ..remove(this)
+      ..add(this);
+  }
+
+  void _leave() {
+    if (_hovered.remove(this) && _hovered.isEmpty) HardwareKeyboard.instance.removeHandler(_onKey);
+  }
+
+  @override
+  void dispose() {
+    _leave();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+        onEnter: (_) => _enter(),
+        onExit: (_) => _leave(),
+        child: widget.child,
+      );
 }
 
 /// Compact text displayed when a panel has nothing to show.

@@ -6,6 +6,7 @@ const {
   defaultMergeOptions, validateMergeOptions, exclusiveMergeOptions, createsMergeCommit, describeMergePreview, describeMergeOptions,
   squashMessageText,
 } = require('../domain/logic/merge');
+const { signChoice } = require('./signing');
 
 /** @typedef {import('./model').RepoModel} RepoModel */
 /** @typedef {import('../domain/entities').MergeOptions} MergeOptions */
@@ -127,6 +128,8 @@ async function mergeDialog(m, ref, label = ref) {
     return;
   }
   lastOptions = { ...o, message: null };
+  // The merge commit follows the Commit view's "Sign commit" choice.
+  o = { ...o, sign: signChoice(m) };
   const ok = await m.run(`Merge ${label} into ${cur}`, () => m.repo.merge(ref, o), {
     success: o.squash ? `Changes of ${label} staged (squash)` : o.noCommit ? `Merge of ${label} stopped before committing` : `Merged ${label}`,
   });

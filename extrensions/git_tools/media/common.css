@@ -112,6 +112,10 @@ input[type=checkbox] {
   border: 1px solid var(--vscode-menu-border, var(--gt-border));
   border-radius: 5px;
   box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0,0,0,.35));
+  /* Long menus (the commit menu in the low Log panel) scroll instead of going off the view. */
+  max-height: calc(100vh - 8px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .menu .item {
   padding: 4px 20px 4px 12px;
@@ -143,3 +147,26 @@ input[type=checkbox] {
   vertical-align: middle;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Message of a copy (Ctrl+C over a branch name) */
+.gt-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  z-index: 200;
+  max-width: calc(100% - 24px);
+  padding: 4px 10px;
+  border-radius: 4px;
+  color: var(--vscode-notifications-foreground, var(--vscode-foreground));
+  background: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-notifications-border, var(--gt-border));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0,0,0,.35));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 6px);
+  transition: opacity .15s, transform .15s;
+}
+.gt-toast.show { opacity: 1; transform: translate(-50%, 0); }

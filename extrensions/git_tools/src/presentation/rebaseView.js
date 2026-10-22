@@ -5,6 +5,7 @@ const vscode = require('vscode');
 const { webviewHtml } = require('./webview');
 const { RebaseRejected } = require('../domain/errors');
 const { ACTIONS } = require('../domain/logic/rebaseTodo');
+const { signChoice } = require('./signing');
 
 /** @typedef {import('./model').RepoModel} RepoModel */
 /** @typedef {import('../domain/usecases/interactiveRebase').RebasePlan} RebasePlan */
@@ -78,7 +79,8 @@ async function confirmPushed(plan) {
 async function runRebase(m, label, plan, items, success) {
   /** @type {{stopped: boolean, output: string}|undefined} */
   let result;
-  const ok = await m.run(label, async () => { result = await m.interactiveRebase.run(plan, items); });
+  // Rewritten commits follow the Commit view's "Sign commit" choice.
+  const ok = await m.run(label, async () => { result = await m.interactiveRebase.run(plan, items, { sign: signChoice(m) }); });
   if (!ok || !result) return;
   if (!result.stopped) {
     vscode.window.setStatusBarMessage(`$(check) ${success}`, 4000);

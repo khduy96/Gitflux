@@ -12,7 +12,8 @@ const { selectedLineContents } = require('./selectedLineContents');
 /**
  * A checked commit, ready to run.
  * @typedef {{message: string, paths: string[], partial: {path: string, content: string}[],
- *   amend: boolean, signOff: boolean, inOperation: boolean}} PreparedCommit
+ *   amend: boolean, signOff: boolean, sign: boolean|null, inOperation: boolean}} PreparedCommit
+ *   sign: -S / --no-gpg-sign, null = commit.gpgsign decides.
  */
 
 /** Commits the checked changes, whole files or selected lines. */
@@ -27,10 +28,10 @@ class CommitChanges {
    * files. Throws CommitRejected, or StaleSelectionError when a line
    * selection is out of date.
    * @param {{status: import('../entities').Status, message: string, changes: FileChange[],
-   *   lineSelections: Map<string, LineSelection>, amend?: boolean, signOff?: boolean}} o
+   *   lineSelections: Map<string, LineSelection>, amend?: boolean, signOff?: boolean, sign?: boolean|null}} o
    * @returns {Promise<PreparedCommit>}
    */
-  async prepare({ status, message, changes, lineSelections, amend = false, signOff = false }) {
+  async prepare({ status, message, changes, lineSelections, amend = false, signOff = false, sign = null }) {
     const inOperation = status.state !== 'normal';
     if (!message) throw new CommitRejected('Commit message is empty.');
     if (status.changes.some((c) => c.type === 'conflicted')) {
@@ -44,13 +45,13 @@ class CommitChanges {
     const partial = hasLines
       ? (await selectedLineContents(this.repo, changes, lineSelections)).map((p) => ({ path: p.path, content: p.content }))
       : [];
-    return { message, paths: [...new Set(changes.flatMap(allPaths))], partial, amend, signOff, inOperation };
+    return { message, paths: [...new Set(changes.flatMap(allPaths))], partial, amend, signOff, sign, inOperation };
   }
 
   /** @param {PreparedCommit} c */
   run(c) {
     if (!c.partial.length) {
-      return this.repo.commit({ message: c.message, paths: c.paths, amend: c.amend, signOff: c.signOff, partial: !c.inOperation });
+      return this.repo.commit({ message: c.message, paths: c.paths, amend: c.amend, signOff: c.signOff, sign: c.sign, partial: !c.inOperation });
     }
     const partialPaths = new Set(c.partial.map((p) => p.path));
     return this.repo.commitSelected({
@@ -59,6 +60,7 @@ class CommitChanges {
       partial: c.partial,
       amend: c.amend,
       signOff: c.signOff,
+      sign: c.sign,
     });
   }
 }

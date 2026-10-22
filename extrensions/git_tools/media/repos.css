@@ -26,6 +26,10 @@ html, body { overflow-y: auto; }
   gap: 6px;
   min-width: 0;
 }
+/* Branch line: a long branch name ends with "…"; the state, conflicts and
+   changes keep their text and go to the next line when there is no room. */
+.repo .line.status { flex-wrap: wrap; row-gap: 0; }
+.repo .line.status > :not(.branch) { flex-shrink: 0; white-space: nowrap; }
 .repo .rname { font-weight: 500; }
 .repo.current .rname { font-weight: 700; }
 .repo .rel { font-size: .9em; }
@@ -35,7 +39,8 @@ button.branch {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 100%;
+  min-width: 0;
+  max-width: calc(100% + 6px);
   margin-left: -6px;
   padding: 2px 6px;
   color: var(--vscode-foreground);

@@ -26,9 +26,6 @@ class _LogFilterBarState extends State<LogFilterBar> {
   late final _search = TextEditingController(text: ctrl.logFilter.value.text);
   Timer? _debounce;
 
-  /// Open folders of the branch picker.
-  final Set<String> _branchFolders = {'Local', 'Remote'};
-
   /// Delay before a content search runs git.
   static const _changesDelay = Duration(milliseconds: 450);
 
@@ -80,7 +77,6 @@ class _LogFilterBarState extends State<LogFilterBar> {
       anchor: box.localToGlobal(Offset.zero) & box.size,
       branches: ctrl.branches.value,
       current: ctrl.logFilter.value.branch,
-      open: _branchFolders,
     );
     if (r != null) ctrl.setLogFilter(ctrl.logFilter.value.copyWith(branch: () => r.isEmpty ? null : r));
   }
@@ -189,12 +185,18 @@ class _LogFilterBarState extends State<LogFilterBar> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Builder(
-                      builder: (chip) => LogFilterChip(
-                        label: 'Branch: ${f.branch ?? 'All'}',
-                        active: f.branch != null,
-                        onClear: () => ctrl.setLogFilter(f.copyWith(branch: () => null)),
-                        onTap: (_) => _branchPicker(chip),
+                    HoverCopy(
+                      text: f.branch == null || f.branch == 'HEAD'
+                          ? null
+                          : f.branch!.replaceFirst(RegExp('^refs/tags/'), ''),
+                      what: f.branch?.startsWith('refs/tags/') ?? false ? 'tag name' : 'branch name',
+                      child: Builder(
+                        builder: (chip) => LogFilterChip(
+                          label: 'Branch: ${f.branch ?? 'All'}',
+                          active: f.branch != null,
+                          onClear: () => ctrl.setLogFilter(f.copyWith(branch: () => null)),
+                          onTap: (_) => _branchPicker(chip),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 6),

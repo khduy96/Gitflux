@@ -160,7 +160,8 @@ const shQuote = (s) => `'${s.replace(/'/g, '\'\\\'\'')}'`;
  *   the group message; a group of fixups only keeps the first message.
  * Message changes go through `git commit --amend` so commit hooks run.
  * @param {TodoItem[]} items
- * @param {{stateDir: string}} o directory the message files are written to
+ * @param {{stateDir: string, sign?: boolean|null}} o stateDir: directory the message files are written to;
+ *   sign: -S / --no-gpg-sign on the amend lines (null: commit.gpgsign), like the rebase itself
  * @returns {{todo: string, messages: Map<string, string>}}
  */
 function buildTodo(items, o) {
@@ -169,6 +170,7 @@ function buildTodo(items, o) {
   /** @type {Map<number, CommitGroup>} */
   const groupOf = new Map();
   for (const g of groups) for (const i of g.members) groupOf.set(i, g);
+  const sign = o.sign === true ? ' -S' : o.sign === false ? ' --no-gpg-sign' : '';
   const dir = o.stateDir.replace(/\\/g, '/').replace(/\/+$/, '');
   /** @type {string[]} */
   const lines = [];
@@ -191,7 +193,7 @@ function buildTodo(items, o) {
       const name = `msg-${messages.size + 1}.txt`;
       messages.set(name, `${trimEnd(g.message.replace(/\r\n?/g, '\n'))}\n`);
       // --allow-empty: rewording a commit that has no changes of its own.
-      lines.push(`exec git commit --amend --allow-empty -F ${shQuote(`${dir}/${name}`)}`);
+      lines.push(`exec git commit --amend --allow-empty${sign} -F ${shQuote(`${dir}/${name}`)}`);
     }
   });
   return { todo: `${lines.join('\n')}\n`, messages };

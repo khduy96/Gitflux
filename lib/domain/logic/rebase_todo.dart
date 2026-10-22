@@ -68,6 +68,13 @@ List<TodoLine> parseTodo(String text, {String comment = '#'}) {
 /// Quotes [s] for `sh`.
 String shellQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
 
+/// ` -S` / ` --no-gpg-sign` for a `git commit` of the todo, empty for null.
+String signArg(bool? sign) => switch (sign) {
+      true => ' -S',
+      false => ' --no-gpg-sign',
+      null => '',
+    };
+
 // -----------------------------------------------------------------------------
 // Runs and squash groups
 // -----------------------------------------------------------------------------
@@ -191,9 +198,10 @@ class BuiltTodo {
 /// a reword becomes `pick` + `exec git commit --amend --allow-empty -F <file>`
 /// (`--allow-empty` so empty commits can be reworded too; hooks still run),
 /// a squash group becomes `pick` + `fixup`s + one amend with the group message.
-/// Message files live in [stateDir] (forward slashes). Throws
-/// [RebaseRejected] when the entries are not valid.
-BuiltTodo buildTodo(List<RebaseEntry> entries, {required String stateDir}) {
+/// Message files live in [stateDir] (forward slashes). [sign] adds `-S`
+/// (true) or `--no-gpg-sign` (false) to the amends, null leaves them to
+/// `commit.gpgsign`. Throws [RebaseRejected] when the entries are not valid.
+BuiltTodo buildTodo(List<RebaseEntry> entries, {required String stateDir, bool? sign}) {
   final errors = validateTodo(entries).where((i) => i.isError).toList();
   if (errors.isNotEmpty) {
     throw RebaseRejected('Invalid rebase', details: errors.join('\n'));
@@ -224,7 +232,7 @@ BuiltTodo buildTodo(List<RebaseEntry> entries, {required String stateDir}) {
     if (msg != null) {
       final name = 'msg-${messages.length + 1}.txt';
       messages[name] = msg.endsWith('\n') ? msg : '$msg\n';
-      lines.add('exec git commit --amend --allow-empty -F ${shellQuote('$stateDir/$name')}');
+      lines.add('exec git commit --amend --allow-empty${signArg(sign)} -F ${shellQuote('$stateDir/$name')}');
     }
   }
   return BuiltTodo('${lines.join('\n')}\n', messages);

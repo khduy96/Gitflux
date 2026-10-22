@@ -71,10 +71,12 @@ class InteractiveRebase {
   /**
    * Runs the edited todo. Resolves with stopped = true when git stopped
    * (conflict, edit, failing hook or exec): the repository is then rebasing.
+   * sign: the rewritten commits are signed (-S) / not (--no-gpg-sign); null = commit.gpgsign.
    * @param {RebasePlan} plan
    * @param {TodoItem[]} items
+   * @param {{sign?: boolean|null}} [o]
    */
-  async run(plan, items) {
+  async run(plan, items, o = {}) {
     if (!sameShape(plan.items, items)) throw new RebaseRejected('Commits can only be reordered between the merge structure lines.');
     const { errors } = analyzeTodo(items);
     if (errors.length) throw new RebaseRejected(errors[0].message);
@@ -82,8 +84,9 @@ class InteractiveRebase {
     if (status.state !== 'normal' || status.head !== plan.head || status.branch !== plan.branch) {
       throw new RebaseRejected(`${plan.branch} changed since the rebase was prepared. Start it again.`);
     }
-    const { todo, messages } = buildTodo(items, { stateDir: await this.repo.rebaseStateDir() });
-    return this.repo.runRebaseTodo({ base: plan.base, rebaseMerges: plan.rebaseMerges, todo, messages });
+    const sign = o.sign === undefined ? null : o.sign;
+    const { todo, messages } = buildTodo(items, { stateDir: await this.repo.rebaseStateDir(), sign });
+    return this.repo.runRebaseTodo({ base: plan.base, rebaseMerges: plan.rebaseMerges, todo, messages, sign });
   }
 
   // ------------------------------------------------------------- log actions

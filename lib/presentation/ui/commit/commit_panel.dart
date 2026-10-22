@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../domain/entities/changelist.dart';
 import '../../../domain/entities/git_models.dart';
 import '../../../domain/entities/rebase.dart';
 import '../../state/app_settings.dart';
@@ -9,6 +10,7 @@ import '../actions.dart';
 import '../common.dart';
 import '../conflicts/conflicts_dialog.dart';
 import '../dialogs/ai_settings_dialog.dart';
+import '../dialogs/changelist_dialogs.dart';
 import '../dialogs/clean_dialog.dart';
 import '../dialogs/patch_dialogs.dart';
 import '../dialogs/push_dialog.dart';
@@ -16,36 +18,56 @@ import '../dialogs/rollback_dialog.dart';
 import '../dialogs/shelve_dialogs.dart';
 import '../dialogs/stash_dialogs.dart';
 import 'bisect_banner.dart';
+import 'lfs_widgets.dart';
 
 class _Node {
-  _Node.group(this.key, this.label, this.files, {this.checkable = true})
+  _Node.group(this.key, this.label, this.files, {this.checkable = true, this.list})
       : change = null,
+        group = key,
         depth = 0,
         isGroup = true,
         isDir = false;
 
-  _Node.dir(this.key, this.label, this.files, this.depth)
+  _Node.dir(this.key, this.group, this.label, this.files, this.depth)
       : change = null,
+        list = null,
         isGroup = false,
         isDir = true,
         checkable = true;
 
-  _Node.file(this.key, FileChange c, this.depth, {this.checkable = true})
+  _Node.file(this.key, this.group, FileChange c, this.depth, {this.checkable = true})
       : change = c,
+        list = null,
         label = c.fileName,
         files = [c],
         isGroup = false,
         isDir = false;
 
   final String key;
+
+  /// Key of the group the node is in (its own key for a group).
+  final String group;
   final String label;
   final FileChange? change;
   final List<FileChange> files;
+
+  /// The changelist of a changelist group.
+  final Changelist? list;
   final int depth;
   final bool isGroup;
   final bool isDir;
   final bool checkable;
 }
+
+/// Files dragged in the Commit panel (to another changelist).
+class _DraggedFiles {
+  const _DraggedFiles(this.files);
+
+  final List<FileChange> files;
+}
+
+/// Group key of changelist [id].
+String _listKey(String id) => 'cl:$id';
 
 class CommitPanel extends StatefulWidget {
   const CommitPanel({
@@ -71,7 +93,11 @@ class _CommitPanelState extends State<CommitPanel> {
   Set<String> _selected = {};
   String? _anchor;
   bool _groupByDir = false;
+  bool _showEmptyLists = false;
   bool _signOff = false;
+
+  /// Group key under the dragged files.
+  String? _dropGroup;
   final _author = TextEditingController();
   final _listFocus = FocusNode();
   late final FocusNode _messageFocus = widget.messageFocus ?? FocusNode();
@@ -84,13 +110,13 @@ class _CommitPanelState extends State<CommitPanel> {
     super.dispose();
   }
 
-  List<_Node> _buildNodes(RepoStatus s) {
+  List<_Node> _buildNodes(RepoStatus s, Changelists lists) {
     final nodes = <_Node>[];
     void addFiles(String groupKey, List<FileChange> files, {bool checkable = true}) {
       if (_collapsed.contains(groupKey)) return;
       if (!_groupByDir) {
         for (final f in files) {
-          nodes.add(_Node.file('$groupKey/${f.path}', f, 1, checkable: checkable));
+          nodes.add(_Node.file('$groupKey/${f.path}', groupKey, f, 1, checkable: checkable));
         }
         return;
       }
@@ -104,15 +130,15 @@ class _CommitPanelState extends State<CommitPanel> {
         final dirFiles = byDir[d]!;
         if (d.isEmpty) {
           for (final f in dirFiles) {
-            nodes.add(_Node.file('$groupKey/${f.path}', f, 1, checkable: checkable));
+            nodes.add(_Node.file('$groupKey/${f.path}', groupKey, f, 1, checkable: checkable));
           }
           continue;
         }
         final key = '$groupKey/dir:$d';
-        nodes.add(_Node.dir(key, d, dirFiles, 1));
+        nodes.add(_Node.dir(key, groupKey, d, dirFiles, 1));
         if (_collapsed.contains(key)) continue;
         for (final f in dirFiles) {
-          nodes.add(_Node.file('$groupKey/${f.path}', f, 2, checkable: checkable));
+          nodes.add(_Node.file('$groupKey/${f.path}', groupKey, f, 2, checkable: checkable));
         }
       }
     }
@@ -122,9 +148,18 @@ class _CommitPanelState extends State<CommitPanel> {
       nodes.add(_Node.group('conflicts', 'Merge Conflicts', conflicts, checkable: false));
       addFiles('conflicts', conflicts, checkable: false);
     }
-    final tracked = s.tracked;
-    nodes.add(_Node.group('changes', 'Changes', tracked));
-    addFiles('changes', tracked);
+    // One group per changelist; a file in no list yet is in the active one.
+    final byList = {for (final l in lists.lists) l.id: <FileChange>[]};
+    for (final f in s.tracked) {
+      byList[lists.listOf(f.path)?.id ?? lists.activeList.id]!.add(f);
+    }
+    for (final l in lists.lists) {
+      final files = byList[l.id]!;
+      if (files.isEmpty && l.id != lists.active && !_showEmptyLists) continue;
+      final key = _listKey(l.id);
+      nodes.add(_Node.group(key, l.name, files, list: l));
+      addFiles(key, files);
+    }
     final untracked = s.untracked;
     if (untracked.isNotEmpty) {
       nodes.add(_Node.group('unversioned', 'Unversioned Files', untracked));
@@ -213,6 +248,9 @@ class _CommitPanelState extends State<CommitPanel> {
       menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined,
           enabled: sel.any(canShelve) && ctrl.status.value.state == RepoState.normal),
       menuItem('patch', 'Create Patch…', icon: Icons.save_alt, enabled: sel.any(canShelve)),
+      menuItem('move', 'Move to Another Changelist…', icon: Icons.drive_file_move_outlined, shortcut: 'F6',
+          enabled: sel.any(_movable)),
+      ...lfsMenuItems(ctrl, sel),
       const PopupMenuDivider(height: 8),
       menuItem('history', 'Show History', icon: Icons.history, enabled: single != null && single.type != ChangeType.untracked),
       menuItem('blame', 'Annotate with Git Blame', icon: Icons.person_search_outlined,
@@ -222,9 +260,13 @@ class _CommitPanelState extends State<CommitPanel> {
       menuItem('explorer', 'Show in Explorer', icon: Icons.folder_open_outlined, enabled: single != null),
     ]);
     if (!mounted || r == null) return;
+    if (await handleLfsMenu(context, ctrl, r, sel)) return;
+    if (!mounted) return;
     switch (r) {
       case 'diff':
         _openDiff(sel.first);
+      case 'move':
+        await showMoveToChangelistDialog(context, ctrl, sel);
       case 'lines':
         ctrl.openLineSelection(single!.path);
       case 'openSub':
@@ -256,18 +298,33 @@ class _CommitPanelState extends State<CommitPanel> {
     }
   }
 
-  /// Menu of a group ("Changes", "Unversioned Files") or directory node:
+  /// Files that can go to another changelist.
+  static bool _movable(FileChange c) => c.type != ChangeType.conflicted && !c.nestedRepo;
+
+  /// Menu of a group (a changelist, "Unversioned Files") or directory node:
   /// acts on all its files.
   Future<void> _nodeMenu(Offset pos, _Node n) async {
     final files = n.files.where(canShelve).toList();
     final unversioned = n.key == 'unversioned';
-    if (files.isEmpty && !unversioned) return;
+    final list = n.list;
+    final lists = ctrl.changelists.value;
+    if (files.isEmpty && !unversioned && list == null) return;
     final r = await showContextMenu<String>(context, pos, [
-      if (files.isNotEmpty) ...[
-        menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined,
-            enabled: ctrl.status.value.state == RepoState.normal),
-        menuItem('patch', 'Create Patch…', icon: Icons.save_alt),
+      if (list != null) ...[
+        menuItem('setActive', 'Set Active Changelist', icon: Icons.check_circle_outline,
+            enabled: list.id != lists.active),
+        menuItem('newList', 'New Changelist…', icon: Icons.add),
+        menuItem('editList', 'Edit Changelist…', icon: Icons.edit_outlined),
+        menuItem('deleteList', 'Delete Changelist…', icon: Icons.delete_outline, enabled: !list.isDefault),
+        const PopupMenuDivider(height: 8),
       ],
+      if (files.isNotEmpty || list != null) ...[
+        menuItem('shelve', 'Shelve Changes…', icon: Icons.inventory_outlined,
+            enabled: files.isNotEmpty && ctrl.status.value.state == RepoState.normal),
+        menuItem('patch', 'Create Patch…', icon: Icons.save_alt, enabled: files.isNotEmpty),
+      ],
+      if (n.isDir && n.files.any(_movable))
+        menuItem('move', 'Move to Another Changelist…', icon: Icons.drive_file_move_outlined, shortcut: 'F6'),
       if (unversioned) ...[
         if (files.isNotEmpty) const PopupMenuDivider(height: 8),
         menuItem('clean', 'Clean Unversioned Files…', icon: Icons.cleaning_services_outlined),
@@ -275,23 +332,47 @@ class _CommitPanelState extends State<CommitPanel> {
     ]);
     if (!mounted) return;
     switch (r) {
+      case 'setActive':
+        await ctrl.setActiveChangelist(list!.id);
+      case 'newList':
+        await showNewChangelistDialog(context, ctrl);
+      case 'editList':
+        await showEditChangelistDialog(context, ctrl, list!);
+      case 'deleteList':
+        await deleteChangelistDialog(context, ctrl, list!);
       case 'shelve':
-        await showShelveDialog(context, ctrl, files);
+        // A whole changelist is shelved under its name.
+        await showShelveDialog(context, ctrl, files, name: list?.name);
       case 'patch':
         await showCreatePatchDialog(context, ctrl, files);
+      case 'move':
+        await showMoveToChangelistDialog(context, ctrl, n.files);
       case 'clean':
         await showCleanDialog(context, ctrl);
     }
+  }
+
+  /// Drops [files] on the group [groupKey]: into that changelist (an
+  /// unversioned file is added to git first).
+  Future<void> _drop(String groupKey, List<FileChange> files) async {
+    if (!groupKey.startsWith('cl:')) return;
+    final id = groupKey.substring(3);
+    final lists = ctrl.changelists.value;
+    final moved = files
+        .where((c) => _movable(c) && (c.type == ChangeType.untracked || lists.listOf(c.path)?.id != id))
+        .toList();
+    if (moved.isNotEmpty) await ctrl.moveToChangelist(moved, id);
   }
 
   @override
   Widget build(BuildContext context) {
     return Container(
       color: AppColors.panel,
-      child: ValueListenableBuilder<RepoStatus>(
-        valueListenable: ctrl.status,
-        builder: (context, s, _) {
-          final nodes = _buildNodes(s);
+      child: ListenableBuilder(
+        listenable: Listenable.merge([ctrl.status, ctrl.changelists]),
+        builder: (context, _) {
+          final s = ctrl.status.value;
+          final nodes = _buildNodes(s, ctrl.changelists.value);
           final sel = _selectedChanges(s);
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -333,6 +414,17 @@ class _CommitPanelState extends State<CommitPanel> {
                   tooltip: _groupByDir ? 'Group by: Directory' : 'Group by: None',
                   selected: _groupByDir,
                   onPressed: () => setState(() => _groupByDir = !_groupByDir),
+                ),
+                ToolButton(
+                  icon: Icons.playlist_add,
+                  tooltip: 'New Changelist…',
+                  onPressed: () => showNewChangelistDialog(context, ctrl),
+                ),
+                ToolButton(
+                  icon: Icons.layers_outlined,
+                  tooltip: 'Show Empty Changelists',
+                  selected: _showEmptyLists,
+                  onPressed: () => setState(() => _showEmptyLists = !_showEmptyLists),
                 ),
                 ToolButton(
                   icon: Icons.unfold_more,
@@ -382,6 +474,9 @@ class _CommitPanelState extends State<CommitPanel> {
         const SingleActivator(LogicalKeyboardKey.keyA, control: true): () => setState(() {
               _selected = nodes.where((n) => n.change != null).map((n) => n.change!.path).toSet();
             }),
+        const SingleActivator(LogicalKeyboardKey.f6): () {
+          if (sel.any(_movable)) showMoveToChangelistDialog(context, ctrl, sel);
+        },
       },
       child: Focus(
         focusNode: _listFocus,
@@ -393,7 +488,7 @@ class _CommitPanelState extends State<CommitPanel> {
             if (s.changes.isEmpty) {
               return Column(
                 children: [
-                  _nodeRow(nodes.first, included),
+                  for (final n in nodes) _nodeRow(n, included),
                   const Expanded(
                     child: EmptyHint('No changes', icon: Icons.check_circle_outline),
                   ),
@@ -432,7 +527,9 @@ class _CommitPanelState extends State<CommitPanel> {
     final lines = c == null ? null : ctrl.lineSelections.value[c.path];
     final collapsible = n.isGroup || n.isDir;
     final collapsed = _collapsed.contains(n.key);
-    return HoverRow(
+    final lists = ctrl.changelists.value;
+    final active = n.list != null && n.list!.id == lists.active;
+    final row = HoverRow(
       selected: selected,
       padding: EdgeInsets.only(left: 4.0 + n.depth * 16),
       onTap: () {
@@ -489,7 +586,16 @@ class _CommitPanelState extends State<CommitPanel> {
               color: n.key == 'conflicts' ? AppColors.conflict : AppColors.textDim,
             ),
             const SizedBox(width: 6),
-            Text(n.label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+            Flexible(
+              child: Text(n.label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, fontWeight: active ? FontWeight.w700 : FontWeight.w500)),
+            ),
+            // With a single list "(active)" says nothing.
+            if (active && lists.lists.length > 1) ...[
+              const SizedBox(width: 4),
+              const Text('(active)', style: TextStyle(fontSize: 12, color: AppColors.textDim)),
+            ],
             const SizedBox(width: 8),
             Text('${n.files.length} file${n.files.length == 1 ? '' : 's'}',
                 style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
@@ -544,6 +650,7 @@ class _CommitPanelState extends State<CommitPanel> {
                 ),
               ),
             ],
+            LfsFileMarks(ctrl: ctrl, change: c),
             if (!_groupByDir || c.oldPath != null || c.isSubmodule) ...[
               const SizedBox(width: 8),
               Expanded(
@@ -565,7 +672,56 @@ class _CommitPanelState extends State<CommitPanel> {
         ],
       ),
     );
+    // Files (the selection, or the files of a folder or of a whole group)
+    // are dragged to another changelist.
+    final dragged = c != null
+        ? (_selected.contains(c.path) ? _selectedChanges(ctrl.status.value) : [c])
+        : n.isDir || n.isGroup
+            ? n.files
+            : const <FileChange>[];
+    final source = dragged.any(_movable)
+        ? Draggable<_DraggedFiles>(
+            data: _DraggedFiles(dragged),
+            dragAnchorStrategy: pointerDragAnchorStrategy,
+            feedback: _dragFeedback(dragged),
+            child: row,
+          )
+        : row;
+    return DragTarget<_DraggedFiles>(
+      onWillAcceptWithDetails: (d) {
+        final ok = n.group.startsWith('cl:') && d.data.files.any(_movable);
+        if (ok && _dropGroup != n.group) setState(() => _dropGroup = n.group);
+        return ok;
+      },
+      onLeave: (_) {
+        if (_dropGroup != null) setState(() => _dropGroup = null);
+      },
+      onAcceptWithDetails: (d) {
+        setState(() => _dropGroup = null);
+        _drop(n.group, d.data.files);
+      },
+      builder: (context, _, _) => _dropGroup == n.group
+          ? ColoredBox(color: AppColors.accent.withValues(alpha: 0.18), child: source)
+          : source,
+    );
   }
+
+  Widget _dragFeedback(List<FileChange> files) => Material(
+        color: Colors.transparent,
+        child: Container(
+          margin: const EdgeInsets.only(left: 12, top: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: AppColors.panel,
+            border: Border.all(color: AppColors.accent),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Text(
+            files.length == 1 ? files.first.fileName : '${files.length} files',
+            style: const TextStyle(fontSize: 12.5, color: AppColors.text),
+          ),
+        ),
+      );
 
   Widget _commitArea(RepoStatus s) {
     final count = ctrl.included.value.length;
@@ -651,6 +807,18 @@ class _CommitPanelState extends State<CommitPanel> {
                                 setState(() {});
                               },
                             ),
+                            // Default `commit.gpgsign`; passes -S / --no-gpg-sign.
+                            ValueListenableBuilder<bool>(
+                              valueListenable: ctrl.signCommit,
+                              builder: (context, sign, _) => CheckboxListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                controlAffinity: ListTileControlAffinity.leading,
+                                title: const Text('Sign commit', style: TextStyle(fontSize: 13, color: AppColors.text)),
+                                value: sign,
+                                onChanged: (v) => ctrl.signCommit.value = v ?? false,
+                              ),
+                            ),
                             const SizedBox(height: 4),
                             TextField(
                               controller: _author,
@@ -660,6 +828,14 @@ class _CommitPanelState extends State<CommitPanel> {
                               ),
                             ),
                             const SizedBox(height: 10),
+                            TextButton.icon(
+                              icon: const Icon(Icons.verified_user_outlined, size: 15),
+                              label: const Text('Signing Settings…'),
+                              onPressed: () {
+                                Navigator.pop(context);
+                                ctrl.openSigningSettings();
+                              },
+                            ),
                             TextButton.icon(
                               icon: const Icon(Icons.auto_awesome, size: 15),
                               label: const Text('AI Commit Message Settings…'),
@@ -735,13 +911,23 @@ class _CommitPanelState extends State<CommitPanel> {
   }
 
   Future<void> _commit({bool push = false}) async {
+    // Changelists (other than the default one) with committed files.
+    final committed = ctrl.included.value;
+    final touched = [
+      for (final l in ctrl.changelists.value.lists)
+        if (!l.isDefault && l.files.any(committed.contains)) l.id,
+    ];
     final ok = await ctrl.commit(
       signOff: _signOff,
       author: _author.text.trim().isEmpty ? null : _author.text.trim(),
+      sign: ctrl.signCommit.value,
     );
-    if (ok && push && mounted) {
-      await showPushDialog(context, ctrl);
+    if (!ok || !mounted) return;
+    for (final id in touched) {
+      await offerDeleteEmptyChangelist(context, ctrl, id);
+      if (!mounted) return;
     }
+    if (push) await showPushDialog(context, ctrl);
   }
 }
 
@@ -822,7 +1008,7 @@ class _StateBanner extends StatelessWidget {
               if (conflicts == 0)
                 _BannerButton('Continue', () => controller.run(
                       'Continue $label',
-                      () => controller.repo.continueOperation(s),
+                      () => controller.repo.continueOperation(s, sign: controller.signCommit.value),
                     )),
               if (s == RepoState.rebasing)
                 _BannerButton('Skip Commit', () => controller.run(

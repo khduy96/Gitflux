@@ -43,8 +43,9 @@
  *   git clean -x (ignored files too) / -d (untracked directories).
  * @typedef {{path: string, directory: boolean, nestedRepo: boolean}} CleanEntry
  *   A path `git clean -n` lists; nestedRepo: a repository of its own, removed only with -ff.
- * @typedef {{fastForward: 'default'|'only'|'never', squash: boolean, noCommit: boolean, message: string|null}} MergeOptions
- *   --ff-only / --no-ff, --squash, --no-commit, -m (null: git's message).
+ * @typedef {{fastForward: 'default'|'only'|'never', squash: boolean, noCommit: boolean, message: string|null,
+ *   sign?: boolean|null}} MergeOptions
+ *   --ff-only / --no-ff, --squash, --no-commit, -m (null: git's message); sign: -S / --no-gpg-sign (null: commit.gpgsign).
  * @typedef {{commits: number, fastForward: boolean}} MergePreview
  *   Commits of HEAD..ref; fastForward: HEAD is an ancestor of ref.
  * @typedef {{path: string, head: string|null, branch: string|null, detached: boolean, bare: boolean, locked: boolean,
@@ -63,6 +64,25 @@
  *   lines: 1-based final line numbers, in order.
  * @typedef {'none'|'claude'|'gemini'} AiProvider
  * @typedef {{provider: 'claude'|'gemini', apiKey: string, model: string, language?: string, instructions?: string}} AiConfig
+ * @typedef {'openpgp'|'ssh'|'x509'} SigningFormat
+ * @typedef {{commitSign: boolean, tagSign: boolean, format: SigningFormat, signingKey: string|null, program: string|null,
+ *   sshProgram: string|null, allowedSignersFile: string|null}} SigningConfig
+ *   commit.gpgsign, tag.gpgsign, gpg.format, user.signingkey, the signing program of the format (gpg.program…),
+ *   gpg.ssh.program and gpg.ssh.allowedSignersFile.
+ * @typedef {'good'|'warning'|'bad'|'none'} SignatureLevel
+ * @typedef {{code: string, signer: string, key: string, trust: string, level: SignatureLevel, text: string}} Signature
+ *   A commit or tag signature: `%G?` letter (G good, U untrusted, X / Y expired, R revoked key, B bad, E cannot be
+ *   checked, N none), `%GS` signer, `%GK` key, `%GT` trust; level and text derived from the letter.
+ * @typedef {{oid: string, size: number}} LfsPointer
+ *   A Git LFS pointer file: sha256 `oid` and `size` in bytes of the real content.
+ * @typedef {{id: string, path: string, owner: string, lockedAt: string, mine?: boolean}} LfsLock
+ *   A lock on the LFS server; mine: held by the current user.
+ * @typedef {{pattern: string, source: string, lockable: boolean}} LfsPattern
+ *   A pattern tracked by LFS and the .gitattributes it comes from (repository relative, forward slashes).
+ * @typedef {{id: string, name: string, comment: string, files: string[]}} Changelist
+ *   A changelist: `comment` is its commit message draft, `files` repository relative paths (forward slashes).
+ * @typedef {{version: number, active: string, lists: Changelist[]}} ChangelistsData
+ *   changelists.json (shared with the Flutter app); unknown fields are kept when it is rewritten.
  */
 
 /** Human readable summary of a submodule change. @param {SubmoduleChange|undefined} sm */

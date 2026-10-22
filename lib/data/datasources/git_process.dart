@@ -17,10 +17,13 @@ class GitResult {
 
 /// Thin wrapper around the git executable.
 class GitProcess {
-  GitProcess(this.workingDirectory, {this.onConsole});
+  GitProcess(this.workingDirectory, {this.onConsole, this.environment = const {}});
 
   final String workingDirectory;
   final void Function(ConsoleEntry entry)? onConsole;
+
+  /// Variables added to every git process (e.g. `GNUPGHOME` in tests).
+  final Map<String, String> environment;
 
   static const _utf8 = Utf8Codec(allowMalformed: true);
 
@@ -68,7 +71,7 @@ class GitProcess {
       'git',
       [..._globalArgs, ...args],
       workingDirectory: workingDirectory,
-      environment: env == null ? _env : {..._env, ...env},
+      environment: env == null && environment.isEmpty ? _env : {..._env, ...environment, ...?env},
       runInShell: false,
     );
     if (stdin != null) {

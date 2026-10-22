@@ -23,6 +23,12 @@ const { registerWorktreeCommands } = require('./presentation/worktrees');
 const { registerBlame } = require('./presentation/blame');
 const { cleanWorkingTree } = require('./presentation/clean');
 const { bisectAction } = require('./presentation/bisect');
+const { registerChangelistCommands } = require('./presentation/changelists');
+const { registerLfsCommands } = require('./presentation/lfs');
+const { registerSigningCommands, signChoice } = require('./presentation/signing');
+const { registerInlineBlame } = require('./presentation/inlineBlame');
+const { useMemento } = require('./presentation/branchName');
+const quick = require('./presentation/quickActions');
 const cmd = require('./presentation/commands');
 
 const NO_OPERATION = 'No merge, rebase, cherry-pick, revert or patch application in progress.';
@@ -41,10 +47,15 @@ async function activate(context) {
   const commitView = new CommitViewProvider(context, manager, ai);
   const logView = new LogViewProvider(context, manager);
   const branches = new BranchesTreeProvider(manager);
-  branches.view = vscode.window.createTreeView('gitTools.branches', { treeDataProvider: branches });
+  branches.view = vscode.window.createTreeView('gitTools.branches', { treeDataProvider: branches, canSelectMany: true });
   const statusBar = new BranchStatusBar(manager);
   registerWorktreeCommands(context, manager);
-  registerBlame(context, manager, logView);
+  const annotate = registerBlame(context, manager, logView);
+  registerInlineBlame(context, manager, annotate);
+  useMemento(context.globalState);
+  registerChangelistCommands(context, manager, commitView);
+  registerLfsCommands(context, manager);
+  registerSigningCommands(context, manager);
 
   context.subscriptions.push(
     output,
@@ -198,6 +209,10 @@ async function activate(context) {
   // Commit view grouping.
   regFree('gitTools.commit.groupByDirectory', () => commitView.setGroupBy('directory'));
   regFree('gitTools.commit.groupByNone', () => commitView.setGroupBy('none'));
+  regFree('gitTools.commit.expandAll', () => commitView.setAllExpanded(true));
+  regFree('gitTools.commit.collapseAll', () => commitView.setAllExpanded(false));
+  regFree('gitTools.branches.expandAll', () => branches.setAllExpanded(true));
+  regFree('gitTools.branches.collapseAll', () => branches.setAllExpanded(false));
   regFree('gitTools.selectRepository', async () => {
     const items = [...manager.models.values()].map((m) => ({ label: `$(repo) ${m.name}`, description: m.root, model: m }));
     const pick = /** @type {any} */ (await vscode.window.showQuickPick(
@@ -230,7 +245,8 @@ async function activate(context) {
   reg('gitTools.resolveConflicts', (m) => cmd.resolveConflicts(m, (model, change) => openMergeTool(context, model, change)));
   reg('gitTools.continueOperation', (m) => {
     if (m.status.state === 'normal') return vscode.window.showInformationMessage(NO_OPERATION);
-    return m.run(`Continue ${OPERATION_LABEL[m.status.state] || m.status.state}`, () => m.repo.continueOperation(m.status.state));
+    // Concluding a merge creates the merge commit: signed as the Commit view's "Sign commit" says.
+    return m.run(`Continue ${OPERATION_LABEL[m.status.state] || m.status.state}`, () => m.repo.continueOperation(m.status.state, signChoice(m)));
   });
   reg('gitTools.skipRebaseCommit', async (m) => {
     if (m.status.state === 'applyingMailbox') {
@@ -272,10 +288,38 @@ async function activate(context) {
   branchCmd('gitTools.branch.merge', 'merge');
   branchCmd('gitTools.branch.mergeDialog', 'mergeDialog');
   branchCmd('gitTools.branch.update', 'update');
+  branchCmd('gitTools.branch.takeUpstream', 'takeUpstream');
+  // Source Control (VS Code's "…" menu, the Repositories view): for the current branch.
+  reg('gitTools.takeUpstream', (m) => cmd.takeCurrentUpstream(m));
+  const updateTakeContext = async () => {
+    const m = manager.current;
+    const can = !!m && !!await cmd.takeUpstreamTarget(m).catch(() => null);
+    vscode.commands.executeCommand('setContext', 'gitTools.canTakeUpstream', can);
+  };
+  context.subscriptions.push(
+    manager.onDidChangeRepositories(updateTakeContext),
+    manager.onDidChangeCurrent(updateTakeContext),
+  );
   branchCmd('gitTools.branch.push', 'push');
   branchCmd('gitTools.branch.rename', 'rename');
-  branchCmd('gitTools.branch.delete', 'delete');
+  // Context menu: (clicked node, selected nodes); Delete key: nothing, the selection of the tree.
+  reg('gitTools.branch.delete', (m, node, nodes) => {
+    // Tags carry a branch-like object too: not branches to delete.
+    const selected = (nodes && nodes.length ? nodes : node ? [node] : branches.view.selection)
+      .filter((n) => n && !n.tag).map(branchOf).filter(Boolean);
+    if (selected.length === 1 && !selected[0].current) return cmd.runBranchAction(m, selected[0], 'delete');
+    if (selected.length) return cmd.deleteBranches(m, selected);
+  });
   branchCmd('gitTools.branch.copyName', 'copy');
+  // Ctrl+C / ⌘C in the Branches tree: the selected branches or tags, one per line (a tree view does not tell the hovered row).
+  regFree('gitTools.branches.copySelected', async () => {
+    const names = branches.view.selection
+      .map((n) => (n.tag ? n.tag.name : n.branch ? n.branch.name : null))
+      .filter(Boolean);
+    if (!names.length) return;
+    await vscode.env.clipboard.writeText(names.join('\n'));
+    vscode.window.setStatusBarMessage(`$(check) Copied ${names.length === 1 ? names[0] : `${names.length} names`}`, 3000);
+  });
   reg('gitTools.branch.showLog', (m, node) => {
     const b = branchOf(node);
     m.setLogFilter({ branch: b ? b.name : null, path: null });
@@ -303,6 +347,17 @@ async function activate(context) {
 
   // Clean: untracked files, with a preview.
   reg('gitTools.cleanWorkingTree', (m) => cleanWorkingTree(m));
+
+  // Quick actions.
+  reg('gitTools.switchRecentBranch', (m) => quick.switchRecentBranch(m));
+  reg('gitTools.checkoutPreviousBranch', (m) => quick.checkoutPrevious(m));
+  reg('gitTools.wip', (m) => quick.wip(m));
+  reg('gitTools.unwip', (m) => quick.unwip(m));
+  reg('gitTools.amendNoEdit', (m) => quick.amendNoEdit(m));
+  reg('gitTools.undoLastAction', (m) => quick.undoLastAction(m));
+  reg('gitTools.cleanMergedBranches', (m) => quick.cleanMergedBranches(m));
+  regFree('gitTools.lineHistory', () => quick.lineHistory(manager, logView));
+  regFree('gitTools.compareFileWithBranch', (uri) => quick.compareFileWithRef(manager, uri));
 
   // Bisect on the checked out commit (Commit view banner, command palette).
   for (const action of ['good', 'bad', 'skip', 'reset', 'run']) {

@@ -16,6 +16,10 @@ const { mergeArgs } = require('../domain/logic/merge');
 const { parseWorktrees } = require('../domain/logic/worktree');
 const { parseBisectRefs, bisectMarks, parseBisectLog, parseBisectVars } = require('../domain/logic/bisect');
 const { parseBlamePorcelain } = require('../domain/logic/blame');
+const { parseLineLog } = require('../domain/logic/quickActions');
+const {
+  signArgs, SIGNING_CONFIG_REGEX, parseSigningConfig, makeSignature, tagVerification, hasTagSignature,
+} = require('../domain/logic/signing');
 
 const FS = '\x1f';
 const RS = '\x1e';
@@ -680,7 +684,8 @@ class Repository {
 
   /**
    * Commits only `paths` (Android Studio style, no staging area exposed).
-   * @param {{message: string, paths: string[], amend?: boolean, signOff?: boolean, partial?: boolean}} o
+   * sign: -S / --no-gpg-sign, null or omitted = commit.gpgsign decides.
+   * @param {{message: string, paths: string[], amend?: boolean, signOff?: boolean, partial?: boolean, sign?: boolean|null}} o
    */
   async commit(o) {
     const msgFile = path.join(os.tmpdir(), `git_tools_msg_${Date.now()}_${process.pid}.txt`);
@@ -694,6 +699,7 @@ class Repository {
       const args = ['commit', '-F', msgFile];
       if (o.amend) args.push('--amend');
       if (o.signOff) args.push('--signoff');
+      args.push(...signArgs(o.sign));
       if (partial && (o.paths.length || o.amend)) args.push('--only');
       if (partial && o.paths.length) args.push('--pathspec-from-file=-', '--pathspec-file-nul');
       await this.git.run(args, { stdin: partial && o.paths.length ? spec : undefined, log: true });
@@ -712,7 +718,8 @@ class Repository {
    * committed and the user's real index is left alone (hooks still run).
    *   fullPaths: committed as they are in the working tree
    *   partial:   [{path, content}] committed with exactly this content
-   * @param {{message: string, fullPaths: string[], partial: {path: string, content: string}[], amend?: boolean, signOff?: boolean}} o
+   * @param {{message: string, fullPaths: string[], partial: {path: string, content: string}[], amend?: boolean, signOff?: boolean,
+   *   sign?: boolean|null}} o
    */
   async commitSelected(o) {
     const dir = await this.gitDir();
@@ -738,6 +745,7 @@ class Repository {
       const args = ['commit', '-F', msgFile];
       if (o.amend) args.push('--amend');
       if (o.signOff) args.push('--signoff');
+      args.push(...signArgs(o.sign));
       await this.git.run(args, { env, log: true });
       // Sync the real index for the committed paths with the new HEAD; the
       // unselected lines stay as unstaged changes in the working tree.
@@ -920,6 +928,51 @@ class Repository {
     return this.git.run(['fetch', '--progress', '--prune', '--all'], { log: true });
   }
 
+  /** Fetches one branch of `remote` into its remote-tracking branch. */
+  fetchBranch(remote, branch) {
+    return this.git.run(['fetch', '--progress', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`], { log: true });
+  }
+
+  /**
+   * Checks the local branch `name` out again from `ref`, tracking it, as if
+   * deleted and recreated (`git checkout -B`): its commits not on `ref` are
+   * dropped. The working tree must be clean.
+   */
+  async checkoutFrom(name, ref) {
+    await this.git.run(['checkout', '-B', name, ref], { log: true });
+    await this.git.run(['branch', `--set-upstream-to=${ref}`, name], { log: true });
+  }
+
+  /**
+   * The pull of a branch from its upstream that stopped on conflicts: a merge
+   * of the upstream (MERGE_HEAD is its tip) or a rebase of the branch onto
+   * it. Null for any other merge or rebase.
+   * @returns {Promise<{branch: string, upstream: string}|null>}
+   */
+  async pullInProgress() {
+    const rev = async (ref) => (await this.git.run(['rev-parse', '--verify', '-q', ref], { allowFailure: true })).trim();
+    let branch = '';
+    let target = await rev('MERGE_HEAD');
+    if (target) {
+      branch = (await this.git.run(['symbolic-ref', '--short', '-q', 'HEAD'], { allowFailure: true })).trim();
+    } else {
+      for (const name of ['rebase-merge', 'rebase-apply']) {
+        const dir = await this.gitPath(name);
+        try {
+          branch = fs.readFileSync(path.join(dir, 'head-name'), 'utf8').trim().replace(/^refs\/heads\//, '');
+          target = fs.readFileSync(path.join(dir, 'onto'), 'utf8').trim();
+          break;
+        } catch {
+          // Not this kind of rebase.
+        }
+      }
+    }
+    if (!branch || !target) return null;
+    const upstream = (await this.git.run(['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { allowFailure: true })).trim();
+    if (!upstream || await rev(upstream) !== target) return null;
+    return { branch, upstream };
+  }
+
   /** Fetches a remote branch directly into a local branch (fast-forward only). */
   fetchInto(remote, remoteBranch, localBranch) {
     return this.git.run(['fetch', remote, `${remoteBranch}:${localBranch}`], { log: true });
@@ -983,9 +1036,19 @@ class Repository {
     return this.git.run(['reset', '--soft', 'HEAD~1'], { log: true });
   }
 
-  /** Creates a tag, annotated when `message` is not empty. */
-  createTag(name, hash, message = '') {
-    return this.git.run(['tag', ...(message ? ['-a', '-m', message] : []), name, hash], { log: true });
+  /**
+   * Creates a tag, annotated when `message` is not empty. sign: true = signed
+   * annotated tag (-s, the tag name as message when there is none), false =
+   * --no-sign (tag.gpgsign would otherwise turn a lightweight tag into a
+   * signed one), null = git's config decides.
+   * @param {string} name @param {string} hash @param {string} [message] @param {boolean|null} [sign]
+   */
+  createTag(name, hash, message = '', sign = null) {
+    const args = ['tag'];
+    if (sign === true) args.push('-s', '-m', message || name);
+    else if (message) args.push('-a', '-m', message);
+    if (sign === false) args.push('--no-sign');
+    return this.git.run([...args, name, hash], { log: true });
   }
 
   deleteTag(name) {
@@ -1391,9 +1454,10 @@ class Repository {
 
   // ---------------------------------------------------------------- operations
 
-  continueOperation(state) {
+  /** sign: -S / --no-gpg-sign for the merge commit (merging only: the other operations take no signing option). */
+  continueOperation(state, sign = null) {
     const args = {
-      merging: ['commit', '--no-edit'],
+      merging: ['commit', '--no-edit', ...signArgs(sign)],
       rebasing: ['rebase', '--continue'],
       cherryPicking: ['cherry-pick', '--continue'],
       reverting: ['revert', '--continue'],
@@ -1515,7 +1579,8 @@ class Repository {
    * it and kept until the rebase ends. Returns stopped = true when git
    * stopped (conflict, edit, failing hook or exec) and the repository is
    * left rebasing.
-   * @param {{base: string|null, rebaseMerges: boolean, todo: string, messages: Map<string, string>}} o
+   * sign: --gpg-sign / --no-gpg-sign for the rewritten commits (null: commit.gpgsign).
+   * @param {{base: string|null, rebaseMerges: boolean, todo: string, messages: Map<string, string>, sign?: boolean|null}} o
    */
   async runRebaseTodo(o) {
     const dir = await this.rebaseStateDir();
@@ -1524,7 +1589,8 @@ class Repository {
     const todo = path.join(dir, 'todo');
     fs.writeFileSync(todo, o.todo, 'utf8');
     for (const [name, text] of o.messages) fs.writeFileSync(path.join(dir, name), text, 'utf8');
-    const args = ['rebase', '-i', '--autostash', ...(o.rebaseMerges ? ['--rebase-merges'] : []), o.base || '--root'];
+    const sign = o.sign === true ? ['--gpg-sign'] : o.sign === false ? ['--no-gpg-sign'] : [];
+    const args = ['rebase', '-i', '--autostash', ...sign, ...(o.rebaseMerges ? ['--rebase-merges'] : []), o.base || '--root'];
     // git appends the path of its todo file to the sequence editor command.
     const r = await this.git.raw(args, { log: true, env: { GIT_SEQUENCE_EDITOR: `cp ${shQuote(todo.replace(/\\/g, '/'))}` } });
     if ((await this.repoState()) === 'rebasing') {
@@ -1760,18 +1826,156 @@ class Repository {
     return { code: r.code, output: `${r.stdout}\n${r.stderr}`.trim() };
   }
 
+  // ---------------------------------------------------------------- signing
+
+  /**
+   * Signing settings: effective ones, or those of one config file (scope).
+   * @param {'local'|'global'} [scope]
+   * @returns {Promise<import('../domain/entities').SigningConfig>}
+   */
+  async signingConfig(scope) {
+    const out = await this.git.run(['config', ...(scope ? [`--${scope}`] : []), '--get-regexp', SIGNING_CONFIG_REGEX], { allowFailure: true });
+    return parseSigningConfig(out);
+  }
+
+  /**
+   * Sets (or, with null, removes) a config value in the repository's config
+   * or the user's global one.
+   * @param {string} key @param {string|null} value @param {'local'|'global'} scope
+   */
+  async setConfig(key, value, scope) {
+    if (value === null) {
+      const args = ['config', `--${scope}`, '--unset-all', key];
+      const r = await this.git.raw(args, { log: true });
+      // 5: the key was not set.
+      if (r.code !== 0 && r.code !== 5) throw new GitError(args, r.code, r.stderr, r.stdout);
+      return;
+    }
+    await this.git.run(['config', `--${scope}`, key, value], { log: true });
+  }
+
+  /**
+   * Signs a throwaway commit object (`git commit-tree -S` of HEAD's tree, no
+   * ref points to it) with the current settings, or with `o` instead of the
+   * configured format / key. ok = git signed it; output: git's error otherwise.
+   * @param {{format?: import('../domain/entities').SigningFormat, key?: string|null}} [o]
+   * @returns {Promise<{ok: boolean, output: string}>}
+   */
+  async testSigning(o = {}) {
+    const cfg = [];
+    if (o.format) cfg.push('-c', `gpg.format=${o.format}`);
+    if (o.key) cfg.push('-c', `user.signingkey=${o.key}`);
+    const tree = (await this.refExists('HEAD')) ? 'HEAD^{tree}' : await this.emptyTree();
+    const r = await this.git.raw([...cfg, 'commit-tree', '-S', tree], { stdin: 'Git Tools signing test\n', log: true });
+    if (r.code === 0) return { ok: true, output: r.stdout.trim() };
+    return { ok: false, output: (r.stderr || r.stdout).trim() || `git commit-tree exited with code ${r.code}` };
+  }
+
+  /**
+   * Signatures of the given commits (`%G?` `%GS` `%GK` `%GT`), in one git
+   * call: verifying runs gpg / ssh-keygen per signed commit, so callers ask
+   * only for the commits they show. Commits git cannot read are left out.
+   * @param {string[]} hashes
+   * @returns {Promise<Map<string, import('../domain/entities').Signature>>}
+   */
+  async signatures(hashes) {
+    /** @type {Map<string, import('../domain/entities').Signature>} */
+    const result = new Map();
+    const list = [...new Set(hashes)].filter((h) => /^[0-9a-f]{7,64}$/.test(h));
+    if (!list.length) return result;
+    const r = await this.git.raw(['log', '--no-walk=unsorted', '--stdin', `--format=%H${FS}%G?${FS}%GS${FS}%GK${FS}%GT${RS}`],
+      { stdin: `${list.join('\n')}\n` });
+    if (r.code !== 0) return result;
+    for (let rec of r.stdout.split(RS)) {
+      rec = rec.replace(/^\s+/, '');
+      if (!rec) continue;
+      const f = rec.split(FS);
+      result.set(f[0], makeSignature(f[1] || 'N', f[2] || '', f[3] || '', (f[4] || '').trim()));
+    }
+    return result;
+  }
+
+  /**
+   * `git tag -v` of an annotated tag: null for a lightweight tag, signed
+   * false for an annotated tag without signature.
+   * @param {string} name
+   * @returns {Promise<{name: string, signed: boolean, signature: import('../domain/entities').Signature|null, output: string}|null>}
+   */
+  async verifyTag(name) {
+    const ref = `refs/tags/${name}`;
+    const type = await this.git.raw(['cat-file', '-t', ref]);
+    if (type.code !== 0 || type.stdout.trim() !== 'tag') return null;
+    const raw = await this.git.run(['cat-file', 'tag', ref], { allowFailure: true });
+    if (!hasTagSignature(raw)) return { name, signed: false, signature: null, output: '' };
+    const r = await this.git.raw(['tag', '-v', name]);
+    const output = r.stderr.trim();
+    return { name, signed: true, signature: tagVerification(r.code, output), output };
+  }
+
   // ---------------------------------------------------------------- blame
 
   /**
    * `git blame --porcelain` of `rel`: the committed file, or `contents` (an
-   * editor with unsaved changes) read from stdin with `--contents -`.
+   * editor with unsaved changes) read from stdin with `--contents -`;
+   * `lines`: only these lines (1-based, included).
    * @param {string} rel
    * @param {string} [contents]
+   * @param {{start: number, end: number}} [lines]
    * @returns {Promise<import('../domain/entities').Blame>}
    */
-  async blame(rel, contents) {
-    const args = ['blame', '--porcelain', ...(contents !== undefined ? ['--contents', '-'] : []), '--', rel];
+  async blame(rel, contents, lines) {
+    const args = ['blame', '--porcelain', ...(lines ? ['-L', `${lines.start},${lines.end}`] : []),
+      ...(contents !== undefined ? ['--contents', '-'] : []), '--', rel];
     return parseBlamePorcelain(await this.git.run(args, { stdin: contents }));
+  }
+
+  // ---------------------------------------------------------------- quick actions
+
+  /**
+   * The branch checked out before the current one (`@{-1}`): its name, or
+   * null with the commit when it was a detached HEAD; null when there is none.
+   * @returns {Promise<{name: string|null, hash: string}|null>}
+   */
+  async previousCheckout() {
+    const hash = (await this.git.run(['rev-parse', '--verify', '-q', '@{-1}'], { allowFailure: true })).trim();
+    if (!hash) return null;
+    const full = (await this.git.run(['rev-parse', '--symbolic-full-name', '@{-1}'], { allowFailure: true })).trim();
+    return { name: full.startsWith('refs/heads/') ? full.slice(11) : null, hash };
+  }
+
+  /**
+   * Commits every change, untracked files included, without running hooks
+   * or signing: a temporary commit, undone by a mixed reset. `exclude`:
+   * paths left out (nested repositories, which `add` would turn into gitlinks).
+   * @param {string} message
+   * @param {string[]} [exclude]
+   */
+  async wipCommit(message, exclude = []) {
+    await this.git.run(['add', '-A', '--', '.', ...exclude.map((p) => `:(exclude,literal)${p}`)], { log: true });
+    await this.git.run(['commit', '--no-verify', '--no-gpg-sign', '-m', message], { log: true });
+  }
+
+  /** HEAD is already on its upstream (amending or undoing it rewrites pushed history). */
+  async headPushed() {
+    const r = await this.git.raw(['rev-parse', '--verify', '-q', '@{upstream}']);
+    return r.code === 0 && this.isAncestor('HEAD', r.stdout.trim());
+  }
+
+  /**
+   * Commits that changed lines `start`…`end` (1-based) of `rel` at HEAD,
+   * newest first (git log -L, renames followed).
+   * @returns {Promise<import('../domain/logic/quickActions').LineHistoryEntry[]>}
+   */
+  async lineHistory(rel, start, end, limit = 200) {
+    const out = await this.git.run(['log', '-n', String(limit), `-L${start},${end}:${rel}`,
+      `--format=${RS}%H${FS}%P${FS}%an${FS}%at${FS}%s`, '--no-color', '--no-ext-diff']);
+    return parseLineLog(out, FS, RS);
+  }
+
+  /** Local branches merged into `base` (git branch --merged). */
+  async mergedBranches(base) {
+    const out = await this.git.run(['for-each-ref', `--merged=${base}`, '--format=%(refname:short)', 'refs/heads']);
+    return out.split('\n').map((l) => l.trim()).filter(Boolean);
   }
 }
 

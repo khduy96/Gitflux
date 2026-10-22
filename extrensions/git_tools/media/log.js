@@ -33,9 +33,14 @@
   /** Commit shown in the details without being in the loaded log (Reflog ▸ Show in Log). */
   let extra = null;
   /** Open folders of the branch picker, by key ("Local/feature", "Remote/origin"). */
-  const branchOpen = new Set(saved.branchOpen || ['Local', 'Remote']);
+  const branchOpen = new Set();
   /** Branch picker while open: {el, input, list, rows, active}. */
   let picker = null;
+  /** Signatures by hash ({code, level, text, signer, key}), asked for the visible rows only, per repository. */
+  const sigs = new Map();
+  const sigPending = new Set();
+  let sigRepo = null;
+  let sigTimer = null;
 
   // ------------------------------------------------------------- layout
 
@@ -67,7 +72,7 @@
   detailsEl.style.width = `${detailsWidth}px`;
 
   const post = (type, d = {}) => vscode.postMessage({ type, ...d });
-  const persist = () => vscode.setState({ detailsWidth, text, searchMode, regex, branchOpen: [...branchOpen] });
+  const persist = () => vscode.setState({ detailsWidth, text, searchMode, regex });
   const setFilter = (filter) => post('filter', { filter });
 
   // ------------------------------------------------------------- events
@@ -159,6 +164,11 @@
     const msg = e.data;
     if (msg.type === 'log') {
       data = msg.data;
+      if (data.repo !== sigRepo) {
+        sigRepo = data.repo;
+        sigs.clear();
+        sigPending.clear();
+      }
       syncSearch();
       computeAncestors();
       const known = new Set(data.commits.map((c) => c.hash));
@@ -179,8 +189,19 @@
     } else if (msg.type === 'details') {
       if (msg.details.hash === primary) {
         details = msg.details;
+        if (details.signature && !sigs.has(details.hash)) {
+          sigs.set(details.hash, details.signature);
+          renderRows();
+        }
         renderDetails();
       }
+    } else if (msg.type === 'signatures') {
+      if (msg.repo !== sigRepo) return;
+      for (const [hash, s] of Object.entries(msg.signatures)) {
+        sigs.set(hash, s);
+        sigPending.delete(hash);
+      }
+      renderRows();
     } else if (msg.type === 'repoState') {
       data.canRebase = msg.canRebase;
       data.bisect = msg.bisect;
@@ -374,10 +395,16 @@
     return out;
   }
 
+  /**
+   * Opens with every folder closed but the ones down to the branch shown in
+   * the Log, or the checked out branch when the Log shows them all; that
+   * branch is the active line.
+   */
   function openPicker() {
-    const current = (data.filter || {}).branch || '';
-    // Opens the folders down to the branch shown.
-    const b = data.branches.find((x) => x.name === current);
+    const shown = (data.filter || {}).branch || '';
+    const target = shown || (data.branches.find((x) => x.current) || {}).name || '';
+    branchOpen.clear();
+    const b = data.branches.find((x) => x.name === target);
     if (b) {
       const root = b.remote ? 'Remote' : 'Local';
       branchOpen.add(root);
@@ -388,7 +415,7 @@
     const el = h('div.menu.picker', null, input, list);
     document.body.append(el);
     picker = { el, input, list, rows: pickerRows(''), active: 0 };
-    picker.active = Math.max(0, picker.rows.findIndex((r) => r.kind === 'branch' && r.key === current));
+    picker.active = Math.max(0, picker.rows.findIndex((r) => r.kind === 'branch' && r.key === target));
 
     input.addEventListener('input', () => {
       picker.rows = pickerRows(input.value);
@@ -432,7 +459,6 @@
       if (picker.input.value) return; // all open while searching
       if (r.open) branchOpen.delete(r.key);
       else branchOpen.add(r.key);
-      persist();
       picker.rows = pickerRows('');
       renderPicker();
       return;
@@ -450,6 +476,7 @@
       `div.pitem${r.kind === 'folder' ? '.folder' : ''}${i === picker.active ? '.active' : ''}${r.kind === 'branch' && r.key === current ? '.current' : ''}`,
       {
         title: r.kind === 'branch' && r.key ? r.key : null,
+        'data-copy': r.kind === 'branch' && r.key && r.key !== 'HEAD' ? r.key : null,
         style: { paddingLeft: `${4 + r.depth * 14}px` },
         onmousedown: (e) => e.preventDefault(), // keeps the focus in the search box
         onclick: () => {
@@ -470,6 +497,12 @@
     const f = data.filter || {};
     branchLabel.textContent = f.branch || 'All';
     branchBtn.title = f.branch ? `Branch: ${f.branch}` : 'All branches';
+    if (f.branch && f.branch !== 'HEAD') {
+      branchBtn.dataset.copy = f.branch.replace(/^refs\/tags\//, '');
+      branchBtn.dataset.copyWhat = f.branch.startsWith('refs/tags/') ? 'tag name' : 'branch name';
+    } else {
+      delete branchBtn.dataset.copy;
+    }
     if (picker) {
       picker.rows = pickerRows(picker.input.value);
       renderPicker();
@@ -537,6 +570,7 @@
     rowsEl.replaceChildren();
     if (!rows.length) {
       rowsEl.append(h('div.empty', { text: data.loading ? 'Loading…' : 'No commits' }));
+      hideRefsPopup();
       return;
     }
     for (let i = first; i < last; i++) {
@@ -556,19 +590,197 @@
       },
       g ? graphCanvas(g, isHead) : h('span', { style: { width: '8px', flexShrink: '0' } }),
       bisectChip(c.hash),
-      c.refs.map(refChip),
+      commitRefs(c),
+      sigMark(sigs.get(c.hash)),
       h('span.subject.ellipsis', { text: c.subject, title: c.subject }),
       h('span.author.ellipsis', { text: c.author }),
       h('span.date', { text: formatDate(c.time) }),
       h('span.hash.mono', { text: c.hash.slice(0, 8) }));
       rowsEl.append(row);
     }
+    keepRefsPopup();
+    requestSignatures();
+  }
+
+  /** Rows on screen (without the rendering margin). */
+  function visibleRange() {
+    const first = Math.max(0, Math.floor(table.scrollTop / ROW));
+    return [first, Math.min(rows.length, Math.ceil((table.scrollTop + table.clientHeight) / ROW))];
+  }
+
+  /**
+   * Asks for the signatures of the rows on screen not known yet, once the
+   * scrolling pauses: verifying runs gpg / ssh-keygen per signed commit.
+   */
+  function requestSignatures() {
+    clearTimeout(sigTimer);
+    sigTimer = setTimeout(() => {
+      if (!data.repo || data.repo !== sigRepo) return;
+      const [first, last] = visibleRange();
+      const hashes = [];
+      for (let i = first; i < last; i++) {
+        const hash = rows[i].c.hash;
+        if (!sigs.has(hash) && !sigPending.has(hash)) hashes.push(hash);
+      }
+      if (!hashes.length) return;
+      hashes.forEach((x) => sigPending.add(x));
+      post('signatures', { repo: data.repo, hashes });
+    }, 150);
+  }
+
+  const sigTitle = (s) => [s.text, s.signer && `Signed by ${s.signer}`, s.key && `Key ${s.key}`].filter(Boolean).join('\n');
+
+  /** ✓ green (good), ✓ yellow (untrusted / expired), ✗ red (bad / revoked / cannot check); nothing when unsigned. */
+  function sigMark(s) {
+    if (!s || !s.level || s.level === 'none') return null;
+    return h(`span.sig.${s.level}`, { text: s.level === 'bad' ? '✗' : '✓', title: sigTitle(s) });
   }
 
   function refChip(r) {
     const icon = r.kind === 'head' ? '◉' : r.kind === 'tag' ? '🏷' : '⑂';
-    return h(`span.ref.${r.kind}`, { title: r.name }, r.kind === 'head' ? icon : `${icon} ${r.name}`);
+    return h(`span.ref.${r.kind}`, {
+      title: r.name,
+      'data-copy': r.kind === 'head' ? null : r.name,
+      'data-copy-what': r.kind === 'tag' ? 'tag name' : null,
+    }, r.kind === 'head' ? icon : `${icon} ${r.name}`);
   }
+
+  /**
+   * Refs of a commit grouped by name, most relevant first: a detached HEAD
+   * or the current branch, local branches, remote only branches, tags. A
+   * local branch and its remote branches (main, origin/main) are one group.
+   */
+  function groupRefs(refs) {
+    const branches = new Map();
+    const tags = [];
+    let detached = null;
+    const branch = (name) => {
+      if (!branches.has(name)) branches.set(name, { name, head: false, local: false, tag: false, remotes: [], refs: [] });
+      return branches.get(name);
+    };
+    refs.forEach((r, i) => {
+      if (r.kind === 'head') {
+        // "HEAD -> main" comes as HEAD then main; HEAD alone is detached.
+        const next = refs[i + 1];
+        if (next && next.kind === 'local') {
+          const b = branch(next.name);
+          b.head = true;
+          b.refs.push(r);
+        } else {
+          detached = { name: 'HEAD', head: true, local: false, tag: false, remotes: [], refs: [r] };
+        }
+      } else if (r.kind === 'local') {
+        const b = branch(r.name);
+        b.local = true;
+        b.refs.push(r);
+      } else if (r.kind === 'remote') {
+        const slash = r.name.indexOf('/');
+        const b = branch(r.name.slice(slash + 1));
+        b.remotes.push(slash < 0 ? '' : r.name.slice(0, slash));
+        b.refs.push(r);
+      } else {
+        tags.push({ name: r.name, head: false, local: false, tag: true, remotes: [], refs: [r] });
+      }
+    });
+    const rank = (g) => (g.head ? 0 : g.local ? 1 : 2);
+    const list = [...branches.values()];
+    return [...(detached ? [detached] : []), ...[0, 1, 2].flatMap((n) => list.filter((g) => rank(g) === n)), ...tags];
+  }
+
+  /** Group showing the Log filter `focus` (a branch, "HEAD" or "refs/tags/…"). */
+  function focusedGroup(groups, focus) {
+    if (focus === 'HEAD') return groups.find((g) => g.head);
+    if (focus.startsWith('refs/tags/')) return groups.find((g) => g.tag && g.name === focus.slice(10));
+    return groups.find((g) => !g.tag && g.refs.some((r) => r.kind !== 'head' && r.name === focus));
+  }
+
+  /**
+   * Refs of a commit row, kept short: the most relevant name and "+N", or
+   * only the branch the Log shows. Hovering shows every ref.
+   */
+  function commitRefs(c) {
+    if (!c.refs.length) return null;
+    const groups = groupRefs(c.refs);
+    const focus = (data.filter || {}).branch;
+    const shown = focus ? focusedGroup(groups, focus) : groups[0];
+    if (!shown) return null;
+    const more = focus ? 0 : groups.length - 1;
+    return h('span.refs', {
+      'data-hash': c.hash,
+      onmouseenter: (e) => showRefsPopup(e.currentTarget, c),
+    }, groupChip(shown), more ? h('span.ref.more', { text: `+${more}` }) : null);
+  }
+
+  /** Name of a group, then a screen for a local branch and a cloud for remote branches of that name. */
+  function groupChip(g) {
+    const kind = g.head ? 'head' : g.tag ? 'tag' : g.local ? 'local' : 'remote';
+    // Copied: the local branch, else the remote one (origin/x), or the tag.
+    const remote = g.refs.find((r) => r.kind === 'remote');
+    return h(`span.ref.group.${kind}`, {
+      'data-copy': g.local || g.tag ? g.name : remote ? remote.name : null,
+      'data-copy-what': g.tag ? 'tag name' : null,
+    },
+      h('span', { text: g.head ? '◉' : g.tag ? '🏷' : '⑂' }),
+      h('span.rname.ellipsis', { text: g.name }),
+      g.local ? refIcon('local') : null,
+      g.remotes.length ? refIcon('remote') : null);
+  }
+
+  const REF_ICONS = {
+    local: 'M2.5 3.5h11v7h-11z M5.5 13.5h5 M8 10.5v3',
+    remote: 'M4.6 12.5h7a2.8 2.8 0 0 0 .4-5.57A4 4 0 0 0 4.3 7.8 2.35 2.35 0 0 0 4.6 12.5z',
+  };
+
+  function refIcon(name) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('class', `ricon ${name}`);
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', REF_ICONS[name]);
+    svg.append(path);
+    return svg;
+  }
+
+  /** Every ref of a commit, shown while hovering the refs of its row: {el, hash}. */
+  let refsPopup = null;
+
+  function showRefsPopup(anchor, c) {
+    hideRefsPopup();
+    refsPopup = { el: h('div.refpop', null, c.refs.map(refChip)), hash: c.hash };
+    document.body.append(refsPopup.el);
+    placeRefsPopup(anchor);
+  }
+
+  function placeRefsPopup(anchor) {
+    const a = anchor.getBoundingClientRect();
+    const r = refsPopup.el.getBoundingClientRect();
+    // Touching the refs, so that the mouse can go into it (to copy one of them).
+    const below = a.bottom + r.height <= window.innerHeight;
+    refsPopup.el.style.left = `${Math.max(4, Math.min(a.left, window.innerWidth - r.width - 4))}px`;
+    refsPopup.el.style.top = `${below ? a.bottom - 1 : Math.max(4, a.top - r.height + 1)}px`;
+  }
+
+  function hideRefsPopup() {
+    if (!refsPopup) return;
+    refsPopup.el.remove();
+    refsPopup = null;
+  }
+
+  /** Rows were rebuilt (signatures, refresh) under the popup: it follows the refs of its commit. */
+  function keepRefsPopup() {
+    if (!refsPopup) return;
+    const anchor = rowsEl.querySelector(`.refs[data-hash="${refsPopup.hash}"]`);
+    if (anchor) placeRefsPopup(anchor);
+    else hideRefsPopup();
+  }
+
+  // Open while the mouse is over the refs of a row or over the popup itself.
+  // (A mousemove rather than mouseleave: rebuilt rows get no mouseleave.)
+  document.addEventListener('mousemove', (e) => {
+    if (refsPopup && !(e.target instanceof Element && e.target.closest('.refs, .refpop'))) hideRefsPopup();
+  });
+  document.addEventListener('mouseleave', hideRefsPopup);
 
   /** good / bad / skip label of a commit marked during a bisect session. */
   function bisectChip(hash) {
@@ -670,10 +882,38 @@
       h('div.meta', null,
         h('a.hash.mono', { text: d.hash.slice(0, 10), title: 'Copy hash', href: '#', onclick: (e) => { e.preventDefault(); post('commitAction', { action: 'copy', hashes: [d.hash] }); } })),
       h('div.meta', null, h('b', { text: d.author }), h('span.muted', { text: ` <${d.email}> on ${new Date(d.time).toLocaleString()}` })),
+      signatureInfo(d),
+      tagInfo(d),
       d.committer !== d.author ? h('div.meta.muted', { text: `committed by ${d.committer} on ${new Date(d.commitTime).toLocaleString()}` }) : null,
       d.parents.length ? h('div.meta.muted', { text: `${d.parents.length > 1 ? 'Parents' : 'Parent'}: ${d.parents.map((p) => p.slice(0, 8)).join(', ')}` }) : null,
-      h('div.meta.muted', { text: d.containedIn ? `In ${d.containedIn.length} branch${d.containedIn.length === 1 ? '' : 'es'}: ${d.containedIn.slice(0, 20).join(', ')}${d.containedIn.length > 20 ? ', …' : ''}` : 'Looking for branches…' }));
+      d.containedIn
+        ? h('div.meta.muted', null,
+          `In ${d.containedIn.length} branch${d.containedIn.length === 1 ? '' : 'es'}: `,
+          d.containedIn.slice(0, 20).map((b, i) => [i ? ', ' : '', h('span', { text: b, 'data-copy': b })]),
+          d.containedIn.length > 20 ? ', …' : '')
+        : h('div.meta.muted', { text: 'Looking for branches…' }));
     detailsEl.append(files, info);
+  }
+
+  /** Signature of the commit in the details: status, signer, key. */
+  function signatureInfo(d) {
+    const s = d.signature;
+    if (s === undefined) return null;
+    if (s === null) return h('div.meta.muted', { text: 'Checking signature…' });
+    if (!s.level || s.level === 'none') return h('div.meta.muted', { text: 'Not signed' });
+    return h('div.meta.signature', { title: s.trust ? `Trust: ${s.trust}` : null },
+      sigMark(s), h('span', { text: ` ${s.text}` }),
+      s.signer ? h('div.muted', { text: `Signed by ${s.signer}` }) : null,
+      s.key ? h('div.muted', { text: `Key ${s.key}${s.trust ? ` · trust ${s.trust}` : ''}` }) : null);
+  }
+
+  /** git tag -v of the annotated tags on the commit. */
+  function tagInfo(d) {
+    if (!d.tags || !d.tags.length) return null;
+    return d.tags.map((t) => (t.signed && t.signature
+      ? h('div.meta.signature', { title: t.output || null }, h('span.muted', { text: `Tag ${t.name}: ` }), sigMark(t.signature),
+        h('span', { text: ` ${t.signature.text}${t.signature.signer ? ` · ${t.signature.signer}` : ''}` }))
+      : h('div.meta.muted', { text: `Tag ${t.name}: annotated, not signed` })));
   }
 
   /**
@@ -712,6 +952,10 @@
     const rw = rewriteState(sel, c);
     showMenu(x, y, [
       { label: 'Copy Revision Number', id: 'copy' },
+      { label: 'Copy Short Hash', id: 'copyShort' },
+      { label: 'Copy Subject', id: 'copySubject' },
+      { label: 'Copy Short Hash and Subject', id: 'copyShortSubject' },
+      { label: 'Copy Full Message', id: 'copyMessage' },
       '-',
       { label: 'Cherry-Pick', id: 'cherryPick' },
       { label: 'Create Patch…', id: 'createPatch' },

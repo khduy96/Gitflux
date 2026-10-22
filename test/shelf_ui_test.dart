@@ -78,6 +78,14 @@ void main() {
     addTearDown(tester.view.reset);
     final ctrl = RepoController(dir, git: const GitCliService(), commitMessageAi: _noAi);
     await tester.runAsync(ctrl.refreshAll);
+    // Lets the refresh after the last operation (status, changelists, LFS
+    // marks) finish: its git processes would otherwise keep the folder busy.
+    addTearDown(() async {
+      for (var i = 0; i < 25; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+    });
     addTearDown(ctrl.dispose);
     return ctrl;
   }

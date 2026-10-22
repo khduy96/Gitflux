@@ -1,11 +1,13 @@
 import '../entities/bisect.dart';
 import '../entities/clean.dart';
 import '../entities/git_models.dart';
+import '../entities/lfs.dart';
 import '../entities/log_query.dart';
 import '../entities/merge.dart';
 import '../entities/patch.dart';
 import '../entities/rebase.dart';
 import '../entities/reflog.dart';
+import '../entities/signing.dart';
 import '../entities/worktree.dart';
 
 /// A change noticed in the repository folder.
@@ -26,6 +28,9 @@ abstract interface class GitRepository {
 
   /// Absolute path of the `.git` directory.
   Future<String> gitDir();
+
+  /// Absolute `git rev-parse --git-path` of [name] (per worktree).
+  Future<String> gitPath(String name);
 
   /// Changes in the repository folder, for automatic refresh.
   Stream<RepoEvent> watch();
@@ -140,7 +145,8 @@ abstract interface class GitRepository {
   // Commit / changes
   // ---------------------------------------------------------------------------
 
-  /// Commits [paths] as they are in the working tree.
+  /// Commits [paths] as they are in the working tree. [sign] true passes
+  /// `-S`, false `--no-gpg-sign`, null leaves it to `commit.gpgsign`.
   Future<void> commit({
     required String message,
     required List<String> paths,
@@ -148,6 +154,7 @@ abstract interface class GitRepository {
     bool signOff = false,
     String? author,
     bool partial = true,
+    bool? sign,
   });
 
   /// Commits [fullPaths] as in the working tree and, for [partial], the
@@ -159,6 +166,7 @@ abstract interface class GitRepository {
     bool amend = false,
     bool signOff = false,
     String? author,
+    bool? sign,
   });
 
   Future<void> stage(List<String> paths);
@@ -192,9 +200,15 @@ abstract interface class GitRepository {
   /// First lines of `SQUASH_MSG` (left by `git merge --squash`) without
   /// comments, or null.
   Future<String?> squashMessage({int maxLines = 30});
-  Future<void> rebase(String onto, {String? branch});
+
+  /// [sign]: `--gpg-sign` / `--no-gpg-sign` for the rewritten commits.
+  Future<void> rebase(String onto, {String? branch, bool? sign});
   Future<void> abortOperation(RepoState state);
-  Future<void> continueOperation(RepoState state);
+
+  /// Concludes the operation in progress. [sign] (`-S` / `--no-gpg-sign`)
+  /// applies to the merge commit; the other operations keep the choice they
+  /// were started with (or `commit.gpgsign`).
+  Future<void> continueOperation(RepoState state, {bool? sign});
   Future<void> skipRebaseCommit();
 
   /// Skips the patch `git am` stopped on.
@@ -261,6 +275,19 @@ abstract interface class GitRepository {
   /// Fetches [remoteBranch] of [remote] directly into [localBranch]
   /// (fast-forward only).
   Future<void> fetchInto(String remote, String remoteBranch, String localBranch);
+
+  /// Fetches [branch] of [remote] into its remote-tracking branch.
+  Future<void> fetchBranch(String remote, String branch);
+
+  /// Checks the local branch [name] out again from [ref], tracking it, as if
+  /// deleted and recreated (`git checkout -B`): its commits not on [ref] are
+  /// dropped. The working tree must be clean.
+  Future<void> checkoutFrom(String name, String ref);
+
+  /// The pull of a branch from its upstream that stopped on conflicts: a
+  /// merge of the upstream (MERGE_HEAD is its tip) or a rebase of the branch
+  /// onto it. Null for any other merge or rebase.
+  Future<({String branch, String upstream})?> pullInProgress();
   Future<void> pull({required String remote, required String branch, bool rebase = false, bool ffOnly = false});
   Future<void> push({
     required String remote,
@@ -283,8 +310,12 @@ abstract interface class GitRepository {
   Future<void> revert(Commit c);
   Future<void> reset(String hash, ResetMode mode);
   Future<void> undoLastCommit();
-  Future<void> rewordHead(String message);
-  Future<void> createTag(String name, String hash, {String? message});
+  Future<void> rewordHead(String message, {bool? sign});
+
+  /// A [message] makes an annotated tag. [sign] true makes a signed tag
+  /// (`-s`, annotated; the name is the message when none is given), false
+  /// passes `--no-sign` (overrides `tag.gpgsign`).
+  Future<void> createTag(String name, String hash, {String? message, bool? sign});
   Future<void> deleteTag(String name);
 
   // ---------------------------------------------------------------------------
@@ -314,12 +345,14 @@ abstract interface class GitRepository {
   Future<String> generateRebaseTodo(String? base, {bool rebaseMerges = false});
 
   /// Writes [todo] and [messages] to the state directory and runs
-  /// `git rebase -i --autostash` with it.
+  /// `git rebase -i --autostash` with it ([sign]: `--gpg-sign` /
+  /// `--no-gpg-sign` for the picked commits).
   Future<RebaseOutcome> runRebaseTodo(
     String? base, {
     required String todo,
     required Map<String, String> messages,
     bool rebaseMerges = false,
+    bool? sign,
   });
 
   /// Position of the rebase (or `git am`) in progress, or null.
@@ -396,4 +429,79 @@ abstract interface class GitRepository {
 
   Future<String?> config(String key);
   Future<void> setConfig(String key, String value, {bool global = false});
+
+  // ---------------------------------------------------------------------------
+  // LFS
+  // ---------------------------------------------------------------------------
+
+  /// Whether git-lfs is installed (`git lfs version`); checked once per
+  /// process.
+  Future<bool> lfsAvailable();
+
+  /// The paths among [paths] whose `filter` attribute is `lfs`
+  /// (`git check-attr`), i.e. stored in LFS when committed.
+  Future<Set<String>> lfsFilteredPaths(List<String> paths);
+
+  /// Patterns of the attributes files (`git lfs track`).
+  Future<List<LfsTrackPattern>> lfsTrackPatterns();
+
+  /// `git lfs track` (edits the root `.gitattributes`); [literal] escapes
+  /// glob characters (`--filename`). Sets up the LFS filters of the
+  /// repository first when git has none.
+  Future<void> lfsTrack(List<String> patterns, {bool literal = false});
+  Future<void> lfsUntrack(List<String> patterns);
+
+  /// Files of HEAD stored in LFS (`git lfs ls-files --json`).
+  Future<List<LfsFile>> lfsFiles();
+
+  /// Locks of the LFS server, with their owner when the server can tell
+  /// which are ours. Throws [GitException] when the remote does not support
+  /// locking (or there is no remote).
+  Future<List<LfsLock>> lfsLocks();
+  Future<void> lfsLock(String path);
+
+  /// [force] removes a lock held by someone else.
+  Future<void> lfsUnlock(String path, {bool force = false});
+  Future<void> lfsPull();
+  Future<void> lfsFetch();
+
+  /// What `git lfs prune` would delete, without deleting it.
+  Future<LfsPrunePreview> lfsPruneDryRun();
+  Future<void> lfsPrune();
+
+  /// Pointer the LFS clean filter makes of the working tree file [path]
+  /// (`git lfs pointer --file`), or null when it does not exist.
+  Future<LfsPointer?> lfsPointerOfFile(String path);
+
+  /// Content of the object of [pointer] when it is in the local LFS store,
+  /// else null (nothing is downloaded).
+  Future<List<int>?> lfsObject(LfsPointer pointer);
+
+  // ---------------------------------------------------------------------------
+  // Signing
+  // ---------------------------------------------------------------------------
+
+  /// Effective signing configuration (`commit.gpgsign`, `gpg.format`, ...).
+  Future<SigningConfig> signingConfig();
+
+  /// Writes [settings] to the repository (`--local`) or user (`--global`)
+  /// configuration.
+  Future<void> saveSigningSettings(SigningSettings settings, ConfigScope scope);
+
+  /// Secret keys of the gpg git signs with (`gpg.program`, else git's gpg).
+  Future<List<GpgKey>> gpgSecretKeys();
+
+  /// Public keys of `~/.ssh/*.pub` and of the ssh agent (`ssh-add -L`).
+  Future<List<SshKey>> sshKeys();
+
+  /// Signs a throwaway commit object (`git commit-tree -S`, no ref) with
+  /// [format] and [key] (the configuration when null) and verifies it.
+  Future<SigningTestResult> testSigning({SigningFormat? format, String? key});
+
+  /// Signature verification (`%G?`) of the commits [hashes]. Slow: gpg or
+  /// ssh-keygen runs for every signed commit.
+  Future<Map<String, SignatureInfo>> commitSignatures(List<String> hashes);
+
+  /// Signature of the tag [name] (`git verify-tag --raw`).
+  Future<SignatureInfo> tagSignature(String name);
 }

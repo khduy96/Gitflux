@@ -7,19 +7,23 @@ import '../../domain/entities/bisect.dart';
 import '../../domain/entities/clean.dart';
 import '../../domain/entities/console_entry.dart';
 import '../../domain/entities/git_models.dart';
+import '../../domain/entities/lfs.dart';
 import '../../domain/entities/log_query.dart';
 import '../../domain/entities/merge.dart';
 import '../../domain/entities/patch.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/entities/reflog.dart';
+import '../../domain/entities/signing.dart';
 import '../../domain/entities/worktree.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/bisect_parser.dart';
 import '../../domain/logic/clean_parser.dart';
+import '../../domain/logic/lfs_parser.dart';
 import '../../domain/logic/log_filters.dart';
 import '../../domain/logic/patch_parser.dart';
 import '../../domain/logic/rebase_todo.dart';
 import '../../domain/logic/reflog_parser.dart';
+import '../../domain/logic/signing_parser.dart';
 import '../../domain/logic/worktree_parser.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../datasources/git_process.dart';
@@ -29,8 +33,10 @@ const _rs = '\x1e';
 
 /// [GitRepository] backed by the git command line.
 class GitCliRepository implements GitRepository {
-  GitCliRepository(this.root, {void Function(ConsoleEntry)? onConsole})
-      : git = GitProcess(root, onConsole: onConsole);
+  /// [environment] is added to the environment of every git process (tests
+  /// use it for a temporary `GNUPGHOME` / `HOME`).
+  GitCliRepository(this.root, {void Function(ConsoleEntry)? onConsole, Map<String, String> environment = const {}})
+      : git = GitProcess(root, onConsole: onConsole, environment: environment);
 
   @override
   final String root;
@@ -69,6 +75,8 @@ class GitCliRepository implements GitRepository {
           rel.startsWith('.git/git-tools/shelf')) {
         return RepoEvent.refs;
       }
+      // Changelists changed by the VS Code extension.
+      if (rel == '.git/git-tools/changelists.json') return RepoEvent.status;
       if (rel != '.git/index') return null;
     }
     return RepoEvent.status;
@@ -788,6 +796,7 @@ class GitCliRepository implements GitRepository {
     bool signOff = false,
     String? author,
     bool partial = true,
+    bool? sign,
   }) async {
     final msgFile = File(p.join(
         Directory.systemTemp.path, 'git_tools_msg_${DateTime.now().microsecondsSinceEpoch}.txt'));
@@ -808,6 +817,7 @@ class GitCliRepository implements GitRepository {
           msgFile.path,
           if (amend) '--amend',
           if (signOff) '--signoff',
+          ..._signArgs(sign),
           if (author != null && author.trim().isNotEmpty) '--author=$author',
           if (useOnly) '--only',
           if (partial && paths.isNotEmpty) ...[
@@ -884,6 +894,7 @@ class GitCliRepository implements GitRepository {
     bool amend = false,
     bool signOff = false,
     String? author,
+    bool? sign,
   }) async {
     final dir = await gitDir();
     final stamp = DateTime.now().microsecondsSinceEpoch;
@@ -912,6 +923,7 @@ class GitCliRepository implements GitRepository {
         msgFile.path,
         if (amend) '--amend',
         if (signOff) '--signoff',
+        ..._signArgs(sign),
         if (author != null && author.trim().isNotEmpty) '--author=$author',
       ], env: env, log: true);
       // Sync the real index for the committed paths with the new HEAD; the
@@ -1071,7 +1083,7 @@ class GitCliRepository implements GitRepository {
 
   @override
   Future<String?> squashMessage({int maxLines = 30}) async {
-    final f = File(await _gitPath('SQUASH_MSG'));
+    final f = File(await gitPath('SQUASH_MSG'));
     if (!await f.exists()) return null;
     final lines = (await f.readAsString()).split('\n').where((l) => !l.startsWith('#')).take(maxLines);
     final text = lines.join('\n').trim();
@@ -1080,16 +1092,16 @@ class GitCliRepository implements GitRepository {
 
   final _gitPaths = <String, String>{};
 
-  /// Absolute `git rev-parse --git-path` of [name] (per worktree).
-  Future<String> _gitPath(String name) async {
+  @override
+  Future<String> gitPath(String name) async {
     if (_gitPaths[name] case final path?) return path;
     final out = (await git.run(['rev-parse', '--git-path', name])).trim();
     return _gitPaths[name] = p.normalize(p.isAbsolute(out) ? out : p.join(root, out));
   }
 
   @override
-  Future<void> rebase(String onto, {String? branch}) =>
-      git.run(['rebase', '--autostash', onto, ?branch], log: true);
+  Future<void> rebase(String onto, {String? branch, bool? sign}) =>
+      git.run(['rebase', '--autostash', ..._rebaseSignArgs(sign), onto, ?branch], log: true);
 
   @override
   Future<void> abortOperation(RepoState state) async {
@@ -1108,10 +1120,10 @@ class GitCliRepository implements GitRepository {
   }
 
   @override
-  Future<void> continueOperation(RepoState state) async {
+  Future<void> continueOperation(RepoState state, {bool? sign}) async {
     try {
       await git.run(switch (state) {
-        RepoState.merging => ['commit', '--no-edit'],
+        RepoState.merging => ['commit', '--no-edit', ..._signArgs(sign)],
         RepoState.rebasing => ['rebase', '--continue'],
         RepoState.cherryPicking => ['cherry-pick', '--continue'],
         RepoState.reverting => ['revert', '--continue'],
@@ -1204,9 +1216,9 @@ class GitCliRepository implements GitRepository {
 
   @override
   Future<BisectState?> bisectState() async {
-    final start = File(await _gitPath('BISECT_START'));
+    final start = File(await gitPath('BISECT_START'));
     if (!await start.exists()) return null;
-    final logFile = File(await _gitPath('BISECT_LOG'));
+    final logFile = File(await gitPath('BISECT_LOG'));
     final log = parseBisectLog(await logFile.exists() ? await logFile.readAsString() : '');
     final marks = parseBisectRefs(
         await git.run(['for-each-ref', '--format=%(objectname) %(refname)', 'refs/bisect'], allowFailure: true));
@@ -1220,7 +1232,7 @@ class GitCliRepository implements GitRepository {
       if (vars.exitCode == 0) (:left, :steps) = parseBisectVars(vars.stdout);
     }
     final head = (await git.run(['log', '-1', '--format=%H$_fs%s'], allowFailure: true)).trim().split(_fs);
-    final expectedFile = File(await _gitPath('BISECT_EXPECTED_REV'));
+    final expectedFile = File(await gitPath('BISECT_EXPECTED_REV'));
     final expected = await expectedFile.exists() ? (await expectedFile.readAsString()).trim() : '';
     return BisectState(
       startRef: (await start.readAsString()).trim(),
@@ -1281,6 +1293,46 @@ class GitCliRepository implements GitRepository {
   @override
   Future<void> fetchInto(String remote, String remoteBranch, String localBranch) =>
       git.run(['fetch', remote, '$remoteBranch:$localBranch'], log: true);
+
+  @override
+  Future<void> fetchBranch(String remote, String branch) =>
+      git.run(['fetch', '--progress', remote, '+refs/heads/$branch:refs/remotes/$remote/$branch'], log: true);
+
+  @override
+  Future<void> checkoutFrom(String name, String ref) async {
+    await git.run(['checkout', '-B', name, ref], log: true);
+    await git.run(['branch', '--set-upstream-to=$ref', name], log: true);
+  }
+
+  @override
+  Future<({String branch, String upstream})?> pullInProgress() async {
+    Future<String> rev(String ref) async {
+      final r = await git.runRaw(['rev-parse', '--verify', '--quiet', ref]);
+      return r.exitCode == 0 ? r.stdout.trim() : '';
+    }
+
+    var branch = '';
+    var target = await rev('MERGE_HEAD');
+    if (target.isNotEmpty) {
+      final r = await git.runRaw(['symbolic-ref', '--short', '--quiet', 'HEAD']);
+      branch = r.exitCode == 0 ? r.stdout.trim() : '';
+    } else {
+      for (final name in ['rebase-merge', 'rebase-apply']) {
+        final dir = p.normalize(p.join(await gitDir(), name));
+        final head = File(p.join(dir, 'head-name'));
+        final onto = File(p.join(dir, 'onto'));
+        if (!head.existsSync() || !onto.existsSync()) continue;
+        branch = head.readAsStringSync().trim().replaceFirst('refs/heads/', '');
+        target = onto.readAsStringSync().trim();
+        break;
+      }
+    }
+    if (branch.isEmpty || target.isEmpty) return null;
+    final up = await git.runRaw(['rev-parse', '--abbrev-ref', '$branch@{upstream}']);
+    final upstream = up.exitCode == 0 ? up.stdout.trim() : '';
+    if (upstream.isEmpty || await rev(upstream) != target) return null;
+    return (branch: branch, upstream: upstream);
+  }
 
   @override
   Future<void> pull({
@@ -1357,18 +1409,25 @@ class GitCliRepository implements GitRepository {
       git.run(['reset', '--soft', 'HEAD~1'], log: true);
 
   @override
-  Future<void> rewordHead(String message) async {
-    await commit(message: message, paths: const [], amend: true);
+  Future<void> rewordHead(String message, {bool? sign}) async {
+    await commit(message: message, paths: const [], amend: true, sign: sign);
   }
 
   @override
-  Future<void> createTag(String name, String hash, {String? message}) =>
-      git.run([
-        'tag',
-        if (message != null && message.trim().isNotEmpty) ...['-a', '-m', message],
-        name,
-        hash,
-      ], log: true);
+  Future<void> createTag(String name, String hash, {String? message, bool? sign}) {
+    final hasMessage = message != null && message.trim().isNotEmpty;
+    return git.run([
+      'tag',
+      if (sign == true) ...['-s', '-m', hasMessage ? message : name]
+      else ...[
+        // Without --no-sign, tag.gpgsign would sign (and need a message).
+        if (sign == false) '--no-sign',
+        if (hasMessage) ...['-a', '-m', message],
+      ],
+      name,
+      hash,
+    ], log: true);
+  }
 
   @override
   Future<void> deleteTag(String name) =>
@@ -1474,6 +1533,7 @@ class GitCliRepository implements GitRepository {
     required String todo,
     required Map<String, String> messages,
     bool rebaseMerges = false,
+    bool? sign,
   }) async {
     final dir = await rebaseStateDir();
     _rebaseBusy = true;
@@ -1483,7 +1543,7 @@ class GitCliRepository implements GitRepository {
       for (final e in messages.entries) {
         await File('$dir/${e.key}').writeAsString(e.value);
       }
-      final args = _rebaseArgs(base, rebaseMerges);
+      final args = _rebaseArgs(base, rebaseMerges)..insertAll(1, _rebaseSignArgs(sign));
       // Git appends the todo path: `cp <ours> <todo>`.
       final r = await git.runRaw(args, env: {'GIT_SEQUENCE_EDITOR': 'cp ${shellQuote('$dir/todo')} '}, log: true);
       final output = [r.stdout.trim(), r.stderr.trim()].where((s) => s.isNotEmpty).join('\n');
@@ -1830,6 +1890,270 @@ class GitCliRepository implements GitRepository {
   @override
   Future<void> setConfig(String key, String value, {bool global = false}) =>
       git.run(['config', if (global) '--global', key, value], log: true);
+
+  // ---------------------------------------------------------------------------
+  // LFS
+  // ---------------------------------------------------------------------------
+
+  /// Result of `git lfs version`, shared by every repository of the process.
+  static Future<bool>? _lfsAvailable;
+
+  @override
+  Future<bool> lfsAvailable() => _lfsAvailable ??= git
+      .runRaw(['lfs', 'version'])
+      .then((r) => r.exitCode == 0 && r.stdout.contains('git-lfs'), onError: (Object _) => false);
+
+  @override
+  Future<Set<String>> lfsFilteredPaths(List<String> paths) async {
+    if (paths.isEmpty) return const {};
+    return parseCheckAttrLfs(await git.run(['check-attr', '--stdin', '-z', 'filter'],
+        stdin: '${paths.join('\x00')}\x00'));
+  }
+
+  /// `--json` needs git-lfs 3.0; older versions only print the list.
+  @override
+  Future<List<LfsTrackPattern>> lfsTrackPatterns() async {
+    final r = await git.runRaw(['lfs', 'track', '--json']);
+    if (r.exitCode == 0 && r.stdout.trimLeft().startsWith('{')) return parseLfsTrackJson(r.stdout);
+    return parseLfsTrackList(await git.run(['lfs', 'track']));
+  }
+
+  @override
+  Future<void> lfsTrack(List<String> patterns, {bool literal = false}) async {
+    // Without the filters git would commit the content itself.
+    if (await config('filter.lfs.clean') == null) {
+      await git.run(['lfs', 'install', '--local'], log: true);
+    }
+    await git.run(['lfs', 'track', if (literal) '--filename', '--', ...patterns], log: true);
+  }
+
+  @override
+  Future<void> lfsUntrack(List<String> patterns) async {
+    await git.run(['lfs', 'untrack', '--', ...patterns], log: true);
+    // git-lfs for Windows reads `\` as a path separator, so a pattern with
+    // escaped glob characters (`a\[1\].psd`) is left: remove its line here.
+    final f = File(p.join(root, '.gitattributes'));
+    if (!await f.exists()) return;
+    final text = await f.readAsString();
+    final eol = text.contains('\r\n') ? '\r\n' : '\n';
+    final lines = text.split(eol);
+    final kept = lines.where((l) {
+      final t = l.trim();
+      return !(t.contains('filter=lfs') && patterns.contains(t.split(RegExp(r'\s+')).first));
+    }).toList();
+    if (kept.length == lines.length) return;
+    await f.writeAsString(kept.join(eol));
+    git.info('Removed ${lines.length - kept.length} pattern(s) from .gitattributes');
+  }
+
+  @override
+  Future<List<LfsFile>> lfsFiles() async {
+    final r = await git.runRaw(['lfs', 'ls-files', '--json']);
+    if (r.exitCode == 0 && r.stdout.trimLeft().startsWith('{')) return parseLfsLsFilesJson(r.stdout);
+    return parseLfsLsFiles(await git.run(['lfs', 'ls-files', '--long']));
+  }
+
+  /// With `--json` git-lfs prints `[]` even when the server cannot be
+  /// reached, so the plain listing first tells whether locking works.
+  @override
+  Future<List<LfsLock>> lfsLocks() async {
+    const args = ['lfs', 'locks'];
+    final plain = await git.runRaw(args);
+    if (plain.exitCode != 0) throw GitException(args, plain.exitCode, plain.stderr, plain.stdout);
+    if (plain.stdout.trim().isEmpty) return const [];
+    final verified = await git.runRaw(['lfs', 'locks', '--verify', '--json']);
+    if (verified.exitCode == 0) {
+      final locks = parseLfsLocksJson(verified.stdout);
+      if (locks.isNotEmpty) return locks;
+    }
+    return parseLfsLocksJson(await git.run(['lfs', 'locks', '--json']));
+  }
+
+  @override
+  Future<void> lfsLock(String path) => git.run(['lfs', 'lock', '--', path], log: true);
+
+  @override
+  Future<void> lfsUnlock(String path, {bool force = false}) =>
+      git.run(['lfs', 'unlock', if (force) '--force', '--', path], log: true);
+
+  @override
+  Future<void> lfsPull() => git.run(['lfs', 'pull'], log: true);
+
+  @override
+  Future<void> lfsFetch() => git.run(['lfs', 'fetch'], log: true);
+
+  @override
+  Future<LfsPrunePreview> lfsPruneDryRun() async {
+    const args = ['lfs', 'prune', '--dry-run', '--verbose'];
+    final r = await git.runRaw(args);
+    if (r.exitCode != 0) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+    return parseLfsPruneDryRun(r.stdout);
+  }
+
+  @override
+  Future<void> lfsPrune() => git.run(['lfs', 'prune', '--verbose'], log: true);
+
+  @override
+  Future<LfsPointer?> lfsPointerOfFile(String path) async {
+    if (!await File(p.join(root, path)).exists()) return null;
+    final r = await git.runRaw(['lfs', 'pointer', '--file=$path']);
+    return r.exitCode == 0 ? parseLfsPointer(r.stdoutBytes) : null;
+  }
+
+  /// Objects are kept in `<lfs.storage or <common dir>/lfs>/objects/ab/cd/abcd…`.
+  @override
+  Future<List<int>?> lfsObject(LfsPointer pointer) async {
+    if (pointer.oid.length < 5) return null;
+    final storage = await config('lfs.storage');
+    final common = await commonDir();
+    final base = storage == null ? p.join(common, 'lfs') : p.normalize(p.join(common, storage));
+    final f = File(p.join(base, 'objects', pointer.oid.substring(0, 2), pointer.oid.substring(2, 4), pointer.oid));
+    if (!await f.exists() || await f.length() != pointer.size) return null;
+    return f.readAsBytes();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Signing
+  // ---------------------------------------------------------------------------
+
+  /// `-S` / `--no-gpg-sign` of `git commit`; nothing for null (config).
+  static List<String> _signArgs(bool? sign) => switch (sign) {
+        true => const ['-S'],
+        false => const ['--no-gpg-sign'],
+        null => const [],
+      };
+
+  static List<String> _rebaseSignArgs(bool? sign) => switch (sign) {
+        true => const ['--gpg-sign'],
+        false => const ['--no-gpg-sign'],
+        null => const [],
+      };
+
+  /// Runs [program] through git's shell (a `!` alias), so it is looked up on
+  /// the PATH git itself uses: Git for Windows finds its bundled gpg and ssh
+  /// tools there even when they are not on the PATH of this app.
+  Future<GitResult> _runTool(String program, List<String> args) => git.runRaw(
+        ['-c', 'alias.git-tools-tool=!f() { "\$GIT_TOOLS_PROGRAM" "\$@"; }; f', 'git-tools-tool', ...args],
+        env: {'GIT_TOOLS_PROGRAM': program},
+      );
+
+  /// Home folder as git sees it (`HOME`, else the Windows profile).
+  String get _home =>
+      git.environment['HOME'] ?? Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
+
+  @override
+  Future<SigningConfig> signingConfig() async => parseSigningConfig(
+      await git.run(['config', '-z', '--get-regexp', signingConfigPattern], allowFailure: true));
+
+  @override
+  Future<void> saveSigningSettings(SigningSettings settings, ConfigScope scope) async {
+    final where = scope == ConfigScope.global ? '--global' : '--local';
+    Future<void> set(String key, String value) => git.run(['config', where, key, value], log: true);
+    await set('gpg.format', settings.format.configValue);
+    final key = settings.signingKey?.trim() ?? '';
+    if (key.isEmpty) {
+      // Exit code 5 when the key was not set.
+      await git.run(['config', where, '--unset-all', 'user.signingkey'], log: true, allowFailure: true);
+    } else {
+      await set('user.signingkey', key);
+    }
+    await set('commit.gpgsign', '${settings.commitSign}');
+    await set('tag.gpgsign', '${settings.tagSign}');
+  }
+
+  @override
+  Future<List<GpgKey>> gpgSecretKeys() async {
+    final args = ['--batch', '--list-secret-keys', '--with-colons', '--fixed-list-mode'];
+    final r = await _runTool(await config('gpg.program') ?? 'gpg', args);
+    if (r.exitCode != 0) throw GitException(['gpg', ...args], r.exitCode, r.stderr, r.stdout);
+    return parseGpgSecretKeys(r.stdout);
+  }
+
+  @override
+  Future<List<SshKey>> sshKeys() async {
+    final keys = <SshKey>[];
+    final dir = Directory(p.join(_home, '.ssh'));
+    if (_home.isNotEmpty && await dir.exists()) {
+      final files = [
+        await for (final e in dir.list())
+          if (e is File && e.path.toLowerCase().endsWith('.pub')) e,
+      ]..sort((a, b) => a.path.toLowerCase().compareTo(b.path.toLowerCase()));
+      for (final f in files) {
+        try {
+          final private = f.path.substring(0, f.path.length - 4);
+          final hasPrivate = await File(private).exists();
+          keys.addAll(parseSshPublicKeys(await f.readAsString(), path: p.normalize(f.path)).take(1).map((k) => SshKey(
+              type: k.type,
+              data: k.data,
+              comment: k.comment,
+              path: k.path,
+              privatePath: hasPrivate ? p.normalize(private) : null)));
+        } on FileSystemException catch (_) {
+          // Unreadable file: skipped.
+        }
+      }
+    }
+    // The agent next to the configured ssh-keygen, else the one on git's PATH.
+    final keygen = await config('gpg.ssh.program');
+    final add = keygen != null && p.isAbsolute(keygen)
+        ? p.join(p.dirname(keygen), Platform.isWindows ? 'ssh-add.exe' : 'ssh-add')
+        : 'ssh-add';
+    final r = await _runTool(add, ['-L']);
+    if (r.exitCode == 0) {
+      for (final k in parseSshPublicKeys(r.stdout)) {
+        if (!keys.any(k.sameKey)) keys.add(k);
+      }
+    }
+    return keys;
+  }
+
+  @override
+  Future<SigningTestResult> testSigning({SigningFormat? format, String? key}) async {
+    final overrides = [
+      if (format != null) ...['-c', 'gpg.format=${format.configValue}'],
+      if (key != null && key.trim().isNotEmpty) ...['-c', 'user.signingkey=${key.trim()}'],
+    ];
+    // A repository without commits signs the empty tree (mktree writes it).
+    final tree = await refExists('HEAD^{tree}') ? 'HEAD^{tree}' : (await git.run(['mktree'], stdin: '')).trim();
+    final r = await git.runRaw(
+        [...overrides, 'commit-tree', '-S', tree, '-m', 'git-tools signing test'], log: true);
+    if (r.exitCode != 0) {
+      final err = r.stderr.trim();
+      return SigningTestResult(ok: false, output: err.isEmpty ? 'git commit-tree failed with exit code ${r.exitCode}' : err);
+    }
+    final sha = r.stdout.trim();
+    final v = await git.runRaw([...overrides, 'log', '-1', '--format=$commitSignatureFormat', sha]);
+    return SigningTestResult(ok: true, output: sha, verification: parseCommitSignatures(v.stdout)[sha]);
+  }
+
+  @override
+  Future<Map<String, SignatureInfo>> commitSignatures(List<String> hashes) async {
+    if (hashes.isEmpty) return const {};
+    final args = ['log', '--no-walk=unsorted', '--format=$commitSignatureFormat', '--stdin'];
+    final r = await git.runRaw(args, stdin: '${hashes.join('\n')}\n');
+    if (r.exitCode != 0) throw GitException(args, r.exitCode, r.stderr, r.stdout);
+    final result = parseCommitSignatures(r.stdout);
+    // Without gpg.ssh.allowedSignersFile git reports SSH signed commits as
+    // unsigned: they are shown as signed but not verifiable.
+    final unsigned = [
+      for (final h in hashes)
+        if ((result[h]?.status ?? SignatureStatus.none) == SignatureStatus.none) h,
+    ];
+    if (unsigned.isNotEmpty && r.stderr.contains('allowedSignersFile')) {
+      final raw = await git.run(['log', '--no-walk=unsorted', '--pretty=raw', '--stdin'],
+          stdin: '${unsigned.join('\n')}\n');
+      for (final h in parseSshSignedCommits(raw)) {
+        result[h] = const SignatureInfo(status: SignatureStatus.unverified);
+      }
+    }
+    return result;
+  }
+
+  @override
+  Future<SignatureInfo> tagSignature(String name) async {
+    final r = await git.runRaw(['verify-tag', '--raw', 'refs/tags/$name']);
+    return parseTagVerification(r.exitCode, '${r.stdout}\n${r.stderr}');
+  }
 
   // ---------------------------------------------------------------------------
   // Helpers

@@ -28,6 +28,7 @@ class _FakeRepo implements GitRepository {
   String diff = _diff;
   Map<String, String> perFile = {};
   final commits = <String, Map<String, Object?>>{};
+  bool? lastSign;
 
   @override
   Future<String> fileDiff(String path) async => diff;
@@ -49,8 +50,11 @@ class _FakeRepo implements GitRepository {
     bool signOff = false,
     String? author,
     bool partial = true,
-  }) async =>
-      commits['commit'] = {'paths': paths, 'partial': partial};
+    bool? sign,
+  }) async {
+    lastSign = sign;
+    commits['commit'] = {'paths': paths, 'partial': partial};
+  }
 
   @override
   Future<void> commitSelected({
@@ -60,8 +64,11 @@ class _FakeRepo implements GitRepository {
     bool amend = false,
     bool signOff = false,
     String? author,
-  }) async =>
-      commits['commitSelected'] = {'fullPaths': fullPaths, 'partial': partial};
+    bool? sign,
+  }) async {
+    lastSign = sign;
+    commits['commitSelected'] = {'fullPaths': fullPaths, 'partial': partial};
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -141,6 +148,22 @@ void main() {
         'partial': {'a.txt': buildContent('a\nb\n', parsed, {'0:3'})},
       });
       expect(repo.commits, isNot(contains('commit')));
+    });
+
+    test('the signing choice reaches both commit paths', () async {
+      for (final sign in [true, false, null]) {
+        await commitChanges(await commitChanges.prepare(
+            status: _status, message: 'm', changes: const [_a], lineSelections: const {}, sign: sign));
+        expect(repo.lastSign, sign);
+        final parsed = parseDiff(_diff);
+        await commitChanges(await commitChanges.prepare(
+            status: _status,
+            message: 'm',
+            changes: const [_a],
+            lineSelections: {'a.txt': LineSelection(parsed.signature, {'0:3'}, 3)},
+            sign: sign));
+        expect(repo.lastSign, sign);
+      }
     });
 
     test('a changed diff makes the selection stale', () async {

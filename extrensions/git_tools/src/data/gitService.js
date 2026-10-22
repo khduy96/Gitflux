@@ -6,6 +6,9 @@ const path = require('path');
 const { GitRunner } = require('./gitRunner');
 const { Repository } = require('./gitRepository');
 const { ShelfStore } = require('./shelfStore');
+const { SigningKeys } = require('./signingKeys');
+const { GitLfs } = require('./gitLfs');
+const { ChangelistStore } = require('./changelistStore');
 
 /** Folders never scanned for repositories. */
 const SCAN_SKIP = new Set(['node_modules', '.dart_tool', 'build', '.gradle', '.idea', '.vscode', 'Pods', 'dist', 'out', '.git']);
@@ -38,6 +41,21 @@ class GitCliService {
   /** @param {import('../domain/ports').GitRepository} repo a Repository from open() */
   shelfStore(repo) {
     return new ShelfStore(/** @type {Repository} */ (repo));
+  }
+
+  /** @param {import('../domain/ports').GitRepository} repo a Repository from open() */
+  changelistStore(repo) {
+    return new ChangelistStore(/** @type {Repository} */ (repo));
+  }
+
+  /** @param {import('../domain/ports').GitRepository} repo a Repository from open() */
+  lfs(repo) {
+    return new GitLfs(/** @type {Repository} */ (repo));
+  }
+
+  /** Signing keys of this machine (Signing Settings dialog). */
+  signingKeys() {
+    return new SigningKeys({ gitPath: this.gitPath() });
   }
 
   isRepository(dir) {

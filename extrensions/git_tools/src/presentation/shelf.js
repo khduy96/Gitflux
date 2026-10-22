@@ -72,11 +72,13 @@ async function openShelfDiff(m, shelf, f, preview = true) {
 
 /**
  * Shelve Changes dialog: name, files (the chosen ones ticked) and "Keep
- * changes in working tree".
+ * changes in working tree". A whole changelist is shelved under its name
+ * (o.name), so that unshelving puts the files back into it.
  * @param {RepoModel} m
  * @param {FileChange[]} chosen
+ * @param {{name?: string}} [o] default shelf name
  */
-async function shelveChanges(m, chosen) {
+async function shelveChanges(m, chosen, o = {}) {
   const all = m.status.changes.filter(shelvable);
   try {
     // Repository state first: no dialog when shelving is not possible.
@@ -86,10 +88,11 @@ async function shelveChanges(m, chosen) {
     throw e;
   }
   const picked = new Set(chosen.filter(shelvable).map((c) => c.path));
+  if (!picked.size && o.name) return vscode.window.showInformationMessage(`The changelist "${o.name}" has no changes to shelve.`);
   const name = await vscode.window.showInputBox({
     title: 'Shelve Changes (1/2)',
     prompt: 'Name of the shelf',
-    value: defaultShelfName(m.message, new Date()),
+    value: o.name || defaultShelfName(m.message, new Date()),
     ignoreFocusOut: true,
     validateInput: (v) => (v.trim() ? null : 'Enter a name'),
   });
@@ -168,6 +171,10 @@ async function unshelve(m, shelf, paths, remove) {
     r = await m.shelve.unshelve({ shelf, paths, remove });
   });
   if (!r) return;
+  // Back into the changelist named like the shelf, if there is one (else
+  // they stay in the active list, where the status refresh put them).
+  const back = r.applied.map((f) => f.path);
+  if (back.length) await m.assignToChangelistNamed(shelf.name, back);
   const n = r.applied.length;
   if (r.conflicted.length) {
     const which = r.conflicted.map((f) => f.path).slice(0, 5).join(', ');

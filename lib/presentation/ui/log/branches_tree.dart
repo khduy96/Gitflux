@@ -71,6 +71,7 @@ class _BranchesTreeState extends State<BranchesTree> {
                   ? 'HEAD (detached at ${s.headHash?.substring(0, 8) ?? '?'})'
                   : 'HEAD (Current Branch)',
               selected: filter == 'HEAD',
+              copy: s.branch,
               onTap: () => _filter(filter == 'HEAD' ? null : 'HEAD'),
             ),
             _group('local', 'Local', local.length),
@@ -95,6 +96,8 @@ class _BranchesTreeState extends State<BranchesTree> {
                     iconColor: AppColors.tagRef,
                     label: t.name,
                     selected: filter == 'refs/tags/${t.name}',
+                    copy: t.name,
+                    copyWhat: 'tag name',
                     onTap: () => _filter('refs/tags/${t.name}'),
                     onSecondary: (pos) => showTagMenu(context, ctrl, t, pos),
                   );
@@ -430,6 +433,7 @@ class _BranchesTreeState extends State<BranchesTree> {
           ),
       ],
       selected: filter == b.name,
+      copy: b.name,
       onTap: () => _filter(b.name),
       onDoubleTap: () => checkoutBranch(context, ctrl, b),
       onSecondary: (pos) => showBranchMenu(context, ctrl, b, pos),
@@ -448,23 +452,29 @@ class _BranchesTreeState extends State<BranchesTree> {
     VoidCallback? onTap,
     VoidCallback? onDoubleTap,
     void Function(Offset)? onSecondary,
+    String? copy,
+    String copyWhat = 'branch name',
   }) {
-    return HoverRow(
-      selected: selected,
-      padding: EdgeInsets.only(left: 22.0 + depth * 14, right: 6),
-      onTap: onTap,
-      onDoubleTap: onDoubleTap,
-      onSecondaryTapDown: onSecondary == null ? null : (d) => onSecondary(d.globalPosition),
-      child: Row(children: [
-        Icon(icon, size: 14, color: iconColor),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(label,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 13, fontWeight: bold ? FontWeight.w600 : null)),
-        ),
-        ...trailing,
-      ]),
+    return HoverCopy(
+      text: copy,
+      what: copyWhat,
+      child: HoverRow(
+        selected: selected,
+        padding: EdgeInsets.only(left: 22.0 + depth * 14, right: 6),
+        onTap: onTap,
+        onDoubleTap: onDoubleTap,
+        onSecondaryTapDown: onSecondary == null ? null : (d) => onSecondary(d.globalPosition),
+        child: Row(children: [
+          Icon(icon, size: 14, color: iconColor),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13, fontWeight: bold ? FontWeight.w600 : null)),
+          ),
+          ...trailing,
+        ]),
+      ),
     );
   }
 }

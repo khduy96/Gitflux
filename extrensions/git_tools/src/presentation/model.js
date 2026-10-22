@@ -11,8 +11,28 @@ const { InteractiveRebase } = require('../domain/usecases/interactiveRebase');
 const { selectedLineContents } = require('../domain/usecases/selectedLineContents');
 const { ShelveChanges } = require('../domain/usecases/shelveChanges');
 const { Patches } = require('../domain/usecases/patches');
+const { Changelists, DEFAULT_LIST } = require('../domain/usecases/changelists');
+const { isSigningFailure } = require('../domain/logic/signing');
+const { isLfsError, lfsErrorLines } = require('../domain/logic/lfs');
+
+/** LFS locks are asked from the remote at most this often (ms), unless forced. */
+const LOCKS_INTERVAL = 60000;
+/** git subcommands that create commits or tags: their failures can be signing failures. */
+const SIGNING_COMMANDS = new Set(['commit', 'commit-tree', 'merge', 'tag', 'rebase', 'cherry-pick', 'revert', 'am']);
+
+/** The git subcommand of failed arguments (`-c key=value` skipped). @param {string[]} args */
+function subcommand(args) {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-c') i++;
+    else if (!args[i].startsWith('-')) return args[i];
+  }
+  return null;
+}
 
 /** @typedef {import('../domain/ports').GitService} GitService */
+
+/** "Delete changelist '<name>'?" after a commit emptied it; off for the session once declined for good. */
+let askDeleteEmptyList = true;
 
 /**
  * State of one repository, shared by all views.
@@ -31,6 +51,12 @@ class RepoModel {
     this.shelfStore = git.shelfStore(this.repo);
     this.shelve = new ShelveChanges(this.repo, this.shelfStore);
     this.patches = new Patches(this.repo);
+    /** Changelists of this worktree (changelists.json, shared with the Flutter app). */
+    this.changelists = new Changelists(git.changelistStore(this.repo));
+    /** Active list the ticks and the message box belong to (null before the first status). @type {string|null} */
+    this._activeList = null;
+    /** Tracked paths of the last status: a path not in it is seen for the first time. @type {Set<string>|null} */
+    this._knownTracked = null;
     /** @type {import('../domain/entities').Status} */
     this.status = { branch: null, head: null, upstream: null, ahead: 0, behind: 0, changes: [], state: 'normal' };
     /** Progress of the rebase in progress (Commit view banner). @type {import('../domain/entities').RebaseProgress|null} */
@@ -66,9 +92,25 @@ class RepoModel {
     this.message = '';
     this.amend = false;
     this._prefilled = null;
+    /** Commit options: sign (null = follow commit.gpgsign) and Signed-off-by. @type {boolean|null} */
+    this.sign = null;
+    this.signOff = false;
+    /** Signing configuration (commit.gpgsign, gpg.format, user.signingkey…), null until read. @type {any} */
+    this.signing = null;
+
+    /** Git LFS of this repository (null when the service has none). */
+    this.lfs = /** @type {any} */ (git).lfs ? /** @type {any} */ (git).lfs(this.repo) : null;
+    this.lfsAvailable = false;
+    /** Changed paths an LFS filter applies to. @type {Set<string>} */
+    this.lfsPaths = new Set();
+    /** LFS locks by path, null when the remote has no locking. @type {Map<string, {id: string, path: string, owner: string, mine: boolean}>|null} */
+    this.lfsLocks = null;
+    /** Time of the last locks request (ms). */
+    this._locksAt = 0;
 
     // Checkbox model: tracked files are included unless excluded,
-    // unversioned files are excluded unless included.
+    // unversioned files are excluded unless included. Tracked files of
+    // changelists other than the active one start excluded.
     /** @type {Set<string>} */
     this.excludedTracked = new Set();
     /** @type {Set<string>} */
@@ -120,11 +162,19 @@ class RepoModel {
   async start() {
     this._full = true;
     await this.refreshAll();
+    this.refreshLfsLocks(true);
     const msg = await this.repo.pendingMergeMessage().catch(() => null);
     if (msg && !this.message) {
       this.message = msg;
       this._prefilled = msg;
       this.fire('message');
+    } else if (!this.message) {
+      // The message box is the draft of the active changelist.
+      const list = this.changelists.list(this.changelists.active);
+      if (list && list.comment) {
+        this.message = list.comment;
+        this.fire('message');
+      }
     }
     this.watch();
   }
@@ -155,7 +205,8 @@ class RepoModel {
         if (rel.startsWith('.git/refs') || /^\.git\/(HEAD|packed-refs|FETCH_HEAD|MERGE_HEAD|ORIG_HEAD|BISECT_\w+)$/.test(rel) ||
             rel.startsWith('.git/rebase-') || rel.startsWith('.git/git-tools/shelf/') || /^\.git\/worktrees\/[^/]+(\/(locked|gitdir))?$/.test(rel)) {
           this._refsDirty = true;
-        } else if (rel !== '.git/index') {
+        } else if (rel !== '.git/index' && rel !== '.git/git-tools/changelists.json') {
+          // changelists.json: lists changed by the Flutter app (or another window).
           return;
         }
       }
@@ -194,7 +245,28 @@ class RepoModel {
     const headBefore = this.status.head;
     await Promise.all([this.refreshStatus(), this.refreshRefs()]);
     this.checkSubmodulesAfterHeadChange(headBefore);
+    this.refreshLfsLocks();
     await this.refreshLog();
+  }
+
+  /**
+   * LFS locks of the remote (`git lfs locks`, a network call): asked only
+   * when the repository tracks LFS patterns, at most once a minute unless
+   * forced (after Lock / Unlock). Null when the remote has no locking.
+   */
+  async refreshLfsLocks(force = false) {
+    if (!this.lfs || !this.lfsAvailable || !this._full) return;
+    if (!force && Date.now() - this._locksAt < LOCKS_INTERVAL) return;
+    this._locksAt = Date.now();
+    try {
+      const usesLfs = (await this.lfs.trackedPatterns()).length > 0;
+      const locks = usesLfs ? await this.lfs.locks() : null;
+      this.lfsLocks = locks ? new Map(locks.map((l) => [l.path, l])) : null;
+    } catch (e) {
+      this.lfsLocks = null;
+      this.log(`LFS locks: ${e.message}`, 'info');
+    }
+    this.fire('status');
   }
 
   /**
@@ -236,6 +308,8 @@ class RepoModel {
         const c = this.status.changes.find((x) => x.path === p);
         if (!this.canSelectLines(c)) this.lineSelections.delete(p);
       }
+      await this.syncChangelists();
+      await this.refreshLfsPaths();
       // Prefill the prepared message when a merge / cherry-pick starts and
       // clear it again when the operation ends elsewhere.
       if (previous === 'normal' && this.status.state !== 'normal' && !this.message.trim()) {
@@ -256,13 +330,236 @@ class RepoModel {
     }
   }
 
+  /** Changed files stored with Git LFS (`git check-attr`), for the selected repository only. */
+  async refreshLfsPaths() {
+    if (!this.lfs || !this._full) return;
+    this.lfsAvailable = await this.lfs.available().catch(() => false);
+    this.lfsPaths = this.lfsAvailable
+      ? await this.lfs.lfsPaths(this.status.changes.filter((c) => !c.nestedRepo).map((c) => c.path)).catch(() => new Set())
+      : new Set();
+  }
+
+  // ------------------------------------------------------------- changelists
+
+  /**
+   * After a status refresh: the lists follow the changes (first seen files
+   * go to the active list, unchanged ones leave). A file seen for the first
+   * time is ticked when it is in the active list; when another app made a
+   * different list active, the ticks follow it.
+   */
+  async syncChangelists() {
+    const before = this._activeList;
+    try {
+      await this.changelists.reconcile(this.status.changes);
+    } catch (e) {
+      this.log(`changelists: ${e.message}`, 'error');
+    }
+    const active = this.changelists.active;
+    const tracked = this.status.changes.filter((c) => c.type !== 'untracked' && c.type !== 'conflicted').map((c) => c.path);
+    if (before !== null && before !== active) {
+      this.applyActiveTicks();
+      const list = this.changelists.list(active);
+      if (!this.message.trim() && list && list.comment) {
+        this.message = list.comment;
+        this.fire('message');
+      }
+    } else {
+      const known = this._knownTracked;
+      for (const p of tracked) {
+        if (known && known.has(p)) continue;
+        const list = this.changelists.listOf(p);
+        if (!list || list === active) this.excludedTracked.delete(p);
+        else this.excludedTracked.add(p);
+      }
+    }
+    this._knownTracked = new Set(tracked);
+    this._activeList = active;
+  }
+
+  /** Ticks exactly the tracked files of the active list. */
+  applyActiveTicks() {
+    const active = this.changelists.active;
+    for (const c of this.status.changes) {
+      if (c.type === 'untracked' || c.type === 'conflicted') continue;
+      const list = this.changelists.listOf(c.path);
+      if (!list || list === active) {
+        this.excludedTracked.delete(c.path);
+      } else {
+        this.excludedTracked.add(c.path);
+        this.lineSelections.delete(c.path);
+      }
+    }
+  }
+
+  /**
+   * Runs a changelist change; a failure (file not readable, name taken…) is
+   * shown and logged. Returns the result, undefined on failure.
+   * @template T
+   * @param {() => Promise<T>} fn
+   */
+  async changelistOp(fn) {
+    try {
+      return await fn();
+    } catch (e) {
+      const text = String(e && e.message ? e.message : e);
+      this.log(`changelists: ${text}`, 'error');
+      vscode.window.showErrorMessage(text);
+      return undefined;
+    } finally {
+      this.fire('status');
+    }
+  }
+
+  /**
+   * Makes `id` the active changelist: the message box text is saved as the
+   * draft of the list active until now and the new list's draft is loaded;
+   * the ticks become exactly the files of the new list.
+   * @param {string} id
+   */
+  setActiveChangelist(id) {
+    return this.changelistOp(async () => {
+      if (id === this.changelists.active) return;
+      const comment = await this.changelists.setActive(id, this.message);
+      this._activeList = this.changelists.active;
+      this.includedUntracked.clear();
+      this.applyActiveTicks();
+      this.message = comment;
+      this._prefilled = null;
+      this.fire('message');
+    });
+  }
+
+  /**
+   * Moves tracked files to list `id` (unversioned files are never in a list).
+   * Moved into the active list they are ticked, out of it unticked.
+   * @param {string[]} paths
+   * @param {string} id
+   */
+  moveToChangelist(paths, id) {
+    return this.changelistOp(async () => {
+      const tracked = new Set(this.status.changes.filter((c) => c.type !== 'untracked').map((c) => c.path));
+      const files = paths.filter((p) => tracked.has(p));
+      if (!files.length) return;
+      await this.changelists.move(files, id);
+      this.tickForList(files, id);
+    });
+  }
+
+  /** @param {string[]} paths @param {string} id list they are now in */
+  tickForList(paths, id) {
+    for (const p of paths) {
+      if (id === this.changelists.active) {
+        this.excludedTracked.delete(p);
+      } else {
+        this.excludedTracked.add(p);
+        this.lineSelections.delete(p);
+      }
+    }
+  }
+
+  /**
+   * New changelist, optionally holding tracked `paths` and made active.
+   * @param {{name: string, comment?: string, active?: boolean, paths?: string[]}} o
+   * @returns {Promise<string|undefined>} its id
+   */
+  async createChangelist(o) {
+    const id = await this.changelistOp(async () => {
+      const tracked = new Set(this.status.changes.filter((c) => c.type !== 'untracked').map((c) => c.path));
+      const paths = (o.paths || []).filter((p) => tracked.has(p));
+      const created = await this.changelists.create({ name: o.name, comment: o.comment, paths });
+      this.tickForList(paths, created);
+      return created;
+    });
+    if (id && o.active) await this.setActiveChangelist(id);
+    return id;
+  }
+
+  /**
+   * Renames a list and / or changes its draft; the draft of the active list
+   * is the message box.
+   * @param {string} id
+   * @param {{name?: string, comment?: string, active?: boolean}} o
+   */
+  async editChangelist(id, o) {
+    const ok = await this.changelistOp(async () => {
+      await this.changelists.edit(id, { name: o.name, comment: o.comment });
+      if (id === this.changelists.active && o.comment !== undefined) {
+        this.message = o.comment;
+        this.fire('message');
+      }
+      return true;
+    });
+    if (ok && o.active) await this.setActiveChangelist(id);
+  }
+
+  /**
+   * Deletes a list: its files go to the active list (the default one when
+   * the active list is deleted, which then becomes active).
+   * @param {string} id
+   */
+  deleteChangelist(id) {
+    return this.changelistOp(async () => {
+      const wasActive = id === this.changelists.active;
+      const files = this.changelists.filesOf(id);
+      const target = await this.changelists.remove(id);
+      this._activeList = this.changelists.active;
+      if (wasActive) this.applyActiveTicks();
+      else this.tickForList(files, target);
+    });
+  }
+
+  /**
+   * Adds unversioned files to Git and puts them in list `id` (drop on a
+   * changelist group).
+   * @param {import('../domain/entities').FileChange[]} changes
+   * @param {string} id
+   */
+  async addToChangelist(changes, id) {
+    const files = changes.filter((c) => c.type === 'untracked' && !c.nestedRepo);
+    if (!files.length) return;
+    const paths = files.map((c) => c.path);
+    const list = this.changelists.list(id);
+    await this.run(files.length === 1 ? `Add ${path.basename(paths[0])} to Git` : `Add ${files.length} files to Git`, async () => {
+      await this.repo.add(paths);
+      await this.changelists.move(paths, id);
+    }, { success: `${files.length} file(s) added to ${list ? `"${list.name}"` : 'Git'}`, refresh: false });
+    await this.refreshStatus();
+  }
+
+  /**
+   * Puts tracked `paths` in the list named `name` when there is one, else
+   * leaves them where the status refresh put them (the active list).
+   * Unshelved files go back to the changelist named like the shelf.
+   * @param {string} name
+   * @param {string[]} paths
+   */
+  async assignToChangelistNamed(name, paths) {
+    const list = this.changelists.byName(name);
+    if (list) await this.moveToChangelist(paths, list.id);
+  }
+
+  /**
+   * After a commit: offers to delete the non-default lists it left empty.
+   * @param {Set<string>} ids lists the committed files were in
+   */
+  async offerDeleteEmptyLists(ids) {
+    for (const id of ids) {
+      const list = this.changelists.list(id);
+      if (!askDeleteEmptyList || !list || id === DEFAULT_LIST || list.files.length) continue;
+      const r = await vscode.window.showInformationMessage(`Delete changelist '${list.name}'?`,
+        'Delete', 'Keep', 'Keep, Don\'t Ask Again This Session');
+      if (r === 'Delete') await this.deleteChangelist(id);
+      else if (r && r !== 'Keep') askDeleteEmptyList = false;
+    }
+  }
+
   async refreshRefs() {
     try {
-      const [branches, tags, remotes, stashes, submodules, shelves, worktrees] = await Promise.all([
+      const [branches, tags, remotes, stashes, submodules, shelves, worktrees, signing] = await Promise.all([
         this.repo.branches(), this.repo.tags(), this.repo.remotes(), this.repo.stashes(), this.repo.submodules(),
-        this.shelfStore.list().catch(() => []), this.repo.worktrees().catch(() => []),
+        this.shelfStore.list().catch(() => []), this.repo.worktrees().catch(() => []), this.repo.signingConfig().catch(() => null),
       ]);
-      Object.assign(this, { branches, tags, remotes, stashes, submodules, shelves, worktrees });
+      Object.assign(this, { branches, tags, remotes, stashes, submodules, shelves, worktrees, signing });
       this.fire('refs');
     } catch (e) {
       this.log(`refs failed: ${e.message}`, 'error');
@@ -402,6 +699,21 @@ class RepoModel {
       }
       const details = e instanceof GitError ? e.message : String(e && e.message ? e.message : e);
       this.log(`${label} failed: ${details}`, 'error');
+      // Signing failed (no agent, wrong key, pinentry cancelled): git's error and the settings, never unsigned.
+      if (e instanceof GitError && SIGNING_COMMANDS.has(subcommand(e.args) || '') && isSigningFailure(details)) {
+        require('./signing').showSigningFailure(this, label, details);
+        return false;
+      }
+      // Git LFS (pre-push hook, smudge…): its lines first, the whole stderr on demand.
+      if (this.lfsAvailable && isLfsError(details)) {
+        const lines = lfsErrorLines(details);
+        vscode.window.showErrorMessage(`${label} failed (Git LFS): ${lines.slice(0, 3).join(' ')}`, 'Show Details', 'Show Console')
+          .then((r) => {
+            if (r === 'Show Details') vscode.window.showErrorMessage(`${label} failed`, { modal: true, detail: details.slice(0, 6000) });
+            else if (r) this.output.show(true);
+          });
+        return false;
+      }
       vscode.window.showErrorMessage(`${label} failed: ${details.split('\n').slice(0, 6).join(' ')}`, 'Show Console')
         .then((r) => { if (r) this.output.show(true); });
       return false;
@@ -412,18 +724,19 @@ class RepoModel {
     }
   }
 
-  async commit({ push = false, signOff = false } = {}) {
+  async commit({ push = false } = {}) {
     const changes = this.includedChanges();
     let prepared;
     try {
-      prepared = await this.commitChanges.prepare({
+      prepared = await this.commitChanges.prepare(/** @type {any} */ ({
         status: this.status,
         message: this.message.trim(),
         changes,
         lineSelections: this.lineSelections,
         amend: this.amend,
-        signOff,
-      });
+        signOff: this.signOff,
+        sign: this.sign,
+      }));
     } catch (e) {
       if (e instanceof CommitRejected) {
         vscode.window.showWarningMessage(e.message);
@@ -434,6 +747,9 @@ class RepoModel {
       return false;
     }
     const partial = prepared.partial;
+    const active = this.changelists.active;
+    /** Lists the committed files were in (one may be left empty). */
+    const lists = new Set(changes.map((c) => this.changelists.listOf(c.path)).filter((id) => id !== null));
     const ok = await this.run(this.amend ? 'Amend commit' : 'Commit', () => this.commitChanges.run(prepared), {
       success: this.amend ? 'Commit amended'
         : `${changes.length} file(s) committed${partial.length ? ` (${partial.length} partially)` : ''}`,
@@ -442,10 +758,14 @@ class RepoModel {
       this.message = '';
       this._prefilled = null;
       this.amend = false;
-      this.excludedTracked.clear();
       this.includedUntracked.clear();
       this.lineSelections.clear();
+      this.applyActiveTicks();
       this.fire('message');
+      this.fire('status');
+      // The message was the draft of the active list: used now.
+      await this.changelists.saveComment(active, '').catch((e) => this.log(`changelists: ${e.message}`, 'error'));
+      this.offerDeleteEmptyLists(/** @type {Set<string>} */ (lists));
       if (push) await vscode.commands.executeCommand('gitTools.push');
     }
     return ok;

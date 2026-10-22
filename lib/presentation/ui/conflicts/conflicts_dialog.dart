@@ -46,10 +46,16 @@ class _ConflictsDialogState extends State<_ConflictsDialog> {
   RepoController get ctrl => widget.ctrl;
   Set<String> _selected = {};
 
+  /// Conflicts of a pull: they can also be dropped for the upstream as it is.
+  ({String branch, String upstream})? _pull;
+
   @override
   void initState() {
     super.initState();
     ctrl.status.addListener(_onStatus);
+    ctrl.repo.pullInProgress().then((pull) {
+      if (mounted) setState(() => _pull = pull);
+    });
     final first = ctrl.status.value.conflicts.firstOrNull;
     if (first != null) _selected = {first.path};
   }
@@ -105,6 +111,15 @@ class _ConflictsDialogState extends State<_ConflictsDialog> {
       width: 760,
       height: 420,
       actions: [
+        if (_pull case final pull?)
+          OutlinedButton.icon(
+            icon: const Icon(Icons.cloud_download_outlined, size: 16),
+            label: Text('Abort and Take ${pull.upstream}…'),
+            onPressed: () {
+              Navigator.pop(context);
+              ctrl.takeRemoteRequest.value = (branch: pull.branch, upstream: pull.upstream, abort: ctrl.status.value.state);
+            },
+          ),
         OutlinedButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
       ],
       child: Row(

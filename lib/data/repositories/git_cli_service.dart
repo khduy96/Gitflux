@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../../domain/entities/console_entry.dart';
+import '../../domain/repositories/changelist_repository.dart';
 import '../../domain/repositories/git_repository.dart';
 import '../../domain/repositories/git_service.dart';
 import '../../domain/repositories/shelf_repository.dart';
 import '../datasources/git_process.dart';
+import 'file_changelist_repository.dart';
 import 'file_shelf_repository.dart';
 import 'git_cli_repository.dart';
 
@@ -59,4 +61,7 @@ class GitCliService implements GitService {
 
   @override
   ShelfRepository shelves(GitRepository repo) => FileShelfRepository(repo);
+
+  @override
+  ChangelistRepository changelists(GitRepository repo) => FileChangelistRepository(repo);
 }

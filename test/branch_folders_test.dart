@@ -71,14 +71,17 @@ void main() {
   });
 
   group('branch picker', () {
-    late Set<String> open;
     String? picked;
     var closed = false;
 
-    Future<void> show(WidgetTester tester, {String? current}) async {
-      open = {'Local', 'Remote'};
+    /// Opens the picker; [checkedOut] is the current branch of the repository.
+    Future<void> show(WidgetTester tester, {String? current, String? checkedOut}) async {
       picked = null;
       closed = false;
+      final branches = [
+        for (final b in _branches)
+          Branch(name: b.name, isRemote: b.isRemote, hash: b.hash, isCurrent: b.name == checkedOut),
+      ];
       await tester.pumpWidget(MaterialApp(
         theme: buildTheme(),
         home: Scaffold(
@@ -86,7 +89,7 @@ void main() {
             builder: (context) => TextButton(
               onPressed: () async {
                 picked = await showBranchPicker(context,
-                    anchor: const Rect.fromLTWH(10, 10, 100, 24), branches: _branches, current: current, open: open);
+                    anchor: const Rect.fromLTWH(10, 10, 100, 24), branches: branches, current: current);
                 closed = true;
               },
               child: const Text('Branch'),
@@ -98,41 +101,71 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    /// Labels of the picker lines, top to bottom.
-    List<String> lines(WidgetTester tester) => [
-          for (final row in tester.widgetList<HoverRow>(find.descendant(of: find.byType(BranchPicker), matching: find.byType(HoverRow))))
-            ((row.child as Row).children[4] as Expanded).child is Text
-                ? (((row.child as Row).children[4] as Expanded).child as Text).data!
-                : '?',
-        ];
+    Finder rows() => find.descendant(of: find.byType(BranchPicker), matching: find.byType(HoverRow));
 
-    Finder line(String label) => find.descendant(of: find.byType(BranchPicker), matching: find.text(label));
+    String label(HoverRow row) => (((row.child as Row).children[4] as Expanded).child as Text).data!;
+
+    /// Labels of the picker lines, top to bottom.
+    List<String> lines(WidgetTester tester) => [for (final row in tester.widgetList<HoverRow>(rows())) label(row)];
+
+    /// Label of the highlighted line.
+    String active(WidgetTester tester) => label(tester.widgetList<HoverRow>(rows()).singleWhere((r) => r.selected));
+
+    Finder line(String label) => find.descendant(of: rows(), matching: find.text(label));
 
     Future<void> key(WidgetTester tester, LogicalKeyboardKey k) async {
       await tester.sendKeyEvent(k);
       await tester.pumpAndSettle();
     }
 
-    testWidgets('folders open and close, the state is kept', (tester) async {
+    testWidgets('opens down to the checked out branch only and selects it', (tester) async {
+      await show(tester, checkedOut: 'feature/ui/login');
+      expect(lines(tester), ['All', 'HEAD', 'Local', 'bugfix', 'feature', 'ui', 'login', 'cart', 'main', 'Remote']);
+      expect(active(tester), 'login');
+      await key(tester, LogicalKeyboardKey.enter);
+      expect(picked, 'feature/ui/login');
+    });
+
+    testWidgets('the branch shown in the Log comes before the checked out one', (tester) async {
+      await show(tester, current: 'origin/feature/cart', checkedOut: 'main');
+      expect(lines(tester), ['All', 'HEAD', 'Local', 'Remote', 'origin', 'feature', 'cart', 'HEAD', 'main']);
+      expect(active(tester), 'cart');
+    });
+
+    testWidgets('no branch checked out: everything closed, All selected', (tester) async {
       await show(tester);
-      expect(lines(tester), ['All', 'HEAD', 'Local', 'bugfix', 'feature', 'main', 'Remote', 'origin']);
+      expect(lines(tester), ['All', 'HEAD', 'Local', 'Remote']);
+      expect(active(tester), 'All');
+    });
+
+    testWidgets('folders open and close by hand, forgotten when reopened', (tester) async {
+      await show(tester, checkedOut: 'main');
+      const initial = ['All', 'HEAD', 'Local', 'bugfix', 'feature', 'main', 'Remote'];
+      expect(lines(tester), initial);
 
       await tester.tap(line('feature'));
       await tester.pumpAndSettle();
-      expect(lines(tester), ['All', 'HEAD', 'Local', 'bugfix', 'feature', 'ui', 'cart', 'main', 'Remote', 'origin']);
-      expect(open, contains('Local/feature'));
-
+      expect(lines(tester), ['All', 'HEAD', 'Local', 'bugfix', 'feature', 'ui', 'cart', 'main', 'Remote']);
       await tester.tap(line('Local'));
       await tester.pumpAndSettle();
+      await tester.tap(line('Remote'));
+      await tester.pumpAndSettle();
       expect(lines(tester), ['All', 'HEAD', 'Local', 'Remote', 'origin']);
-      expect(open, isNot(contains('Local')));
+
+      await key(tester, LogicalKeyboardKey.escape);
+      await tester.tap(find.text('Branch'));
+      await tester.pumpAndSettle();
+      expect(lines(tester), initial);
+      expect(active(tester), 'main');
     });
 
     testWidgets('a click on a branch picks it, All picks ""', (tester) async {
       await show(tester);
+      await tester.tap(line('Remote'));
+      await tester.pumpAndSettle();
       await tester.tap(line('origin'));
       await tester.pumpAndSettle();
-      await tester.tap(line('main').last);
+      await tester.tap(line('main'));
       await tester.pumpAndSettle();
       expect(closed, isTrue);
       expect(picked, 'origin/main');
@@ -145,21 +178,12 @@ void main() {
       expect(picked, '');
     });
 
-    testWidgets('opens down to the current branch', (tester) async {
-      await show(tester, current: 'feature/ui/login');
-      expect(lines(tester), [
-        'All', 'HEAD', 'Local', 'bugfix', 'feature', 'ui', 'login', 'cart', 'main', 'Remote', 'origin', //
-      ]);
-      expect(open, containsAll(['Local/feature', 'Local/feature/ui']));
-      final active = tester.widget<HoverRow>(find.ancestor(of: line('login'), matching: find.byType(HoverRow)));
-      expect(active.selected, isTrue);
-    });
-
     testWidgets('search, then keys', (tester) async {
       await show(tester);
       await tester.enterText(find.byType(TextField), 'cart');
       await tester.pumpAndSettle();
       expect(lines(tester), ['Local', 'feature', 'cart', 'Remote', 'origin', 'feature', 'cart']);
+      expect(active(tester), 'cart');
       await key(tester, LogicalKeyboardKey.arrowDown);
       await key(tester, LogicalKeyboardKey.arrowDown);
       await key(tester, LogicalKeyboardKey.arrowDown);
@@ -178,11 +202,10 @@ void main() {
       await show(tester);
       await key(tester, LogicalKeyboardKey.arrowDown); // HEAD
       await key(tester, LogicalKeyboardKey.arrowDown); // Local
-      await key(tester, LogicalKeyboardKey.arrowDown); // bugfix
       await key(tester, LogicalKeyboardKey.arrowRight);
-      expect(lines(tester), ['All', 'HEAD', 'Local', 'bugfix', 'crash', 'feature', 'main', 'Remote', 'origin']);
+      expect(lines(tester), ['All', 'HEAD', 'Local', 'bugfix', 'feature', 'main', 'Remote']);
       await key(tester, LogicalKeyboardKey.arrowLeft);
-      expect(lines(tester), ['All', 'HEAD', 'Local', 'bugfix', 'feature', 'main', 'Remote', 'origin']);
+      expect(lines(tester), ['All', 'HEAD', 'Local', 'Remote']);
       await key(tester, LogicalKeyboardKey.escape);
       expect(find.byType(BranchPicker), findsNothing);
       expect(closed, isTrue);

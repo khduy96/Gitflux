@@ -29,6 +29,7 @@ const DEBOUNCE_MS = 500;
 const CONTEXT_KEY = 'gitTools.annotated';
 const SHOW_IN_LOG = 'gitTools.blame.showInLog';
 const SHOW_DIFF = 'gitTools.blame.showDiff';
+const COPY_HASH = 'gitTools.blame.copyHash';
 
 /** Age colors, translucent so they work on light and dark themes. */
 const OLDEST = [128, 128, 128, 0.06];
@@ -270,6 +271,13 @@ function registerBlame(context, manager, logView) {
     }
   };
 
+  const copyHash = async (arg) => {
+    const a = Array.isArray(arg) ? arg[0] : arg;
+    if (!a || !a.hash) return;
+    await vscode.env.clipboard.writeText(a.hash);
+    vscode.window.setStatusBarMessage(`$(check) Copied ${a.hash.slice(0, 8)}`, 3000);
+  };
+
   /** Full message of a commit (cached), the summary when git fails. */
   const bodyOf = (st, c) => {
     const key = `${st.model.root}\n${c.hash}`;
@@ -292,7 +300,7 @@ function registerBlame(context, manager, logView) {
       const message = c.uncommitted ? '' : await bodyOf(st, c);
       if (states.get(keyOf(doc)) !== st) return undefined;
       const md = new vscode.MarkdownString(hoverMarkdown(c, message, st.model.root));
-      md.isTrusted = { enabledCommands: [SHOW_IN_LOG, SHOW_DIFF] };
+      md.isTrusted = { enabledCommands: [SHOW_IN_LOG, SHOW_DIFF, COPY_HASH] };
       return new vscode.Hover(md, new vscode.Range(pos.line, 0, pos.line, 0));
     },
   };
@@ -302,6 +310,7 @@ function registerBlame(context, manager, logView) {
     vscode.commands.registerCommand('gitTools.annotate', annotate),
     vscode.commands.registerCommand(SHOW_IN_LOG, showInLog),
     vscode.commands.registerCommand(SHOW_DIFF, showDiff),
+    vscode.commands.registerCommand(COPY_HASH, copyHash),
     vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider),
     vscode.workspace.onDidChangeTextDocument((e) => {
       const st = states.get(keyOf(e.document));
@@ -341,6 +350,10 @@ function registerBlame(context, manager, logView) {
     },
   );
   updateContext();
+  return {
+    /** The document shows the Annotate column (the inline blame stays off there). */
+    isAnnotated: (/** @type {vscode.TextDocument} */ doc) => states.has(keyOf(doc)),
+  };
 }
 
-module.exports = { registerBlame, modelOf, firstLine };
+module.exports = { registerBlame, modelOf, firstLine, SHOW_IN_LOG, SHOW_DIFF, COPY_HASH };

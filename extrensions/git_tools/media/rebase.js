@@ -138,7 +138,7 @@
     const commits = original.filter((it) => it.kind === 'commit').length;
     app.replaceChildren(
       h('div#top', null,
-        h('b', { text: `Rebasing ${plan.branch}` }),
+        h('b', null, 'Rebasing ', h('span', { text: plan.branch, 'data-copy': plan.branch })),
         h('span.muted', { text: `onto ${plan.base || 'the root'} · ${commits} commit${commits === 1 ? '' : 's'}${plan.rebaseMerges ? ' · merges are kept (--rebase-merges)' : ''}` })),
       noticeEl,
       h('div#main', null, listEl, sideEl),

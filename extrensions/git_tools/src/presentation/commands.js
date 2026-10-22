@@ -7,8 +7,12 @@ const { GitError } = require('../domain/errors');
 const { openCommitDiff } = require('./diff');
 const { olderFirst } = require('../domain/logic/history');
 const { checkedOutElsewhere, worktreeOfBranch } = require('../domain/logic/worktree');
+const { divergedFromUpstream } = require('../domain/logic/divergence');
 const { mergeDialog } = require('./mergeDialog');
 const { newWorktree, openWorktree } = require('./worktrees');
+const { signChoice, askSignTag } = require('./signing');
+const { pickBranchName } = require('./branchName');
+const { commitCopyText } = require('../domain/logic/quickActions');
 
 /** @typedef {import('./model').RepoModel} RepoModel */
 /** @typedef {import('../domain/entities').Branch} Branch */
@@ -31,10 +35,14 @@ const currentLabel = (m) => m.status.branch || 'HEAD';
 
 function warnConflicts(m) {
   const n = m.status.changes.filter((c) => c.type === 'conflicted').length;
-  if (n) {
-    vscode.window.showWarningMessage(`${n} file(s) have conflicts.`, 'Resolve…')
-      .then((r) => { if (r) vscode.commands.executeCommand('gitTools.resolveConflicts'); });
-  }
+  if (!n) return;
+  // A pull that conflicts can also be given up for the remote branch as it is.
+  m.repo.pullInProgress().catch(() => null).then(async (pull) => {
+    const take = pull ? `Drop Local and Take ${pull.upstream}…` : null;
+    const r = await vscode.window.showWarningMessage(`${n} file(s) have conflicts.`, 'Resolve…', ...(take ? [take] : []));
+    if (r === 'Resolve…') vscode.commands.executeCommand('gitTools.resolveConflicts');
+    else if (r && r === take) await takeRemote(m, pull.branch, pull.upstream, m.status.state);
+  });
 }
 
 // ---------------------------------------------------------------- branches
@@ -110,18 +118,16 @@ async function checkoutBranch(m, b) {
 /** @param {RepoModel} m */
 async function newBranch(m, startPoint, startLabel) {
   const existing = m.branches.filter((b) => !b.remote).map((b) => b.name);
-  const name = await vscode.window.showInputBox({
+  const branch = await pickBranchName({
     title: startPoint ? `New Branch from ${startLabel || startPoint}` : 'Create New Branch',
-    prompt: 'New branch name',
-    validateInput: (v) => validateRefName(v, existing),
+    validate: (v) => validateRefName(v, existing),
   });
-  if (!name) return;
+  if (!branch) return;
   const pick = await vscode.window.showQuickPick(
     [{ label: '$(check) Create and checkout', id: true }, { label: 'Create without checkout', id: false }],
-    { title: `Create branch ${name.trim()}` },
+    { title: `Create branch ${branch}` },
   );
   if (!pick) return;
-  const branch = name.trim();
   const fromRemote = !!startPoint && m.branches.some((b) => b.remote && b.name === startPoint);
   const create = () => m.repo.createBranch(branch, { startPoint, checkout: pick.id, fromRemote });
   if (pick.id) await smartCheckout(m, `Create branch ${branch}`, create);
@@ -168,6 +174,61 @@ async function deleteBranch(m, b) {
       vscode.window.showErrorMessage(`Delete branch failed: ${e.message}`);
     }
   }
+  await m.refreshAll();
+}
+
+/**
+ * Deletes several local branches after one confirmation; the ones not fully
+ * merged are force deleted after a second one. The current branch is kept.
+ * @param {RepoModel} m @param {Branch[]} branches
+ */
+async function deleteBranches(m, branches) {
+  const kept = branches.filter((b) => b.current);
+  const list = branches.filter((b) => !b.current && !b.remote);
+  if (!list.length) {
+    if (kept.length) vscode.window.showInformationMessage(`${kept[0].name} is the current branch: it cannot be deleted.`);
+    return;
+  }
+  const names = (bs) => bs.slice(0, 15).map((b) => `  ${b.name}`).join('\n') + (bs.length > 15 ? `\n  … and ${bs.length - 15} more` : '');
+  const ok = await vscode.window.showWarningMessage(`Delete ${list.length} branch${list.length === 1 ? '' : 'es'}?`, {
+    modal: true,
+    detail: `${names(list)}${kept.length ? `\n\nNot deleted (current branch): ${kept.map((b) => b.name).join(', ')}` : ''}`,
+  }, 'Delete');
+  if (!ok) return;
+  const deleted = [];
+  const unmerged = [];
+  const failed = [];
+  await m.run(`Delete ${list.length} branches`, async () => {
+    for (const b of list) {
+      try {
+        await m.repo.deleteBranch(b.name);
+        deleted.push(b);
+      } catch (e) {
+        if (e instanceof GitError && e.stderr.includes('not fully merged')) unmerged.push(b);
+        else failed.push(`${b.name}: ${(e.stderr || e.message || '').trim().split('\n')[0]}`);
+      }
+    }
+  });
+  if (unmerged.length) {
+    const force = await vscode.window.showWarningMessage(
+      `${unmerged.length} branch${unmerged.length === 1 ? ' is' : 'es are'} not fully merged.`,
+      { modal: true, detail: `${names(unmerged)}\n\nDeleting ${unmerged.length === 1 ? 'it' : 'them'} may lose commits. Delete anyway?` },
+      'Force Delete');
+    if (force) {
+      await m.run(`Force delete ${unmerged.length} branches`, async () => {
+        for (const b of unmerged) {
+          try {
+            await m.repo.deleteBranch(b.name, true);
+            deleted.push(b);
+          } catch (e) {
+            failed.push(`${b.name}: ${(e.stderr || e.message || '').trim().split('\n')[0]}`);
+          }
+        }
+      });
+    }
+  }
+  if (failed.length) vscode.window.showErrorMessage(`Could not delete ${failed.length} branch${failed.length === 1 ? '' : 'es'}: ${failed.join('; ')}`);
+  if (deleted.length) vscode.window.setStatusBarMessage(`$(check) Deleted ${deleted.length} branch${deleted.length === 1 ? '' : 'es'}`, 4000);
   await m.refreshAll();
 }
 
@@ -287,6 +348,102 @@ async function updateBranch(m, b) {
   { success: `${b.name} updated` });
 }
 
+/**
+ * "Drop Local and Take origin/x": instead of a pull that conflicts, the local
+ * branch is deleted and checked out again from its upstream, fetched first.
+ * Its commits not on the upstream are listed and dropped after confirmation.
+ * Uncommitted changes go along (stash, checkout, unstash; left in the stash
+ * when they do not apply). `abortState`: a pull stopped on conflicts, whose
+ * merge / rebase is aborted first.
+ * @param {RepoModel} m @param {string} name @param {string} ref
+ * @param {string|null} [abortState]
+ */
+async function takeRemote(m, name, ref, abortState = null) {
+  const slash = ref.indexOf('/');
+  if (!await m.run(`Fetch ${ref}`, () => m.repo.fetchBranch(ref.slice(0, slash), ref.slice(slash + 1)))) return;
+  const lost = await m.repo.commitsBetween(ref, name);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const op = abortState === 'rebasing' ? 'rebase' : 'merge';
+  const detail = [
+    `${name} is deleted and checked out again from ${ref}.`,
+    abortState ? `The ${op} of the pull is aborted first: its conflicts are dropped.` : '',
+    lost.length
+      ? `${plural(lost.length, 'local commit')} not on ${ref} will be dropped (git's reflog keeps them for a while):\n${
+        lost.slice(0, 8).map((c) => `  ${c.hash.slice(0, 8)} ${c.subject}`).join('\n')}${lost.length > 8 ? '\n  …' : ''}`
+      : `No commit is lost: ${ref} has all of ${name}.`,
+    'Uncommitted changes are kept: stashed, then put back on the new branch (left in the stash if they do not apply).',
+  ].filter(Boolean).join('\n\n');
+  const button = `Take ${ref}`;
+  const ok = await vscode.window.showWarningMessage(
+    `${abortState ? `Abort the ${op} and take` : 'Drop local'} ${name}${abortState ? ` from ${ref}` : ` and take ${ref}`}?`,
+    { modal: true, detail }, button);
+  if (ok !== button) return;
+  let stashed = false;
+  let restored = true;
+  const done = await m.run(`Take ${ref}`, async () => {
+    if (abortState) await m.repo.abortOperation(abortState);
+    if ((await m.repo.status()).changes.length) {
+      await m.repo.stash({ message: `Uncommitted changes before taking ${ref}`, includeUntracked: true });
+      stashed = true;
+    }
+    try {
+      await m.repo.checkoutFrom(name, ref);
+    } finally {
+      if (stashed) {
+        try {
+          await m.repo.stashPop();
+        } catch {
+          restored = false;
+        }
+      }
+    }
+  });
+  await m.refreshAll();
+  if (!done) return;
+  if (restored) {
+    vscode.window.setStatusBarMessage(`$(check) ${name} taken from ${ref}${stashed ? ' (local changes restored)' : ''}`, 4000);
+  } else {
+    vscode.window.showWarningMessage(`${name} was taken from ${ref}, but your uncommitted changes did not apply cleanly on it: they are kept in the stash (stash@{0}), maybe partly applied. Resolve the conflicts, then drop that stash.`);
+  }
+}
+
+/**
+ * What "Drop Local and Take <upstream>" does for the repository now: the
+ * pull stopped on conflicts (`abort`: its state, aborted first), or the
+ * current branch diverged from its upstream; null when neither.
+ * @param {RepoModel} m
+ * @returns {Promise<{branch: string, upstream: string, abort: string|null}|null>}
+ */
+async function takeUpstreamTarget(m) {
+  const s = m.status;
+  if (s.state !== 'normal') {
+    const pull = s.changes.some((c) => c.type === 'conflicted') ? await m.repo.pullInProgress().catch(() => null) : null;
+    return pull ? { ...pull, abort: s.state } : null;
+  }
+  const b = m.branches.find((x) => x.current);
+  return b && divergedFromUpstream(b) ? { branch: b.name, upstream: b.upstream, abort: null } : null;
+}
+
+/** Source Control (VS Code's and the Repositories view): "Drop Local and Take <upstream>" of the current branch. @param {RepoModel} m */
+async function takeCurrentUpstream(m) {
+  const t = await takeUpstreamTarget(m);
+  if (!t) {
+    vscode.window.showInformationMessage('The current branch has not diverged from its upstream, and no pull is stopped on conflicts.');
+    return;
+  }
+  return takeRemote(m, t.branch, t.upstream, t.abort);
+}
+
+/** "Drop Local and Take <upstream>" of a local branch diverged from its upstream. @param {RepoModel} m @param {Branch} b */
+async function takeUpstream(m, b) {
+  if (!divergedFromUpstream(b)) return;
+  if (m.status.state !== 'normal') {
+    vscode.window.showWarningMessage('Finish or abort the merge / rebase in progress first.');
+    return;
+  }
+  return takeRemote(m, b.name, b.upstream);
+}
+
 /** @param {RepoModel} m @param {Branch} b */
 async function branchActions(m, b) {
   const cur = currentLabel(m);
@@ -306,6 +463,9 @@ async function branchActions(m, b) {
   if (!b.current) items.push({ label: '$(folder-library) Checkout in New Worktree…', id: 'worktree' });
   if (b.current) items.push({ label: '$(arrow-up) Push…', id: 'push' });
   if (!b.current && !b.remote && b.upstream) items.push({ label: `$(arrow-down) Update from ${b.upstream}`, id: 'update' });
+  if (divergedFromUpstream(b)) {
+    items.push({ label: `$(cloud-download) Drop Local and Take ${q(b.upstream)}…`, description: `↑${b.ahead} ↓${b.behind}: instead of a pull that may conflict`, id: 'takeUpstream' });
+  }
   if (!b.remote) items.push({ label: '$(edit) Rename…', id: 'rename' });
   items.push({ label: '$(copy) Copy Branch Name', id: 'copy' });
   if (!b.current) items.push({ label: '$(trash) Delete', id: 'delete' });
@@ -330,6 +490,7 @@ async function runBranchAction(m, b, id) {
     case 'worktree': return newWorktree(m, b);
     case 'push': return push(m);
     case 'update': return updateBranch(m, b);
+    case 'takeUpstream': return takeUpstream(m, b);
     case 'rename': return renameBranch(m, b);
     case 'copy':
       await vscode.env.clipboard.writeText(b.name);
@@ -364,6 +525,7 @@ async function branchesPopup(m) {
     sep(''),
     { label: '$(add) New Branch…', id: 'new' },
     { label: '$(tag) Checkout Tag or Revision…', id: 'revision' },
+    { label: '$(history) Recent Branches…', id: 'recent' },
     sep('Local'),
     ...sorted(m.branches.filter((b) => !b.remote)).map(branchItem),
     sep('Remote'),
@@ -380,6 +542,7 @@ async function branchesPopup(m) {
       case 'push': return push(m);
       case 'new': return newBranch(m);
       case 'revision': return checkoutRevision(m);
+      case 'recent': return vscode.commands.executeCommand('gitTools.switchRecentBranch');
     }
   });
   qp.onDidHide(() => qp.dispose());
@@ -620,11 +783,20 @@ async function resolveConflicts(m, openMergeTool) {
   const side = (ch) => ({ D: 'deleted', A: 'added' }[ch] || 'modified');
   const yours = m.status.state === 'rebasing' ? 'upstream' : 'yours';
   const theirs = m.status.state === 'rebasing' ? 'your commit' : 'theirs';
-  const pick = /** @type {any} */ (await vscode.window.showQuickPick(conflicts.map((c) => {
-    const code = c.conflictCode || 'UU';
-    return { label: `$(warning) ${c.path}`, description: `${yours}: ${side(code[0])} · ${theirs}: ${side(code[1])}`, change: c };
-  }), { title: `Conflicts (${conflicts.length})` }));
+  // Conflicts of a pull: one more way out, the remote branch as it is.
+  const pull = await m.repo.pullInProgress().catch(() => null);
+  const pick = /** @type {any} */ (await vscode.window.showQuickPick([
+    ...conflicts.map((c) => {
+      const code = c.conflictCode || 'UU';
+      return { label: `$(warning) ${c.path}`, description: `${yours}: ${side(code[0])} · ${theirs}: ${side(code[1])}`, change: c };
+    }),
+    ...(pull ? [
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      { label: `$(cloud-download) Abort and Take ${pull.upstream}…`, description: `drop the local commits of ${pull.branch}, keep uncommitted changes`, take: pull },
+    ] : []),
+  ], { title: `Conflicts (${conflicts.length})` }));
   if (!pick) return;
+  if (pick.take) return takeRemote(m, pick.take.branch, pick.take.upstream, m.status.state);
   const c = pick.change;
   const canMerge = !(c.conflictCode || '').includes('D');
   const action = /** @type {any} */ (await vscode.window.showQuickPick([
@@ -667,8 +839,20 @@ async function commitAction(m, action, commits) {
   const short = c.hash.slice(0, 8);
   switch (action) {
     case 'copy':
-      await vscode.env.clipboard.writeText(commits.map((x) => x.hash).join(' '));
+      await vscode.env.clipboard.writeText(commitCopyText('full', commits));
       return vscode.window.setStatusBarMessage('Revision number copied', 3000);
+    case 'copyShort':
+    case 'copySubject':
+    case 'copyShortSubject':
+    case 'copyMessage': {
+      const kind = /** @type {import('../domain/logic/quickActions').CopyKind} */ (
+        { copyShort: 'short', copySubject: 'subject', copyShortSubject: 'shortSubject', copyMessage: 'message' }[action]);
+      const bodies = kind === 'message'
+        ? new Map(await Promise.all(commits.map(async (x) => /** @type {[string, string]} */ ([x.hash, await m.repo.commitBody(x.hash)]))))
+        : undefined;
+      await vscode.env.clipboard.writeText(commitCopyText(kind, commits, bodies));
+      return vscode.window.setStatusBarMessage(`$(check) Copied ${commits.length === 1 ? short : `${commits.length} commits`}`, 3000);
+    }
     case 'cherryPick':
       await m.run(commits.length > 1 ? `Cherry-pick ${commits.length} commits` : `Cherry-pick ${short}`, async () => {
         for (const x of [...commits].reverse()) {
@@ -711,7 +895,8 @@ async function commitAction(m, action, commits) {
       const current = await m.repo.lastCommitMessage();
       const msg = await vscode.window.showInputBox({ title: 'Edit Commit Message', value: current, validateInput: (v) => (v.trim() ? null : 'Message cannot be empty') });
       if (!msg || msg.trim() === current) return;
-      return m.run('Edit commit message', () => m.repo.commit({ message: msg.trim(), paths: [], amend: true }), { success: 'Commit message updated' });
+      return m.run('Edit commit message', () => m.repo.commit({ message: msg.trim(), paths: [], amend: true, sign: signChoice(m) }),
+        { success: 'Commit message updated' });
     }
     case 'branch':
       return newBranch(m, c.hash, short);
@@ -720,7 +905,10 @@ async function commitAction(m, action, commits) {
       if (!name) return;
       const message = await vscode.window.showInputBox({ title: `Tag ${name}`, prompt: 'Message (optional, creates an annotated tag)' });
       if (message === undefined) return;
-      return m.run(`Create tag ${name}`, () => m.repo.createTag(name.trim(), c.hash, message.trim()), { success: `Tag ${name} created` });
+      const sign = await askSignTag(m, name.trim(), !!message.trim());
+      if (sign === undefined) return;
+      return m.run(`Create tag ${name}`, () => m.repo.createTag(name.trim(), c.hash, message.trim(), sign),
+        { success: `${sign ? 'Signed tag' : 'Tag'} ${name} created` });
     }
   }
 }
@@ -793,7 +981,7 @@ async function addToGitignore(m, changes) {
 }
 
 module.exports = {
-  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, mergeIntoCurrent, rebaseOnto,
+  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, deleteBranches, takeRemote, takeUpstream, takeUpstreamTarget, takeCurrentUpstream, mergeIntoCurrent, rebaseOnto,
   checkoutAndRebase, compareWithCurrent, compareCommits, updateBranch, branchActions, runBranchAction, branchesPopup, checkoutRevision,
   push, update, fetch, manageRemotes, stash, stashApply, stashDrop, stashBranch, stashShowFiles, resolveConflicts,
   commitAction, rollback, deleteUntracked, addToGitignore, addToVcs, unversion,

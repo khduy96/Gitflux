@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../domain/entities/git_models.dart';
+import '../../../domain/logic/branch_divergence.dart';
 import '../../state/repo_controller.dart';
 import '../actions.dart';
 import '../common.dart';
@@ -50,6 +51,10 @@ Future<String?> pickBranchAction(
     if (!b.isRemote && isCurrent) menuItem('push', 'Push…', icon: Icons.upload),
     if (!b.isRemote && b.upstream != null && !isCurrent)
       menuItem('update', 'Update (fast-forward from ${b.upstream})', icon: Icons.download),
+    // Local and upstream both moved on: instead of a pull that may conflict.
+    if (divergedFromUpstream(b))
+      menuItem('takeUpstream', 'Drop Local and Take ${q(b.upstream!)}… (↑${b.ahead} ↓${b.behind})',
+          icon: Icons.cloud_download_outlined),
     if (!b.isRemote) menuItem('rename', 'Rename…', icon: Icons.edit_outlined),
     menuItem('copy', 'Copy Branch Name', icon: Icons.copy),
     menuItem('delete', 'Delete', icon: Icons.delete_outline, enabled: !isCurrent, color: isCurrent ? null : AppColors.error),
@@ -90,6 +95,8 @@ Future<void> runBranchAction(
         final slash = up.indexOf('/');
         await ctrl.repo.fetchInto(up.substring(0, slash), up.substring(slash + 1), b.name);
       }, success: '${b.name} updated');
+    case 'takeUpstream':
+      await takeRemoteAction(context, ctrl, b.name, b.upstream!);
     case 'rename':
       await renameBranchDialog(context, ctrl, b);
     case 'copy':

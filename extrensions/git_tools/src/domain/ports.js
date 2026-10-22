@@ -63,8 +63,10 @@
  * @property {(paths?: string[]) => Promise<any>} syncSubmodules
  * @property {(url: string, rel: string) => Promise<any>} addSubmodule
  *
- * @property {(o: {message: string, paths: string[], amend?: boolean, signOff?: boolean, partial?: boolean}) => Promise<void>} commit
- * @property {(o: {message: string, fullPaths: string[], partial: {path: string, content: string}[], amend?: boolean, signOff?: boolean}) => Promise<void>} commitSelected
+ * @property {(o: {message: string, paths: string[], amend?: boolean, signOff?: boolean, partial?: boolean, sign?: boolean|null}) => Promise<void>} commit
+ *   sign: -S / --no-gpg-sign (null: commit.gpgsign decides).
+ * @property {(o: {message: string, fullPaths: string[], partial: {path: string, content: string}[], amend?: boolean, signOff?: boolean,
+ *   sign?: boolean|null}) => Promise<void>} commitSelected
  * @property {(paths: string[]) => Promise<any>} add Starts tracking files.
  * @property {(paths: string[]) => Promise<any>} untrack Stops tracking files, keeping them on disk.
  * @property {(changes: FileChange[], hasHead: boolean, deleteAdded: boolean) => Promise<void>} rollback
@@ -103,9 +105,19 @@
  * @property {() => Promise<any>} bisectReset Back to the branch the session started from.
  * @property {(command: string) => Promise<{code: number, output: string}>} bisectRun git bisect run (output streamed to the log).
  *
- * @property {(rel: string, contents?: string) => Promise<import('./entities').Blame>} blame
- *   git blame --porcelain of the committed file, or of `contents` (unsaved editor) with --contents -.
- * @property {(state: import('./entities').RepoState) => Promise<any>} continueOperation
+ * @property {(rel: string, contents?: string, lines?: {start: number, end: number}) => Promise<import('./entities').Blame>} blame
+ *   git blame --porcelain of the committed file, or of `contents` (unsaved editor) with --contents -; `lines` limits it (-L).
+ *
+ * @property {() => Promise<{name: string|null, hash: string}|null>} previousCheckout
+ *   `@{-1}`: the branch checked out before (name null when it was a detached HEAD).
+ * @property {(message: string, exclude?: string[]) => Promise<void>} wipCommit
+ *   Commits everything (untracked too) but `exclude`, no hooks, no signing.
+ * @property {() => Promise<boolean>} headPushed HEAD is already on its upstream.
+ * @property {(rel: string, start: number, end: number, limit?: number) => Promise<import('./logic/quickActions').LineHistoryEntry[]>} lineHistory
+ *   git log -L of lines start…end (1-based) of the file at HEAD.
+ * @property {(base: string) => Promise<string[]>} mergedBranches Local branches merged into `base`.
+ * @property {(state: import('./entities').RepoState, sign?: boolean|null) => Promise<any>} continueOperation
+ *   sign: -S / --no-gpg-sign for the commit that concludes a merge.
  * @property {(state: import('./entities').RepoState) => Promise<any>} abortOperation
  * @property {() => Promise<any>} skipRebaseCommit
  *
@@ -118,7 +130,8 @@
  * @property {(base: string|null) => Promise<number>} commitsOnUpstream Commits of base..HEAD already on @{u}.
  * @property {(o: {base: string|null, rebaseMerges: boolean}) => Promise<string>} rebaseTodoPreview
  *   The todo git generates for rebase -i, leaving the repository untouched.
- * @property {(o: {base: string|null, rebaseMerges: boolean, todo: string, messages: Map<string, string>}) => Promise<{stopped: boolean, output: string}>} runRebaseTodo
+ * @property {(o: {base: string|null, rebaseMerges: boolean, todo: string, messages: Map<string, string>, sign?: boolean|null}) => Promise<{stopped: boolean, output: string}>} runRebaseTodo
+ *   sign: --gpg-sign / --no-gpg-sign for the rewritten commits.
  * @property {() => Promise<import('./entities').RebaseProgress|null>} rebaseProgress
  *
  * @property {() => Promise<any>} fetchAll
@@ -134,7 +147,17 @@
  * @property {(c: Commit) => Promise<any>} revert
  * @property {(hash: string, mode: import('./entities').ResetMode) => Promise<any>} reset
  * @property {() => Promise<any>} undoLastCommit
- * @property {(name: string, hash: string, message?: string) => Promise<any>} createTag
+ * @property {(name: string, hash: string, message?: string, sign?: boolean|null) => Promise<any>} createTag
+ *   Annotated when there is a message; sign: -s (signed annotated tag) / --no-sign / null (tag.gpgsign).
+ *
+ * @property {(scope?: 'local'|'global') => Promise<import('./entities').SigningConfig>} signingConfig
+ *   Effective settings, or those of one config file.
+ * @property {(key: string, value: string|null, scope: 'local'|'global') => Promise<void>} setConfig Null removes the key.
+ * @property {(o?: {format?: import('./entities').SigningFormat, key?: string|null}) => Promise<{ok: boolean, output: string}>} testSigning
+ *   Signs a throwaway commit object (no ref); output: git's error when it failed.
+ * @property {(hashes: string[]) => Promise<Map<string, import('./entities').Signature>>} signatures %G? and co. of these commits only.
+ * @property {(name: string) => Promise<{name: string, signed: boolean, signature: import('./entities').Signature|null,
+ *   output: string}|null>} verifyTag git tag -v; null for a lightweight tag.
  * @property {(name: string) => Promise<any>} deleteTag
  *
  * @property {(o?: {message?: string, includeUntracked?: boolean, keepIndex?: boolean}) => Promise<any>} stash
@@ -175,12 +198,45 @@
  * @property {(id: string, o: {files: ShelfFile[], patch: Buffer}) => Promise<void>} update
  * @property {(id: string) => Promise<void>} remove Deletes the folder and the ref.
  *
+ * @typedef {object} ChangelistStore Changelists of one worktree (changelists.json, format shared with the Flutter app).
+ * @property {() => Promise<import('./entities').ChangelistsData>} read
+ *   Only the default list when there is no file yet; throws when the file cannot be read as changelists.
+ * @property {(data: import('./entities').ChangelistsData) => Promise<void>} write Atomic (temporary file, then rename).
+ *
  * @typedef {object} GitService Git operations not bound to an opened repository.
  * @property {(dir: string) => Promise<string|null>} findRoot Top level of the repository containing `dir`.
  * @property {(root: string, o?: {log?: GitLog}) => GitRepository} open
  * @property {(repo: GitRepository) => ShelfStore} shelfStore Shelves of a repository opened by open().
+ * @property {() => SigningKeys} signingKeys Keys offered by the Signing Settings dialog.
+ * @property {(repo: GitRepository) => ChangelistStore} changelistStore Changelists of a repository opened by open().
  * @property {(dir: string, depth: number) => string[]} scan Folders below `dir` (up to `depth` levels) that hold a repository.
  * @property {(dir: string) => boolean} isRepository
+ * @property {(repo: GitRepository) => GitLfs} lfs Git LFS commands of a repository opened by open().
+ *
+ * @typedef {object} GitLfs Git LFS commands of one repository.
+ * @property {() => Promise<string|null>} version `git lfs version`, null when git-lfs is missing (cached per session).
+ * @property {() => Promise<boolean>} available
+ * @property {(paths: string[]) => Promise<Set<string>>} lfsPaths Paths with filter=lfs (git check-attr).
+ * @property {(ref?: string) => Promise<import('./logic/lfs').LfsFile[]>} lsFiles
+ * @property {() => Promise<import('./entities').LfsPattern[]>} trackedPatterns
+ * @property {(pattern: string, o?: {filename?: boolean}) => Promise<any>} track
+ * @property {(p: import('./entities').LfsPattern|string) => Promise<void>} untrack
+ * @property {() => Promise<any>} pull
+ * @property {() => Promise<any>} fetch
+ * @property {(dryRun: boolean) => Promise<string[]>} prune Output lines (--dry-run --verbose when dryRun).
+ * @property {() => Promise<import('./entities').LfsLock[]|null>} locks Null when the remote has no lock support (or no answer).
+ * @property {(rel: string) => Promise<any>} lock
+ * @property {(rel: string, force?: boolean) => Promise<any>} unlock
+ * @property {(rev: string, rel: string) => Promise<import('./entities').LfsPointer|null>} pointerAt '' = index.
+ * @property {(rel: string) => Promise<import('./entities').LfsPointer|null>} workingPointer
+ * @property {(oid: string) => Promise<string|null>} objectFile Local copy of an object, null when not downloaded.
+ *
+ * @typedef {object} SigningKeys Keys of this machine that git can sign with (never changes anything).
+ * @property {(program?: string|null) => Promise<import('./logic/signing').GpgKey[]>} gpgKeys
+ *   `gpg --list-secret-keys --with-colons` (gpg.program, or git's bundled gpg); throws when gpg cannot run.
+ * @property {() => Promise<{path: string, privatePath: string|null, key: import('./logic/signing').SshKey}[]>} sshKeyFiles
+ *   `~/.ssh/*.pub`, with the private key file next to it when there is one.
+ * @property {() => Promise<import('./logic/signing').SshKey[]>} sshAgentKeys `ssh-add -L` ([] without an agent).
  *
  * @typedef {object} CommitMessageAi
  * @property {(req: import('./prompt').CommitRequest, onText: (text: string) => void) => Promise<string>} generate

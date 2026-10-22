@@ -205,12 +205,15 @@ class _BranchesPopupState extends State<_BranchesPopup> {
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(b.name,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: b.isCurrent ? FontWeight.w600 : null,
-                        )),
+                    child: HoverCopy(
+                      text: b.name,
+                      child: Text(b.name,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: b.isCurrent ? FontWeight.w600 : null,
+                          )),
+                    ),
                   ),
                   if (b.ahead > 0)
                     Text('↑${b.ahead} ', style: const TextStyle(fontSize: 12, color: AppColors.added)),
