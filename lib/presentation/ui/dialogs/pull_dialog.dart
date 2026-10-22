@@ -84,10 +84,7 @@ class _PullDialogState extends State<_PullDialog> {
       },
       success: 'Updated from $_remote/$branch${withSubmodules ? ' (submodules updated)' : ''}',
     );
-    if (ctrl.status.value.conflicts.isNotEmpty) {
-      ctrl.notify(AppNotification('Update finished with conflicts',
-          details: 'Resolve the conflicts in the Commit panel.', isError: true));
-    }
+    await ctrl.notifyPullConflicts();
   }
 
   @override

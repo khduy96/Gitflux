@@ -1295,6 +1295,46 @@ class GitCliRepository implements GitRepository {
       git.run(['fetch', remote, '$remoteBranch:$localBranch'], log: true);
 
   @override
+  Future<void> fetchBranch(String remote, String branch) =>
+      git.run(['fetch', '--progress', remote, '+refs/heads/$branch:refs/remotes/$remote/$branch'], log: true);
+
+  @override
+  Future<void> checkoutFrom(String name, String ref) async {
+    await git.run(['checkout', '-B', name, ref], log: true);
+    await git.run(['branch', '--set-upstream-to=$ref', name], log: true);
+  }
+
+  @override
+  Future<({String branch, String upstream})?> pullInProgress() async {
+    Future<String> rev(String ref) async {
+      final r = await git.runRaw(['rev-parse', '--verify', '--quiet', ref]);
+      return r.exitCode == 0 ? r.stdout.trim() : '';
+    }
+
+    var branch = '';
+    var target = await rev('MERGE_HEAD');
+    if (target.isNotEmpty) {
+      final r = await git.runRaw(['symbolic-ref', '--short', '--quiet', 'HEAD']);
+      branch = r.exitCode == 0 ? r.stdout.trim() : '';
+    } else {
+      for (final name in ['rebase-merge', 'rebase-apply']) {
+        final dir = p.normalize(p.join(await gitDir(), name));
+        final head = File(p.join(dir, 'head-name'));
+        final onto = File(p.join(dir, 'onto'));
+        if (!head.existsSync() || !onto.existsSync()) continue;
+        branch = head.readAsStringSync().trim().replaceFirst('refs/heads/', '');
+        target = onto.readAsStringSync().trim();
+        break;
+      }
+    }
+    if (branch.isEmpty || target.isEmpty) return null;
+    final up = await git.runRaw(['rev-parse', '--abbrev-ref', '$branch@{upstream}']);
+    final upstream = up.exitCode == 0 ? up.stdout.trim() : '';
+    if (upstream.isEmpty || await rev(upstream) != target) return null;
+    return (branch: branch, upstream: upstream);
+  }
+
+  @override
   Future<void> pull({
     required String remote,
     required String branch,

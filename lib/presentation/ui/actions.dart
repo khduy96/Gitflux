@@ -164,6 +164,45 @@ Future<void> smartCheckout(
   }
 }
 
+/// "Drop Local and Take `<upstream>`": instead of a pull that conflicts,
+/// [branch] is deleted and checked out again from [ref], after a
+/// confirmation listing the local commits dropped. [abort]: the merge /
+/// rebase of a pull stopped on conflicts, aborted first.
+Future<void> takeRemoteAction(
+  BuildContext context,
+  RepoController ctrl,
+  String branch,
+  String ref, {
+  RepoState? abort,
+}) async {
+  if (abort == null && ctrl.status.value.state != RepoState.normal) {
+    ctrl.notify(AppNotification('Finish or abort the merge / rebase in progress first'));
+    return;
+  }
+  final lost = await ctrl.previewTakeRemote(branch, ref);
+  if (lost == null || !context.mounted) return;
+  final op = abort == RepoState.rebasing ? 'rebase' : 'merge';
+  final n = lost.length;
+  final ok = await showConfirm(
+    context,
+    title: abort != null ? 'Abort the $op and take $ref' : 'Drop local $branch and take $ref',
+    message: [
+      '$branch is deleted and checked out again from $ref.',
+      if (abort != null) 'The $op of the pull is aborted first: its conflicts are dropped.',
+      if (n == 0)
+        'No commit is lost: $ref has all of $branch.'
+      else
+        '$n local commit${n == 1 ? '' : 's'} not on $ref will be dropped (git\'s reflog keeps them for a while):\n'
+            '${lost.take(8).map((c) => '  ${c.shortHash}  ${c.subject}').join('\n')}${n > 8 ? '\n  …' : ''}',
+      'Uncommitted changes are kept: stashed, then put back on the new branch (left in the stash if they do not '
+          'apply).',
+    ].join('\n\n'),
+    confirmLabel: 'Take $ref',
+    destructive: true,
+  );
+  if (ok) await ctrl.takeRemote(branch, ref, abort: abort);
+}
+
 Future<void> checkoutBranch(
     BuildContext context, RepoController ctrl, Branch b) async {
   if (b.isCurrent) return;

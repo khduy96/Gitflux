@@ -37,6 +37,7 @@ import '../../domain/usecases/interactive_rebase.dart';
 import '../../domain/usecases/merge_branch.dart';
 import '../../domain/usecases/patches.dart';
 import '../../domain/usecases/shelve_changes.dart';
+import '../../domain/usecases/take_remote_branch.dart';
 import 'app_settings.dart';
 import 'lfs_state.dart';
 import 'log_filter.dart';
@@ -60,6 +61,10 @@ class AppNotification {
   final String? actionLabel;
   final VoidCallback? onAction;
 }
+
+/// "Drop Local and Take `<upstream>`" to confirm: [abort] is the merge /
+/// rebase of a pull stopped on conflicts.
+typedef TakeRemoteRequest = ({String branch, String upstream, RepoState? abort});
 
 /// A tab in the central editor area.
 sealed class EditorTab {
@@ -142,6 +147,7 @@ class RepoController {
     _applyPatch = ApplyPatch(repo);
     _merge = MergeBranch(repo);
     _clean = CleanWorkingTree(repo);
+    _takeRemote = TakeRemoteBranch(repo);
     _bisect = BisectCommits(repo);
     _changelists = ManageChangelists(git.changelists(repo));
     final session = _sessionLogFilters[repo.root];
@@ -162,6 +168,7 @@ class RepoController {
   late final ApplyPatch _applyPatch;
   late final MergeBranch _merge;
   late final CleanWorkingTree _clean;
+  late final TakeRemoteBranch _takeRemote;
   late final BisectCommits _bisect;
   late final ManageChangelists _changelists;
 
@@ -1219,6 +1226,54 @@ class RepoController {
   final signingSettingsRequest = ValueNotifier<int>(0);
 
   void openSigningSettings() => signingSettingsRequest.value++;
+
+  // ---------------------------------------------------------------- take remote
+
+  /// "Drop Local and Take `<upstream>`" asked where there is no widget to
+  /// confirm it (the notification of a pull): the workspace confirms and
+  /// runs it.
+  final takeRemoteRequest = ValueNotifier<TakeRemoteRequest?>(null);
+
+  /// Fetches [ref] and returns the commits of [branch] that taking it drops;
+  /// null when the fetch failed (notified).
+  Future<List<Commit>?> previewTakeRemote(String branch, String ref) async {
+    List<Commit>? lost;
+    final ok = await run('Fetch $ref', () async => lost = await _takeRemote.preview(branch, ref), refresh: false);
+    return ok ? lost : null;
+  }
+
+  /// Checks [branch] out again from [ref], aborting [abort] (a pull stopped
+  /// on conflicts) first. Uncommitted changes go along; when they do not
+  /// apply on [ref] they stay in the stash, which is notified.
+  Future<void> takeRemote(String branch, String ref, {RepoState? abort}) async {
+    var restored = true;
+    final ok = await run('Take $ref', () async => restored = await _takeRemote(branch, ref, abort: abort),
+        success: '$branch taken from $ref');
+    if (ok && !restored) {
+      notify(AppNotification('$branch was taken from $ref, but your uncommitted changes did not apply cleanly',
+          details: 'They are kept in the stash (stash@{0}), maybe partly applied. Resolve the conflicts, then drop '
+              'that stash.',
+          isError: true));
+    }
+  }
+
+  /// After a pull that stopped on conflicts: the notification offers to take
+  /// the upstream instead of resolving them.
+  Future<void> notifyPullConflicts() async {
+    if (status.value.conflicts.isEmpty) return;
+    final pull = await repo.pullInProgress();
+    final state = status.value.state;
+    notify(AppNotification('Update finished with conflicts',
+        details: pull == null
+            ? 'Resolve the conflicts in the Commit panel.'
+            : 'Resolve the conflicts in the Commit panel, or drop the local commits of ${pull.branch} and take '
+                '${pull.upstream}.',
+        isError: true,
+        actionLabel: pull == null ? null : 'Take ${pull.upstream}…',
+        onAction: pull == null
+            ? null
+            : () => takeRemoteRequest.value = (branch: pull.branch, upstream: pull.upstream, abort: state)));
+  }
 
   /// Writes the Signing Settings, then re-reads the configuration ("Sign
   /// commit" goes back to the new default) and forgets the verified

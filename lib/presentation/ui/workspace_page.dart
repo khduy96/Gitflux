@@ -73,6 +73,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
     ctrl.bottomTab.addListener(_onBottomTab);
     ctrl.openRepoRequest.addListener(_onOpenRepoRequest);
     ctrl.signingSettingsRequest.addListener(_openSigningSettings);
+    ctrl.takeRemoteRequest.addListener(_onTakeRemoteRequest);
     _lifecycle = AppLifecycleListener(onResume: () => ctrl.refreshAll());
   }
 
@@ -82,6 +83,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
     ctrl.bottomTab.removeListener(_onBottomTab);
     ctrl.openRepoRequest.removeListener(_onOpenRepoRequest);
     ctrl.signingSettingsRequest.removeListener(_openSigningSettings);
+    ctrl.takeRemoteRequest.removeListener(_onTakeRemoteRequest);
     _lifecycle.dispose();
     _messageFocus.dispose();
     _rootFocus.dispose();
@@ -103,6 +105,15 @@ class _WorkspacePageState extends State<WorkspacePage> {
   /// Requested by a signing failure ("Signing Settings…" action).
   void _openSigningSettings() {
     if (mounted) showSigningSettingsDialog(context, ctrl);
+  }
+
+  /// "Drop Local and Take `<upstream>`" from the notification of a pull or
+  /// the Conflicts dialog.
+  void _onTakeRemoteRequest() {
+    final r = ctrl.takeRemoteRequest.value;
+    if (r == null || !mounted) return;
+    ctrl.takeRemoteRequest.value = null;
+    takeRemoteAction(context, ctrl, r.branch, r.upstream, abort: r.abort);
   }
 
   void _onNotification() {

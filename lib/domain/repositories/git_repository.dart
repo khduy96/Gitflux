@@ -275,6 +275,19 @@ abstract interface class GitRepository {
   /// Fetches [remoteBranch] of [remote] directly into [localBranch]
   /// (fast-forward only).
   Future<void> fetchInto(String remote, String remoteBranch, String localBranch);
+
+  /// Fetches [branch] of [remote] into its remote-tracking branch.
+  Future<void> fetchBranch(String remote, String branch);
+
+  /// Checks the local branch [name] out again from [ref], tracking it, as if
+  /// deleted and recreated (`git checkout -B`): its commits not on [ref] are
+  /// dropped. The working tree must be clean.
+  Future<void> checkoutFrom(String name, String ref);
+
+  /// The pull of a branch from its upstream that stopped on conflicts: a
+  /// merge of the upstream (MERGE_HEAD is its tip) or a rebase of the branch
+  /// onto it. Null for any other merge or rebase.
+  Future<({String branch, String upstream})?> pullInProgress();
   Future<void> pull({required String remote, required String branch, bool rebase = false, bool ffOnly = false});
   Future<void> push({
     required String remote,
