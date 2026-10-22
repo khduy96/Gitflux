@@ -172,6 +172,61 @@ async function deleteBranch(m, b) {
   await m.refreshAll();
 }
 
+/**
+ * Deletes several local branches after one confirmation; the ones not fully
+ * merged are force deleted after a second one. The current branch is kept.
+ * @param {RepoModel} m @param {Branch[]} branches
+ */
+async function deleteBranches(m, branches) {
+  const kept = branches.filter((b) => b.current);
+  const list = branches.filter((b) => !b.current && !b.remote);
+  if (!list.length) {
+    if (kept.length) vscode.window.showInformationMessage(`${kept[0].name} is the current branch: it cannot be deleted.`);
+    return;
+  }
+  const names = (bs) => bs.slice(0, 15).map((b) => `  ${b.name}`).join('\n') + (bs.length > 15 ? `\n  … and ${bs.length - 15} more` : '');
+  const ok = await vscode.window.showWarningMessage(`Delete ${list.length} branch${list.length === 1 ? '' : 'es'}?`, {
+    modal: true,
+    detail: `${names(list)}${kept.length ? `\n\nNot deleted (current branch): ${kept.map((b) => b.name).join(', ')}` : ''}`,
+  }, 'Delete');
+  if (!ok) return;
+  const deleted = [];
+  const unmerged = [];
+  const failed = [];
+  await m.run(`Delete ${list.length} branches`, async () => {
+    for (const b of list) {
+      try {
+        await m.repo.deleteBranch(b.name);
+        deleted.push(b);
+      } catch (e) {
+        if (e instanceof GitError && e.stderr.includes('not fully merged')) unmerged.push(b);
+        else failed.push(`${b.name}: ${(e.stderr || e.message || '').trim().split('\n')[0]}`);
+      }
+    }
+  });
+  if (unmerged.length) {
+    const force = await vscode.window.showWarningMessage(
+      `${unmerged.length} branch${unmerged.length === 1 ? ' is' : 'es are'} not fully merged.`,
+      { modal: true, detail: `${names(unmerged)}\n\nDeleting ${unmerged.length === 1 ? 'it' : 'them'} may lose commits. Delete anyway?` },
+      'Force Delete');
+    if (force) {
+      await m.run(`Force delete ${unmerged.length} branches`, async () => {
+        for (const b of unmerged) {
+          try {
+            await m.repo.deleteBranch(b.name, true);
+            deleted.push(b);
+          } catch (e) {
+            failed.push(`${b.name}: ${(e.stderr || e.message || '').trim().split('\n')[0]}`);
+          }
+        }
+      });
+    }
+  }
+  if (failed.length) vscode.window.showErrorMessage(`Could not delete ${failed.length} branch${failed.length === 1 ? '' : 'es'}: ${failed.join('; ')}`);
+  if (deleted.length) vscode.window.setStatusBarMessage(`$(check) Deleted ${deleted.length} branch${deleted.length === 1 ? '' : 'es'}`, 4000);
+  await m.refreshAll();
+}
+
 /** @param {RepoModel} m */
 async function mergeIntoCurrent(m, ref) {
   await m.run(`Merge ${ref} into ${currentLabel(m)}`, () => m.repo.merge(ref),
@@ -798,7 +853,7 @@ async function addToGitignore(m, changes) {
 }
 
 module.exports = {
-  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, mergeIntoCurrent, rebaseOnto,
+  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, deleteBranches, mergeIntoCurrent, rebaseOnto,
   checkoutAndRebase, compareWithCurrent, compareCommits, updateBranch, branchActions, runBranchAction, branchesPopup, checkoutRevision,
   push, update, fetch, manageRemotes, stash, stashApply, stashDrop, stashBranch, stashShowFiles, resolveConflicts,
   commitAction, rollback, deleteUntracked, addToGitignore, addToVcs, unversion,

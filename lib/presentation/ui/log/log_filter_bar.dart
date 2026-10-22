@@ -185,12 +185,18 @@ class _LogFilterBarState extends State<LogFilterBar> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Builder(
-                      builder: (chip) => LogFilterChip(
-                        label: 'Branch: ${f.branch ?? 'All'}',
-                        active: f.branch != null,
-                        onClear: () => ctrl.setLogFilter(f.copyWith(branch: () => null)),
-                        onTap: (_) => _branchPicker(chip),
+                    HoverCopy(
+                      text: f.branch == null || f.branch == 'HEAD'
+                          ? null
+                          : f.branch!.replaceFirst(RegExp('^refs/tags/'), ''),
+                      what: f.branch?.startsWith('refs/tags/') ?? false ? 'tag name' : 'branch name',
+                      child: Builder(
+                        builder: (chip) => LogFilterChip(
+                          label: 'Branch: ${f.branch ?? 'All'}',
+                          active: f.branch != null,
+                          onClear: () => ctrl.setLogFilter(f.copyWith(branch: () => null)),
+                          onTap: (_) => _branchPicker(chip),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 6),

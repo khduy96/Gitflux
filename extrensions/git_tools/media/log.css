@@ -133,7 +133,6 @@
   border: 1px solid var(--vscode-editorHoverWidget-border, var(--gt-border));
   border-radius: 4px;
   box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0,0,0,.35));
-  pointer-events: none;
 }
 .crow .subject { flex: 1; min-width: 60px; }
 .crow .author { width: 140px; flex-shrink: 0; padding-left: 8px; color: var(--gt-muted); }

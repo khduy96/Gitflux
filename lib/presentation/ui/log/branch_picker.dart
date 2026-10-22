@@ -282,6 +282,11 @@ class _BranchPickerState extends State<BranchPicker> {
         ],
       ),
     );
-    return b == null ? row : Tooltip(message: b.name, waitDuration: const Duration(milliseconds: 600), child: row);
+    return b == null
+        ? row
+        : HoverCopy(
+            text: b.name,
+            child: Tooltip(message: b.name, waitDuration: const Duration(milliseconds: 600), child: row),
+          );
   }
 }

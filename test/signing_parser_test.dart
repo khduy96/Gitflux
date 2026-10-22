@@ -259,6 +259,16 @@ not a key
     expect(isSigningFailure("error: pathspec 'x' did not match any file(s) known to git"), isFalse);
   });
 
+  test('only commands that can sign offer the Signing Settings', () {
+    expect(isSigningCommand(['commit', '-F', 'm', '-S']), isTrue);
+    expect(isSigningCommand(['-c', 'user.signingkey=x', 'commit-tree', '-S', 'HEAD^{tree}']), isTrue);
+    expect(isSigningCommand(['tag', '-s', 'v1']), isTrue);
+    expect(isSigningCommand(['merge', '--no-ff', 'b']), isTrue);
+    expect(isSigningCommand(['push', 'origin', 'main']), isFalse);
+    expect(isSigningCommand(['-c', 'core.quotepath=false', 'fetch']), isFalse);
+    expect(isSigningCommand(const []), isFalse);
+  });
+
   test('rebase todo amends carry the signing choice', () {
     String amend(bool? sign) => buildTodo([_entry('a', RebaseAction.reword, 'New')], stateDir: '/s', sign: sign)
         .todo

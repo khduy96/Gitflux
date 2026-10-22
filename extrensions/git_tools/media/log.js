@@ -476,6 +476,7 @@
       `div.pitem${r.kind === 'folder' ? '.folder' : ''}${i === picker.active ? '.active' : ''}${r.kind === 'branch' && r.key === current ? '.current' : ''}`,
       {
         title: r.kind === 'branch' && r.key ? r.key : null,
+        'data-copy': r.kind === 'branch' && r.key && r.key !== 'HEAD' ? r.key : null,
         style: { paddingLeft: `${4 + r.depth * 14}px` },
         onmousedown: (e) => e.preventDefault(), // keeps the focus in the search box
         onclick: () => {
@@ -496,6 +497,12 @@
     const f = data.filter || {};
     branchLabel.textContent = f.branch || 'All';
     branchBtn.title = f.branch ? `Branch: ${f.branch}` : 'All branches';
+    if (f.branch && f.branch !== 'HEAD') {
+      branchBtn.dataset.copy = f.branch.replace(/^refs\/tags\//, '');
+      branchBtn.dataset.copyWhat = f.branch.startsWith('refs/tags/') ? 'tag name' : 'branch name';
+    } else {
+      delete branchBtn.dataset.copy;
+    }
     if (picker) {
       picker.rows = pickerRows(picker.input.value);
       renderPicker();
@@ -631,7 +638,11 @@
 
   function refChip(r) {
     const icon = r.kind === 'head' ? '◉' : r.kind === 'tag' ? '🏷' : '⑂';
-    return h(`span.ref.${r.kind}`, { title: r.name }, r.kind === 'head' ? icon : `${icon} ${r.name}`);
+    return h(`span.ref.${r.kind}`, {
+      title: r.name,
+      'data-copy': r.kind === 'head' ? null : r.name,
+      'data-copy-what': r.kind === 'tag' ? 'tag name' : null,
+    }, r.kind === 'head' ? icon : `${icon} ${r.name}`);
   }
 
   /**
@@ -697,14 +708,18 @@
     return h('span.refs', {
       'data-hash': c.hash,
       onmouseenter: (e) => showRefsPopup(e.currentTarget, c),
-      onmouseleave: hideRefsPopup,
     }, groupChip(shown), more ? h('span.ref.more', { text: `+${more}` }) : null);
   }
 
   /** Name of a group, then a screen for a local branch and a cloud for remote branches of that name. */
   function groupChip(g) {
     const kind = g.head ? 'head' : g.tag ? 'tag' : g.local ? 'local' : 'remote';
-    return h(`span.ref.group.${kind}`, null,
+    // Copied: the local branch, else the remote one (origin/x), or the tag.
+    const remote = g.refs.find((r) => r.kind === 'remote');
+    return h(`span.ref.group.${kind}`, {
+      'data-copy': g.local || g.tag ? g.name : remote ? remote.name : null,
+      'data-copy-what': g.tag ? 'tag name' : null,
+    },
       h('span', { text: g.head ? '◉' : g.tag ? '🏷' : '⑂' }),
       h('span.rname.ellipsis', { text: g.name }),
       g.local ? refIcon('local') : null,
@@ -740,9 +755,10 @@
   function placeRefsPopup(anchor) {
     const a = anchor.getBoundingClientRect();
     const r = refsPopup.el.getBoundingClientRect();
-    const below = a.bottom + 4 + r.height <= window.innerHeight;
+    // Touching the refs, so that the mouse can go into it (to copy one of them).
+    const below = a.bottom + r.height <= window.innerHeight;
     refsPopup.el.style.left = `${Math.max(4, Math.min(a.left, window.innerWidth - r.width - 4))}px`;
-    refsPopup.el.style.top = `${below ? a.bottom + 4 : Math.max(4, a.top - r.height - 4)}px`;
+    refsPopup.el.style.top = `${below ? a.bottom - 1 : Math.max(4, a.top - r.height + 1)}px`;
   }
 
   function hideRefsPopup() {
@@ -759,9 +775,10 @@
     else hideRefsPopup();
   }
 
-  // The rebuilt refs get no mouseleave while the pointer stays: any move outside them closes the popup.
+  // Open while the mouse is over the refs of a row or over the popup itself.
+  // (A mousemove rather than mouseleave: rebuilt rows get no mouseleave.)
   document.addEventListener('mousemove', (e) => {
-    if (refsPopup && !(e.target instanceof Element && e.target.closest('.refs'))) hideRefsPopup();
+    if (refsPopup && !(e.target instanceof Element && e.target.closest('.refs, .refpop'))) hideRefsPopup();
   });
   document.addEventListener('mouseleave', hideRefsPopup);
 
@@ -869,7 +886,12 @@
       tagInfo(d),
       d.committer !== d.author ? h('div.meta.muted', { text: `committed by ${d.committer} on ${new Date(d.commitTime).toLocaleString()}` }) : null,
       d.parents.length ? h('div.meta.muted', { text: `${d.parents.length > 1 ? 'Parents' : 'Parent'}: ${d.parents.map((p) => p.slice(0, 8)).join(', ')}` }) : null,
-      h('div.meta.muted', { text: d.containedIn ? `In ${d.containedIn.length} branch${d.containedIn.length === 1 ? '' : 'es'}: ${d.containedIn.slice(0, 20).join(', ')}${d.containedIn.length > 20 ? ', …' : ''}` : 'Looking for branches…' }));
+      d.containedIn
+        ? h('div.meta.muted', null,
+          `In ${d.containedIn.length} branch${d.containedIn.length === 1 ? '' : 'es'}: `,
+          d.containedIn.slice(0, 20).map((b, i) => [i ? ', ' : '', h('span', { text: b, 'data-copy': b })]),
+          d.containedIn.length > 20 ? ', …' : '')
+        : h('div.meta.muted', { text: 'Looking for branches…' }));
     detailsEl.append(files, info);
   }
 

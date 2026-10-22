@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../domain/entities/git_models.dart';
-import '../../domain/entities/merge.dart';
 import '../../domain/entities/rebase.dart';
 import '../../domain/errors.dart';
 import '../../domain/logic/rebase_todo.dart';
@@ -358,7 +357,8 @@ String _current(RepoController ctrl) =>
 Future<void> mergeIntoCurrent(
     BuildContext context, RepoController ctrl, String ref) async {
   await ctrl.run('Merge $ref into ${_current(ctrl)}',
-      () => ctrl.repo.merge(ref, options: MergeOptions(sign: ctrl.signCommit.value)),
+      // Without the dialog the merge commit follows `commit.gpgsign`.
+      () => ctrl.repo.merge(ref),
       success: 'Merged $ref into ${_current(ctrl)}');
   _maybeShowConflicts(ctrl);
 }

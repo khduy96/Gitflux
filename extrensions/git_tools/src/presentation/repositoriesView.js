@@ -75,6 +75,7 @@ class RepositoriesViewProvider {
         name: m.name,
         relPath: parent ? path.relative(parent, m.root).replace(/\\/g, '/') : '',
         current: this.manager.current === m,
+        branch: s.branch,
         branchLabel: s.branch || (s.head ? `Detached ${s.head.slice(0, 8)}` : 'No commits'),
         upstream: s.upstream,
         ahead: s.ahead,

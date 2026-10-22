@@ -177,8 +177,29 @@
       if (message.value !== msg.text && (!messageFocused || msg.force)) message.value = msg.text;
     } else if (msg.type === 'focusMessage') {
       message.focus();
+    } else if (msg.type === 'expandAll') {
+      setAllCollapsed(!msg.expanded);
     }
   });
+
+  /** Expand All / Collapse All (view title): the groups and, by directory, every folder. */
+  function setAllCollapsed(value) {
+    collapsed.clear();
+    if (value && state) {
+      const walk = (g, node) => {
+        for (const d of node.dirs.values()) {
+          collapsed.add(`${g.key}:${d.path}`);
+          walk(g, d);
+        }
+      };
+      for (const g of groups()) {
+        collapsed.add(g.key);
+        if (state.groupBy === 'directory') walk(g, buildTree(g.files));
+      }
+    }
+    persist();
+    render();
+  }
 
   // ------------------------------------------------------------- render
 

@@ -736,7 +736,9 @@ class RepoController {
       if (success != null) notify(AppNotification(success));
       return true;
     } on GitException catch (e) {
-      notify(_signingFailure('$label failed', e.message));
+      notify(isSigningCommand(e.args)
+          ? _signingFailure('$label failed', e.message)
+          : AppNotification('$label failed', details: e.message, isError: true));
       return false;
     } on RebaseRejected catch (e) {
       notify(AppNotification(e.title, details: e.details, isError: true));

@@ -31,6 +31,12 @@ class RefGroup {
 
   /// HEAD alone, not on a branch.
   bool get isDetachedHead => isHead && !local && remotes.isEmpty && !isTag;
+
+  /// Name that designates the group: the local branch, else the first remote
+  /// branch (`origin/x`), or the tag; null for a detached HEAD.
+  String? get refName => local || isTag
+      ? name
+      : refs.where((r) => r.kind == RefKind.remoteBranch).firstOrNull?.name;
 }
 
 class _Branch {

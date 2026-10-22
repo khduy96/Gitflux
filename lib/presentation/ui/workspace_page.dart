@@ -447,9 +447,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 const Icon(Icons.call_split, size: 16, color: AppColors.textDim),
                 const SizedBox(width: 6),
-                Text(
-                  s.branch ?? (s.headHash != null ? 'Detached ${s.headHash!.substring(0, 8)}' : 'No commits'),
-                  style: const TextStyle(fontSize: 13),
+                HoverCopy(
+                  text: s.branch,
+                  child: Text(
+                    s.branch ?? (s.headHash != null ? 'Detached ${s.headHash!.substring(0, 8)}' : 'No commits'),
+                    style: const TextStyle(fontSize: 13),
+                  ),
                 ),
                 if (s.ahead > 0) ...[
                   const SizedBox(width: 6),
@@ -742,7 +745,10 @@ class _WorkspacePageState extends State<WorkspacePage> {
               child: Row(children: [
                 const Icon(Icons.call_split, size: 13, color: AppColors.textDim),
                 const SizedBox(width: 4),
-                Text(s.branch ?? 'detached', style: const TextStyle(fontSize: 12, color: AppColors.textDim)),
+                HoverCopy(
+                  text: s.branch,
+                  child: Text(s.branch ?? 'detached', style: const TextStyle(fontSize: 12, color: AppColors.textDim)),
+                ),
               ]),
             ),
           ]),

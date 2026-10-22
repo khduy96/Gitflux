@@ -2,7 +2,7 @@
   "name": "git-tools-as",
   "displayName": "Git Tools (Android Studio style)",
   "description": "Android Studio style Git tool window for VS Code: commit panel with checkboxes, log with branch graph, branches popup, push/pull dialogs, stashes, shelf, patches and AI commit messages (Claude / Gemini).",
-  "version": "0.4.8",
+  "version": "0.4.11",
   "publisher": "local",
   "license": "UNLICENSED",
   "private": true,
@@ -469,6 +469,11 @@
         "category": "Git Tools"
       },
       {
+        "command": "gitTools.branches.copySelected",
+        "title": "Copy Selected Branch Name",
+        "category": "Git Tools"
+      },
+      {
         "command": "gitTools.tag.checkout",
         "title": "Checkout Tag",
         "category": "Git Tools"
@@ -646,12 +651,50 @@
         "command": "gitTools.nestedRepo.register",
         "title": "Register Nested Repository as Submodule…",
         "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.commit.expandAll",
+        "title": "Expand All",
+        "category": "Git Tools",
+        "icon": "$(expand-all)"
+      },
+      {
+        "command": "gitTools.commit.collapseAll",
+        "title": "Collapse All",
+        "category": "Git Tools",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "gitTools.branches.expandAll",
+        "title": "Expand All",
+        "category": "Git Tools",
+        "icon": "$(expand-all)"
+      },
+      {
+        "command": "gitTools.branches.collapseAll",
+        "title": "Collapse All",
+        "category": "Git Tools",
+        "icon": "$(collapse-all)"
       }
     ],
     "submenus": [
       {
         "id": "gitTools.lfsMenu",
         "label": "LFS"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "gitTools.branches.copySelected",
+        "key": "ctrl+c",
+        "mac": "cmd+c",
+        "when": "focusedView == gitTools.branches"
+      },
+      {
+        "command": "gitTools.branch.delete",
+        "key": "delete",
+        "mac": "cmd+backspace",
+        "when": "focusedView == gitTools.branches && !inputFocus"
       }
     ],
     "menus": {
@@ -675,6 +718,16 @@
           "command": "gitTools.refresh",
           "when": "view == gitTools.commit",
           "group": "navigation@4"
+        },
+        {
+          "command": "gitTools.commit.expandAll",
+          "when": "view == gitTools.commit && !gitTools.commitExpanded",
+          "group": "navigation@6"
+        },
+        {
+          "command": "gitTools.commit.collapseAll",
+          "when": "view == gitTools.commit && gitTools.commitExpanded",
+          "group": "navigation@6"
         },
         {
           "command": "gitTools.commit.groupByDirectory",
@@ -805,6 +858,16 @@
           "command": "gitTools.refresh",
           "when": "view == gitTools.branches",
           "group": "navigation@3"
+        },
+        {
+          "command": "gitTools.branches.expandAll",
+          "when": "view == gitTools.branches && !gitTools.branchesExpanded",
+          "group": "navigation@4"
+        },
+        {
+          "command": "gitTools.branches.collapseAll",
+          "when": "view == gitTools.branches && gitTools.branchesExpanded",
+          "group": "navigation@4"
         },
         {
           "command": "gitTools.showReflog",
@@ -1247,6 +1310,10 @@
           "when": "false"
         },
         {
+          "command": "gitTools.branches.copySelected",
+          "when": "false"
+        },
+        {
           "command": "gitTools.tag.checkout",
           "when": "false"
         },
@@ -1401,6 +1468,22 @@
         {
           "command": "gitTools.commit.hideEmptyChangelists",
           "when": "gitTools.showEmptyChangelists"
+        },
+        {
+          "command": "gitTools.commit.expandAll",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.commit.collapseAll",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.branches.expandAll",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.branches.collapseAll",
+          "when": "false"
         }
       ],
       "editor/context": [

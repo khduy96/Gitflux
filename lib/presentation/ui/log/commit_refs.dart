@@ -59,6 +59,14 @@ class RefGroupChip extends StatelessWidget {
                 ? AppColors.localRef
                 : AppColors.remoteRef;
     final icon = g.isHead ? Icons.my_location : (g.isTag ? Icons.sell_outlined : Icons.call_split);
+    return HoverCopy(
+      text: g.refName,
+      what: g.isTag ? 'tag name' : 'branch name',
+      child: _chip(g, color, icon),
+    );
+  }
+
+  Widget _chip(RefGroup g, Color color, IconData icon) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
       decoration: BoxDecoration(

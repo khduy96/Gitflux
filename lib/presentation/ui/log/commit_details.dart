@@ -272,10 +272,12 @@ class _CommitDetailsPanelState extends State<CommitDetailsPanel> {
             if (_containedIn == null)
               const Text('Looking for branches…', style: label)
             else
-              Text(
-                'In ${_containedIn!.length} branch${_containedIn!.length == 1 ? '' : 'es'}: ${_containedIn!.take(20).join(', ')}${_containedIn!.length > 20 ? ', …' : ''}',
-                style: label,
-              ),
+              Wrap(children: [
+                Text('In ${_containedIn!.length} branch${_containedIn!.length == 1 ? '' : 'es'}: ', style: label),
+                for (final (i, b) in _containedIn!.take(20).indexed)
+                  HoverCopy(text: b, child: Text(i == 0 ? b : ', $b', style: label)),
+                if (_containedIn!.length > 20) const Text(', …', style: label),
+              ]),
           ],
         ),
       ),

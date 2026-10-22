@@ -44,7 +44,7 @@ async function activate(context) {
   const commitView = new CommitViewProvider(context, manager, ai);
   const logView = new LogViewProvider(context, manager);
   const branches = new BranchesTreeProvider(manager);
-  branches.view = vscode.window.createTreeView('gitTools.branches', { treeDataProvider: branches });
+  branches.view = vscode.window.createTreeView('gitTools.branches', { treeDataProvider: branches, canSelectMany: true });
   const statusBar = new BranchStatusBar(manager);
   registerWorktreeCommands(context, manager);
   registerBlame(context, manager, logView);
@@ -204,6 +204,10 @@ async function activate(context) {
   // Commit view grouping.
   regFree('gitTools.commit.groupByDirectory', () => commitView.setGroupBy('directory'));
   regFree('gitTools.commit.groupByNone', () => commitView.setGroupBy('none'));
+  regFree('gitTools.commit.expandAll', () => commitView.setAllExpanded(true));
+  regFree('gitTools.commit.collapseAll', () => commitView.setAllExpanded(false));
+  regFree('gitTools.branches.expandAll', () => branches.setAllExpanded(true));
+  regFree('gitTools.branches.collapseAll', () => branches.setAllExpanded(false));
   regFree('gitTools.selectRepository', async () => {
     const items = [...manager.models.values()].map((m) => ({ label: `$(repo) ${m.name}`, description: m.root, model: m }));
     const pick = /** @type {any} */ (await vscode.window.showQuickPick(
@@ -281,8 +285,24 @@ async function activate(context) {
   branchCmd('gitTools.branch.update', 'update');
   branchCmd('gitTools.branch.push', 'push');
   branchCmd('gitTools.branch.rename', 'rename');
-  branchCmd('gitTools.branch.delete', 'delete');
+  // Context menu: (clicked node, selected nodes); Delete key: nothing, the selection of the tree.
+  reg('gitTools.branch.delete', (m, node, nodes) => {
+    // Tags carry a branch-like object too: not branches to delete.
+    const selected = (nodes && nodes.length ? nodes : node ? [node] : branches.view.selection)
+      .filter((n) => n && !n.tag).map(branchOf).filter(Boolean);
+    if (selected.length === 1 && !selected[0].current) return cmd.runBranchAction(m, selected[0], 'delete');
+    if (selected.length) return cmd.deleteBranches(m, selected);
+  });
   branchCmd('gitTools.branch.copyName', 'copy');
+  // Ctrl+C / ⌘C in the Branches tree: the selected branches or tags, one per line (a tree view does not tell the hovered row).
+  regFree('gitTools.branches.copySelected', async () => {
+    const names = branches.view.selection
+      .map((n) => (n.tag ? n.tag.name : n.branch ? n.branch.name : null))
+      .filter(Boolean);
+    if (!names.length) return;
+    await vscode.env.clipboard.writeText(names.join('\n'));
+    vscode.window.setStatusBarMessage(`$(check) Copied ${names.length === 1 ? names[0] : `${names.length} names`}`, 3000);
+  });
   reg('gitTools.branch.showLog', (m, node) => {
     const b = branchOf(node);
     m.setLogFilter({ branch: b ? b.name : null, path: null });

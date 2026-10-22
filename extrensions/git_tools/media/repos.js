@@ -53,7 +53,7 @@
       },
     },
     branchIcon(),
-    h('span.bname', { text: r.branchLabel }),
+    h('span.bname', { text: r.branchLabel, 'data-copy': r.branch || null }),
     r.ahead > 0 ? h('span.ahead', { text: `↑${r.ahead}` }) : null,
     r.behind > 0 ? h('span.behind', { text: `↓${r.behind}` }) : null,
     chevron());

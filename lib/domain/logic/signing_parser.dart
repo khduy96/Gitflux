@@ -278,3 +278,20 @@ Set<String> parseSshSignedCommits(String rawLog) {
   }
   return result;
 }
+
+/// Git commands that may sign (commits, merges, tags, rewrites).
+const _signingCommands = {'commit', 'commit-tree', 'merge', 'pull', 'tag', 'rebase', 'cherry-pick', 'revert', 'am'};
+
+/// Whether the git command [args] (without `git`) can sign, so a failure
+/// may come from signing. `-c key=value` options before it are skipped.
+bool isSigningCommand(List<String> args) {
+  for (var i = 0; i < args.length; i++) {
+    final a = args[i];
+    if (a == '-c' || a == '-C') {
+      i++;
+    } else if (!a.startsWith('-')) {
+      return _signingCommands.contains(a);
+    }
+  }
+  return false;
+}

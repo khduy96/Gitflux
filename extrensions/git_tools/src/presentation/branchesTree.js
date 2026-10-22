@@ -21,6 +21,15 @@ class BranchesTreeProvider {
     this._roots = null;
     /** @type {vscode.TreeView<any>|null} */
     this.view = null;
+    /** Expand All / Collapse All: true / false for every group, null for their own defaults. */
+    this._expandAll = null;
+    /**
+     * In the ids of the groups: VS Code applies the state of an item only
+     * the first time it sees its id, so Expand / Collapse All gives new ones.
+     */
+    this._generation = 0;
+    // Local and Remote start open: the button first collapses.
+    vscode.commands.executeCommand('setContext', 'gitTools.branchesExpanded', true);
     manager.onDidChange((what) => {
       if (what === 'refs' || what === 'status') this.changed();
     });
@@ -40,10 +49,39 @@ class BranchesTreeProvider {
     const m = this.manager.current;
     if (!m) return [];
     if (!el) {
-      if (!this._roots) this._roots = this.roots(m);
+      if (!this._roots) this._roots = this.stamp(this.roots(m));
       return this._roots;
     }
     return el.children || [];
+  }
+
+  /** Expand All / Collapse All of the view title (one button, its icon from the context key). */
+  setAllExpanded(expanded) {
+    this._expandAll = expanded;
+    this._generation++;
+    vscode.commands.executeCommand('setContext', 'gitTools.branchesExpanded', expanded);
+    this.changed();
+  }
+
+  /**
+   * Gives every group an id made of its path and the generation, with the
+   * state of Expand / Collapse All when one was chosen.
+   */
+  stamp(nodes, parentKey = '') {
+    for (const n of nodes) {
+      const item = n.item;
+      if (item.collapsibleState === vscode.TreeItemCollapsibleState.None) continue;
+      const label = typeof item.label === 'string' ? item.label : item.label ? item.label.label : '';
+      const key = `${parentKey}/${item.id || label}`;
+      item.id = `${this._generation}:${key}`;
+      if (this._expandAll !== null) {
+        item.collapsibleState = this._expandAll
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed;
+      }
+      if (n.children) this.stamp(n.children, key);
+    }
+    return nodes;
   }
 
   getParent(el) {

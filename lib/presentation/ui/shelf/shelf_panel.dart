@@ -200,8 +200,11 @@ class _ShelfPanelState extends State<ShelfPanel> {
           const Icon(Icons.call_split, size: 12, color: AppColors.textMuted),
           const SizedBox(width: 3),
           Flexible(
-            child: Text(s.branch!,
-                overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+            child: HoverCopy(
+              text: s.branch,
+              child: Text(s.branch!,
+                  overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+            ),
           ),
         ],
         const Spacer(),

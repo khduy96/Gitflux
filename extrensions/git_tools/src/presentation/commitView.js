@@ -59,6 +59,8 @@ class CommitViewProvider {
     /** Non-active changelists without files are listed too. */
     this.showEmptyChangelists = !!context.globalState.get('gitTools.commit.showEmptyChangelists', false);
     vscode.commands.executeCommand('setContext', 'gitTools.showEmptyChangelists', this.showEmptyChangelists);
+    // Groups start open: the Expand / Collapse All button first collapses.
+    vscode.commands.executeCommand('setContext', 'gitTools.commitExpanded', true);
   }
 
   /** @param {boolean} value */
@@ -67,6 +69,12 @@ class CommitViewProvider {
     this.context.globalState.update('gitTools.commit.showEmptyChangelists', value);
     vscode.commands.executeCommand('setContext', 'gitTools.showEmptyChangelists', value);
     this.postState();
+  }
+
+  /** Expand All / Collapse All: one view-title button, its icon from the context key. */
+  setAllExpanded(expanded) {
+    vscode.commands.executeCommand('setContext', 'gitTools.commitExpanded', expanded);
+    if (this.view) this.view.webview.postMessage({ type: 'expandAll', expanded });
   }
 
   /** @param {'none'|'directory'} value */

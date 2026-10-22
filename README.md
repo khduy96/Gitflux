@@ -14,9 +14,11 @@ flutter build windows --release
 ## Tính năng
 
 **Commit tool window (Alt+0)**
-- Cây Changes / Unversioned Files / Merge Conflicts, tick checkbox để chọn file commit (không cần staging, giống AS)
+- Cây changelist (mặc định "Changes") / Unversioned Files / Merge Conflicts, tick checkbox để chọn file commit
+  (không cần staging, giống AS) — xem mục **Changelists** bên dưới
 - Click 1 lần mở diff dạng preview, double-click mở tab cố định; group theo thư mục
-- Commit, Commit and Push…, Amend, Sign-off, đổi author (Ctrl+Enter để commit)
+- Commit, Commit and Push…, Amend, Sign-off, **Sign commit** (GPG / SSH, xem mục **Ký commit**), đổi author
+  (Ctrl+Enter để commit)
 - Rollback (có tuỳ chọn xoá file added), Delete / Add to .gitignore cho file unversioned
 - Chuột phải nhóm "Unversioned Files" ▸ **Clean Unversioned Files…** (xem mục **Clean** bên dưới)
 - Kéo thả file / thư mục / **cả nhóm** sang changelist khác: kéo dòng tiêu đề "Unversioned Files" thả vào một changelist
@@ -57,7 +59,8 @@ flutter build windows --release
 - Log: cây branch (HEAD, Local, Remote, Tags, Submodules, Worktrees, Reflog; branch gom thành thư mục theo `/` trong tên,
   thư mục chứa branch hiện tại hoặc branch đang lọc tự mở), đồ thị commit có màu theo nhánh, ref labels
   (thu gọn: một tên + `+N`, branch local và remote cùng tên gộp lại với icon máy tính / đám mây, rê chuột để xem
-  đầy đủ; khi lọc theo branch chỉ hiện branch đó),
+  đầy đủ; khi lọc theo branch chỉ hiện branch đó; rê chuột lên tên branch / tag ở bất kỳ đâu rồi `Ctrl+C`
+  (`⌘C` trên macOS) để copy tên),
   lọc theo text/hash/author, branch, user, ngày, nội dung thay đổi, theo file (Show History)
   (xem mục **Lọc Log** bên dưới)
 - Chi tiết commit: danh sách file đã đổi, message, author/committer, các branch chứa commit
@@ -117,6 +120,65 @@ flutter build windows --release
     working tree bằng `git apply --3way` (giống Unshelve: trộn với thay đổi cục bộ, index giữ nguyên).
   - Conflict: giải quyết như bình thường. Với `git am`, repo ở trạng thái "Applying patch": banner ở Commit panel có
     **Continue** (`am --continue`), **Skip Patch** (`am --skip`), **Abort** (`am --abort`).
+
+**Changelists (như Android Studio)**
+- Các thay đổi đã track được chia thành nhiều changelist có tên; luôn có list mặc định "Changes" (đổi tên được,
+  không xoá được). Commit panel hiện mỗi changelist một nhóm (tên, số file; list đang active in đậm và có
+  "(active)" khi có nhiều hơn một list). Changelist rỗng không active bị ẩn, trừ khi bật nút **Show Empty Changelists**
+  trên thanh công cụ. Group theo thư mục vẫn dùng được bên trong từng list.
+- File thay đổi mới (chưa thuộc list nào) vào **list đang active lúc nó xuất hiện lần đầu** và ở lại đó khi đổi list
+  active. File không còn thay đổi tự rời list; file bị rename giữ chỗ của tên cũ. File unversioned không thuộc list nào.
+- Đổi list active (chuột phải nhóm ▸ **Set Active Changelist**): checkbox được tick đúng các file của list mới; ô commit
+  message là của từng list — message đang gõ được lưu vào `comment` của list cũ và message của list mới được nạp lại.
+  Nhờ vậy commit chỉ gồm list active, các list khác không bị đụng tới.
+- Chuột phải nhóm: **Set Active Changelist**, **New Changelist…**, **Edit Changelist…** (tên, comment, "Set active"),
+  **Delete Changelist…** (có xác nhận; file chuyển sang list active, hoặc sang "Changes" — list này thành active — khi
+  xoá chính list active), **Shelve Changes…** (cả list, tên shelf mặc định là tên list), **Create Patch…**.
+- Chuột phải file / thư mục ▸ **Move to Another Changelist…** (F6): chọn list có sẵn hoặc **New Changelist…**; dùng được
+  cho nhiều file. Hoặc kéo thả file / thư mục / cả nhóm vào một changelist; thả file unversioned vào list thì file được
+  `git add` và nằm trong list đó.
+- Sau commit, nếu một list (không phải "Changes") hết file thì hỏi **Delete changelist '<tên>'?** (có ô "Don't ask again
+  for this session").
+- Unshelve: file về lại changelist trùng tên với shelf nếu có, nếu không thì vào list active.
+- Chọn từng dòng để commit vẫn hoạt động như cũ trong mỗi list.
+- Lưu trữ (chung định dạng với extension VS Code, hai bên cùng làm việc trên một file):
+  `$(git rev-parse --git-path git-tools/changelists.json)` — riêng cho từng worktree, không bị track:
+  `{ "version": 1, "active": "<id>", "lists": [ { "id": "default" | "yyyyMMdd-HHmmss-<6 hex>", "name", "comment",
+  "files": [đường dẫn tương đối, dấu /] } ] }`. File được đọc lại trước mỗi lần sửa (bên kia có thể vừa đổi), ghi
+  nguyên tử (file tạm rồi rename), thụt lề 2 dấu cách và giữ nguyên các field lạ. File hỏng (không phải JSON) không bị
+  ghi đè; lỗi hiện trong Console.
+
+**Git LFS**
+- Tự nhận diện `git lfs` (kiểm tra một lần mỗi phiên); nếu chưa cài git-lfs thì mọi chức năng LFS được ẩn — cài tại
+  https://git-lfs.com rồi mở lại ứng dụng.
+- Commit panel: file được lưu bằng LFS (`git check-attr filter` = `lfs`) có nhãn **LFS** nhỏ; file đang bị khoá (lock)
+  có biểu tượng ổ khoá, tooltip hiện người giữ khoá và thời điểm khoá.
+- Chuột phải file: **Track with LFS…** (file unversioned — chọn mẫu: đúng đường dẫn, `*.<ext>` hoặc `<thư mục>/**`;
+  `.gitattributes` sẽ hiện là đã thay đổi, cần commit cùng), **Untrack from LFS…**, **Lock** / **Unlock** (chỉ khi
+  remote hỗ trợ khoá; mở khoá của người khác cần xác nhận và dùng `--force`).
+- Menu Git ▸ **Git LFS**: **Pull**, **Fetch**, **Prune…** (xem trước bằng dry-run rồi xác nhận), **Show Tracked
+  Patterns…** (danh sách mẫu đang track, có nút Untrack).
+- Diff của file LFS: hiển thị `oid` / kích thước của pointer hai phía; nếu object đã có trong máy thì xem được diff nội
+  dung thật (ảnh / nhị phân / văn bản) bằng nút **Show Content** / **Show Pointers**.
+- Push / Pull không đổi (do hook của git-lfs); lỗi LFS khi push (ví dụ không upload được object) hiện nguyên văn stderr.
+
+**Ký commit (GPG / SSH / X.509)**
+- Commit Options có ô **Sign commit** (mặc định theo `commit.gpgsign`). Ứng dụng luôn truyền rõ `-S` / `--no-gpg-sign`
+  cho commit, amend, Edit Commit Message (kể cả reword qua interactive rebase, dòng `exec git commit --amend`), các
+  commit được rebase, merge commit tạo từ hộp thoại Merge (ô **Sign merge commit**) và khi Continue một merge.
+  Merge nhanh không qua hộp thoại thì theo `commit.gpgsign`.
+- Hộp thoại New Tag có ô **Sign tag** (mặc định theo `tag.gpgsign`), tạo tag annotated có chữ ký (`git tag -s`).
+- Menu Git ▸ **Signing Settings…** (hoặc link trong Commit Options): chọn định dạng OpenPGP / SSH / X.509, chọn khoá
+  (khoá GPG từ `gpg --list-secret-keys`, đánh dấu khoá hết hạn hoặc bị thu hồi; khoá SSH từ `~/.ssh/*.pub` — lưu đường
+  dẫn private key — và từ ssh-agent — lưu `key::<public key>`), bật "Sign commits / tags by default", lưu cho
+  **This repository** hoặc **Global** (`git config --local / --global`). Nút **Test Signing** ký thử một object tạm
+  (`git commit-tree -S`, không tạo ref) và báo kết quả hoặc lỗi của git.
+- Log: biểu tượng chữ ký cho mỗi commit (xanh = hợp lệ `G`, vàng = khoá chưa tin cậy hoặc hết hạn `U/X/Y`, đỏ = sai,
+  bị thu hồi hoặc không kiểm tra được `B/R/E`, không có = chưa ký), chỉ kiểm tra các dòng đang hiển thị (kiểm tra chữ
+  ký chậm). Commit ký bằng SSH khi chưa cấu hình `gpg.ssh.allowedSignersFile` hiện khiên xám "not verified" thay vì
+  "chưa ký". Chi tiết commit hiện người ký, khoá, trạng thái; tag có chữ ký hiện kết quả `git verify-tag`.
+- Khi ký thất bại (không có agent, sai khoá, huỷ pinentry): thông báo lỗi kèm stderr của git và nút
+  **Signing Settings…**; ứng dụng không bao giờ tự commit mà không ký.
 
 **Lọc Log (thanh filter phía trên danh sách commit)**
 - Ô tìm kiếm có 2 chế độ (bấm icon kính lúp để chọn):

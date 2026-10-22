@@ -1,6 +1,8 @@
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_tools/data/repositories/git_cli_service.dart';
 import 'package:git_tools/domain/entities/ai_config.dart';
@@ -109,6 +111,23 @@ void main() {
     await tester.pump();
     expect(inTree('cart'), findsOneWidget);
     expect(inTree('ui'), findsOneWidget);
+
+    // Ctrl+C over a branch copies its full name.
+    final copied = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied.add((call.arguments as Map)['text'] as String);
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: tester.getCenter(inTree('cart')));
+    addTearDown(mouse.removePointer);
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    expect(copied, ['feature/cart']);
+    await mouse.moveTo(Offset.zero);
 
     await tester.tap(find.text('Branch: All'));
     await tester.pumpAndSettle();

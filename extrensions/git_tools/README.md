@@ -200,6 +200,7 @@ Chuột phải **dòng thư mục** (khi Group by Directory) hoặc **dòng nhó
 - **Shelve Changes…** — shelve các file đang tick.
 - **⟳ Refresh**
 - **Group by Directory / Group by: None** — xem mục Group by ở trên.
+- **Collapse All / Expand All** — một nút đổi qua lại: thu gọn hoặc mở hết các nhóm, và mọi thư mục khi Group by Directory.
 - Trong menu `…`:
   - New Changelist… / Set Active Changelist… / Show Empty Changelists (Hide Empty Changelists)
   - Update Project
@@ -430,10 +431,14 @@ Dùng trong popup hoặc khi chuột phải trong cây Branches:
 | Push… | Chỉ với branch hiện tại |
 | Rename… / Copy Branch Name | |
 | Delete | Branch chưa merge sẽ hỏi lại trước khi xoá hẳn. Branch remote sẽ đẩy lệnh xoá lên remote |
+| Xoá nhiều branch local | Trong cây Branches, chọn nhiều branch (`Ctrl+Click` / `Shift+Click`) ▸ chuột phải ▸ **Delete**, hoặc phím `Delete` (`⌘⌫` trên macOS). Hỏi xác nhận một lần cho cả danh sách; các branch chưa merge được liệt kê và hỏi **Force Delete** một lần. Branch hiện tại, branch remote và tag trong vùng chọn được bỏ qua |
+
+**Copy tên branch nhanh:** rê chuột lên một tên branch / tag bất kỳ trong các view của extension (nhãn ref trong Log và popup của nó, dropdown **Branch** và danh sách trong đó, "In N branches" ở chi tiết commit, widget branch ở Source Control Repositories, panel Interactive Rebase) rồi nhấn `Ctrl+C` (`⌘C` trên macOS). Có thông báo nhỏ ở cuối view. Nếu đang bôi đen chữ thì `Ctrl+C` vẫn copy chữ như thường. Bấm vào view trước để nó nhận phím. Riêng cây **Branches** (view gốc của VS Code, không biết dòng nào đang được rê chuột): chọn một hoặc nhiều dòng rồi nhấn `Ctrl+C` (nhiều tên thì mỗi tên một dòng).
 
 **Smart Checkout:** nếu checkout bị chặn vì thay đổi chưa commit sẽ bị ghi đè, extension đề nghị **Smart Checkout**: stash thay đổi, checkout, rồi trả lại thay đổi.
 
 Trong cây Branches còn có:
+- Nút **Collapse All / Expand All** trên thanh tiêu đề (một nút đổi qua lại): thu gọn hoặc mở hết mọi nhóm và thư mục (Local, Remote, Tags, Stashes, Shelf, Worktrees…).
 - Branch Local / Remote được gom thành thư mục theo tiền tố trước dấu `/`: `feature/login`, `feature/cart` → **feature** ▸ `login`, `cart`. Thư mục chứa branch hiện tại tự mở sẵn.
 - Mục **Tags**: Checkout, New Branch, Merge into Current… / Quick Merge, Push Tag, Delete Tag.
 - Mục **Stashes**: xem [mục 8](#8-stash).
