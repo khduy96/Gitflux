@@ -289,6 +289,9 @@ async function activate(context) {
   branchCmd('gitTools.branch.mergeDialog', 'mergeDialog');
   branchCmd('gitTools.branch.update', 'update');
   branchCmd('gitTools.branch.takeUpstream', 'takeUpstream');
+  branchCmd('gitTools.branch.rebaseOntoRemote', 'rebaseRemote');
+  branchCmd('gitTools.branch.mergeRemoteDialog', 'mergeDialogRemote');
+  branchCmd('gitTools.branch.mergeRemote', 'mergeRemote');
   // Source Control (VS Code's "…" menu, the Repositories view): for the current branch.
   reg('gitTools.takeUpstream', (m) => cmd.takeCurrentUpstream(m));
   const updateTakeContext = async () => {

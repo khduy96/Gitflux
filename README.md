@@ -257,6 +257,9 @@ Dialog **Interactively Rebase from Here…**:
   Checkout and Rebase, Compare with current (commit hai phía + file khác nhau), Rebase onto,
   Merge into… (dialog, xem mục **Merge**), Quick Merge (không mở dialog, tuỳ chọn mặc định của git), Rename,
   Delete (local/remote)
+- Rebase / Merge **từ origin**: chuột phải một branch local B (đang ở A) có thêm **Rebase 'A' onto 'origin/B'**,
+  **Merge 'origin/B' into 'A'…** và **Quick Merge 'origin/B' into 'A'** (khi B có branch trên remote: upstream, hoặc
+  cùng tên trên origin). `origin/B` được fetch trước, nên không cần checkout B và pull; B local không bị đổi
 - **Drop Local and Take origin/x…**: khi branch local và upstream đều có commit mới (↑ và ↓, pull sẽ phải merge /
   rebase và có thể conflict), menu branch có thêm lựa chọn bỏ bản local, lấy đúng bản origin: fetch, hỏi xác nhận
   (liệt kê các commit chưa push sẽ bị bỏ), xoá branch local và checkout lại từ origin (vẫn tracking origin). Thay đổi

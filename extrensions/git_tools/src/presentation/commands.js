@@ -7,7 +7,7 @@ const { GitError } = require('../domain/errors');
 const { openCommitDiff } = require('./diff');
 const { olderFirst } = require('../domain/logic/history');
 const { checkedOutElsewhere, worktreeOfBranch } = require('../domain/logic/worktree');
-const { divergedFromUpstream } = require('../domain/logic/divergence');
+const { divergedFromUpstream, remoteBranchOf } = require('../domain/logic/divergence');
 const { mergeDialog } = require('./mergeDialog');
 const { newWorktree, openWorktree } = require('./worktrees');
 const { signChoice, askSignTag } = require('./signing');
@@ -246,6 +246,25 @@ async function rebaseOnto(m, ref) {
   warnConflicts(m);
 }
 
+/**
+ * Rebase / Merge "from origin": the current branch with the remote branch of
+ * `b` (`origin/B`), fetched first, instead of the local `B` that may be
+ * behind. `kind`: 'rebase', 'mergeDialog' or 'merge' (quick).
+ * @param {RepoModel} m @param {Branch} b @param {'rebase'|'mergeDialog'|'merge'} kind
+ */
+async function integrateRemote(m, b, kind) {
+  const ref = remoteBranchOf(b, m.branches);
+  if (!ref) {
+    vscode.window.showWarningMessage(`${b.name} has no branch on a remote.`);
+    return;
+  }
+  const slash = ref.indexOf('/');
+  if (!await m.run(`Fetch ${ref}`, () => m.repo.fetchBranch(ref.slice(0, slash), ref.slice(slash + 1)))) return;
+  if (kind === 'rebase') return rebaseOnto(m, ref);
+  if (kind === 'mergeDialog') return mergeDialog(m, ref);
+  return mergeIntoCurrent(m, ref);
+}
+
 /** @param {RepoModel} m @param {Branch} b */
 async function checkoutAndRebase(m, b) {
   const cur = currentLabel(m);
@@ -459,6 +478,13 @@ async function branchActions(m, b) {
     items.push({ label: `$(git-pull-request) Rebase ${q(cur)} onto ${q(b.name)}`, id: 'rebase' });
     items.push({ label: `$(git-merge) Merge ${q(b.name)} into ${q(cur)}…`, id: 'mergeDialog' });
     items.push({ label: `$(git-merge) Quick Merge ${q(b.name)} into ${q(cur)}`, description: 'default options', id: 'merge' });
+    // The same with the branch on origin (fetched first), when the local one may be behind.
+    const remote = remoteBranchOf(b, m.branches);
+    if (remote) {
+      items.push({ label: `$(git-pull-request) Rebase ${q(cur)} onto ${q(remote)}`, description: 'fetched first', id: 'rebaseRemote' });
+      items.push({ label: `$(git-merge) Merge ${q(remote)} into ${q(cur)}…`, description: 'fetched first', id: 'mergeDialogRemote' });
+      items.push({ label: `$(git-merge) Quick Merge ${q(remote)} into ${q(cur)}`, description: 'fetched first, default options', id: 'mergeRemote' });
+    }
   }
   if (!b.current) items.push({ label: '$(folder-library) Checkout in New Worktree…', id: 'worktree' });
   if (b.current) items.push({ label: '$(arrow-up) Push…', id: 'push' });
@@ -487,6 +513,9 @@ async function runBranchAction(m, b, id) {
     case 'rebase': return rebaseOnto(m, b.name);
     case 'merge': return mergeIntoCurrent(m, b.name);
     case 'mergeDialog': return mergeDialog(m, b.name, b.name.replace(/^refs\/tags\//, ''));
+    case 'rebaseRemote': return integrateRemote(m, b, 'rebase');
+    case 'mergeDialogRemote': return integrateRemote(m, b, 'mergeDialog');
+    case 'mergeRemote': return integrateRemote(m, b, 'merge');
     case 'worktree': return newWorktree(m, b);
     case 'push': return push(m);
     case 'update': return updateBranch(m, b);

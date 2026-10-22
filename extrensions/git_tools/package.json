@@ -2,7 +2,7 @@
   "name": "git-tools-as",
   "displayName": "Git Tools (Android Studio style)",
   "description": "Android Studio style Git tool window for VS Code: commit panel with checkboxes, log with branch graph, branches popup, push/pull dialogs, stashes, shelf, patches and AI commit messages (Claude / Gemini).",
-  "version": "0.4.15",
+  "version": "0.4.16",
   "publisher": "local",
   "license": "UNLICENSED",
   "private": true,
@@ -437,6 +437,21 @@
       {
         "command": "gitTools.branch.merge",
         "title": "Quick Merge into Current (Default Options)",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.branch.mergeRemote",
+        "title": "Quick Merge Upstream into Current (Default Options)",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.branch.mergeRemoteDialog",
+        "title": "Merge Upstream into Current…",
+        "category": "Git Tools"
+      },
+      {
+        "command": "gitTools.branch.rebaseOntoRemote",
+        "title": "Rebase Current onto Upstream (Fetched)",
         "category": "Git Tools"
       },
       {
@@ -1070,12 +1085,12 @@
         },
         {
           "command": "gitTools.branch.checkoutRebase",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-local(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-local(-tracked)?(-diverged)?$/",
           "group": "1_checkout@3"
         },
         {
           "command": "gitTools.branch.compare",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-tracked)?(-diverged)?$/",
           "group": "2_compare@1"
         },
         {
@@ -1085,42 +1100,57 @@
         },
         {
           "command": "gitTools.branch.rebaseOnto",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-tracked)?(-diverged)?$/",
           "group": "3_integrate@1"
         },
         {
           "command": "gitTools.branch.mergeDialog",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-tracked)?(-diverged)?$/",
           "group": "3_integrate@2"
         },
         {
           "command": "gitTools.branch.merge",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-tracked)?(-diverged)?$/",
           "group": "3_integrate@3"
         },
         {
+          "command": "gitTools.branch.mergeRemote",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-local-tracked/",
+          "group": "3_integrate@6"
+        },
+        {
+          "command": "gitTools.branch.mergeRemoteDialog",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-local-tracked/",
+          "group": "3_integrate@5"
+        },
+        {
+          "command": "gitTools.branch.rebaseOntoRemote",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-local-tracked/",
+          "group": "3_integrate@4"
+        },
+        {
           "command": "gitTools.branch.checkoutInWorktree",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-tracked)?(-diverged)?$/",
           "group": "1_checkout@4"
         },
         {
           "command": "gitTools.branch.update",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-local(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-local(-tracked)?(-diverged)?$/",
           "group": "4_remote@1"
         },
         {
           "command": "gitTools.branch.takeUpstream",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|current)-diverged$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|current)(-tracked)?-diverged$/",
           "group": "4_remote@2"
         },
         {
           "command": "gitTools.branch.push",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-current(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-current(-tracked)?(-diverged)?$/",
           "group": "4_remote@2"
         },
         {
           "command": "gitTools.branch.rename",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|current)(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|current)(-tracked)?(-diverged)?$/",
           "group": "5_edit@1"
         },
         {
@@ -1130,7 +1160,7 @@
         },
         {
           "command": "gitTools.branch.delete",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-tracked)?(-diverged)?$/",
           "group": "5_edit@3"
         },
         {
@@ -1667,6 +1697,18 @@
         {
           "command": "gitTools.takeUpstream",
           "when": "gitTools.canTakeUpstream"
+        },
+        {
+          "command": "gitTools.branch.rebaseOntoRemote",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.branch.mergeRemoteDialog",
+          "when": "false"
+        },
+        {
+          "command": "gitTools.branch.mergeRemote",
+          "when": "false"
         }
       ],
       "editor/context": [
