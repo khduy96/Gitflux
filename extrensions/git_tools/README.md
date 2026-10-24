@@ -424,6 +424,7 @@ Dùng trong popup hoặc khi chuột phải trong cây Branches:
 | Compare with Current | Commit hai phía và các file khác nhau. Chọn file để xem diff |
 | Show in Log | Lọc Log theo branch |
 | Rebase Current onto This | Có thể phát sinh conflict, xem [mục 9](#9-merge-rebase-và-giải-quyết-conflict) |
+| Rebase / Merge từ origin | Branch local B có branch trên remote (upstream, hoặc cùng tên trên origin): cây Branches có **Rebase Current onto Upstream (Fetched)**, **Merge Upstream into Current…**, **Quick Merge Upstream into Current (Default Options)**; popup Branches ghi rõ **Rebase 'A' onto 'origin/B'**, **Merge 'origin/B' into 'A'…**, **Quick Merge 'origin/B' into 'A'**. `origin/B` được fetch trước, nên không cần checkout B rồi pull; B local giữ nguyên |
 | Merge into Current… | Mở hộp thoại **Merge…** để chọn tuỳ chọn, xem [mục 9](#hộp-thoại-merge) |
 | Quick Merge into Current | Merge ngay với tuỳ chọn mặc định của git, không mở hộp thoại (như trước đây) |
 | Checkout in New Worktree… | Mở branch trong một thư mục làm việc mới, xem [mục 6b](#6b-worktrees) |

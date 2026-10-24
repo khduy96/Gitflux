@@ -1234,6 +1234,13 @@ class RepoController {
   /// runs it.
   final takeRemoteRequest = ValueNotifier<TakeRemoteRequest?>(null);
 
+  /// Fetches the remote branch [ref] (`origin/x`), before a rebase / merge
+  /// "from origin"; false when it failed (notified).
+  Future<bool> fetchRemoteBranch(String ref) {
+    final slash = ref.indexOf('/');
+    return run('Fetch $ref', () => repo.fetchBranch(ref.substring(0, slash), ref.substring(slash + 1)));
+  }
+
   /// Fetches [ref] and returns the commits of [branch] that taking it drops;
   /// null when the fetch failed (notified).
   Future<List<Commit>?> previewTakeRemote(String branch, String ref) async {

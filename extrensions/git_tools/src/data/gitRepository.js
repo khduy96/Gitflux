@@ -680,6 +680,13 @@ class Repository {
     return (await this.git.run(['log', '-1', '--format=%B'])).trim();
   }
 
+  /** Action of the newest HEAD reflog entry ("commit", "commit (amend)", "checkout"…), or null. */
+  async lastHeadAction() {
+    const r = await this.git.raw(['reflog', 'show', '-n', '1', '--format=%gs', 'HEAD', '--']);
+    if (r.code !== 0 || !r.stdout.trim()) return null;
+    return splitReflogSubject(r.stdout).action;
+  }
+
   // ---------------------------------------------------------------- commit
 
   /**

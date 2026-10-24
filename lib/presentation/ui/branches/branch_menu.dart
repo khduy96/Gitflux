@@ -33,6 +33,7 @@ Future<String?> pickBranchAction(
   final cur = ctrl.status.value.branch;
   final curLabel = cur ?? 'HEAD';
   final isCurrent = b.isCurrent;
+  final remote = remoteBranchOf(b, ctrl.branches.value);
   String q(String s) => s.length > 30 ? '\'${s.substring(0, 28)}…\'' : '\'$s\'';
   return showContextMenu<String>(context, position, [
     menuItem('checkout', 'Checkout', icon: Icons.login, enabled: !isCurrent),
@@ -47,6 +48,14 @@ Future<String?> pickBranchAction(
     menuItem('rebase', 'Rebase ${q(curLabel)} onto ${q(b.name)}', icon: Icons.low_priority, enabled: !isCurrent && cur != null),
     menuItem('merge', 'Merge ${q(b.name)} into ${q(curLabel)}…', icon: Icons.merge_type, enabled: !isCurrent),
     menuItem('mergeQuick', 'Quick Merge into ${q(curLabel)} (default options)', icon: Icons.merge, enabled: !isCurrent),
+    // The same with the branch on origin (fetched first), when the local one may be behind.
+    if (!isCurrent && remote != null) ...[
+      menuItem('rebaseRemote', 'Rebase ${q(curLabel)} onto ${q(remote)} (fetched)',
+          icon: Icons.low_priority, enabled: cur != null),
+      menuItem('mergeRemote', 'Merge ${q(remote)} into ${q(curLabel)}… (fetched)', icon: Icons.merge_type),
+      menuItem('mergeQuickRemote', 'Quick Merge ${q(remote)} into ${q(curLabel)} (fetched, default options)',
+          icon: Icons.merge),
+    ],
     const PopupMenuDivider(height: 8),
     if (!b.isRemote && isCurrent) menuItem('push', 'Push…', icon: Icons.upload),
     if (!b.isRemote && b.upstream != null && !isCurrent)
@@ -87,6 +96,17 @@ Future<void> runBranchAction(
       await showMergeDialog(context, ctrl, b.name);
     case 'mergeQuick':
       await mergeIntoCurrent(context, ctrl, b.name);
+    case 'rebaseRemote' || 'mergeRemote' || 'mergeQuickRemote':
+      final remote = remoteBranchOf(b, ctrl.branches.value);
+      if (remote == null || !await ctrl.fetchRemoteBranch(remote) || !context.mounted) return;
+      switch (action) {
+        case 'rebaseRemote':
+          await rebaseCurrentOnto(context, ctrl, remote);
+        case 'mergeRemote':
+          await showMergeDialog(context, ctrl, remote);
+        default:
+          await mergeIntoCurrent(context, ctrl, remote);
+      }
     case 'push':
       await showPushDialog(context, ctrl);
     case 'update':

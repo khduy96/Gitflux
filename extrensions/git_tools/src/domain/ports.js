@@ -41,6 +41,7 @@
  * @property {(ref: string) => Promise<boolean>} refExists
  * @property {() => Promise<string[]>} recentSubjects
  * @property {() => Promise<string>} lastCommitMessage
+ * @property {() => Promise<string|null>} lastHeadAction Action of the newest HEAD reflog entry ("commit", "checkout"…).
  *
  * @property {() => Promise<import('./entities').Branch[]>} branches
  * @property {() => Promise<import('./entities').Tag[]>} tags
