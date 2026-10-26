@@ -310,7 +310,8 @@ async function activate(context) {
     // Tags carry a branch-like object too: not branches to delete.
     const selected = (nodes && nodes.length ? nodes : node ? [node] : branches.view.selection)
       .filter((n) => n && !n.tag).map(branchOf).filter(Boolean);
-    if (selected.length === 1 && !selected[0].current) return cmd.runBranchAction(m, selected[0], 'delete');
+    // One branch, the current one too (it is left first); several: the current one is kept.
+    if (selected.length === 1) return cmd.runBranchAction(m, selected[0], 'delete');
     if (selected.length) return cmd.deleteBranches(m, selected);
   });
   branchCmd('gitTools.branch.copyName', 'copy');

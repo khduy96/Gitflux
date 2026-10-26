@@ -9,6 +9,7 @@ import '../../domain/errors.dart';
 import '../../domain/logic/rebase_todo.dart';
 import '../../domain/logic/worktree_parser.dart';
 import '../state/repo_controller.dart';
+import 'branches/delete_current_branch_dialog.dart';
 import 'common.dart';
 import 'dialogs/basic_dialogs.dart';
 import 'dialogs/interactive_rebase_dialog.dart';
@@ -102,8 +103,9 @@ bool _overwritten(GitException e) =>
     e.stderr.contains('Please commit your changes or stash them');
 
 /// Checkout that offers "Smart Checkout" (stash, checkout, unstash) when
-/// local changes would be overwritten.
-Future<void> smartCheckout(
+/// local changes would be overwritten. Returns false when it was declined or
+/// reported an error, HEAD moved or not (local changes not restored).
+Future<bool> smartCheckout(
   BuildContext context,
   RepoController ctrl,
   String label,
@@ -113,6 +115,7 @@ Future<void> smartCheckout(
   try {
     await checkout();
     ctrl.notify(AppNotification('$label done'));
+    return true;
   } on GitException catch (e) {
     ctrl.busy.value = null;
     // The branch is checked out in another worktree: offer to open it
@@ -121,7 +124,7 @@ Future<void> smartCheckout(
     if (worktree != null && context.mounted) {
       final branch = RegExp(r"'([^'\n]+)' is already").firstMatch(e.stderr)?.group(1) ?? '';
       await showBranchInWorktreeDialog(context, ctrl, branch, worktree);
-      return;
+      return false;
     }
     if (_overwritten(e) && context.mounted) {
       final smart = await showDialog<bool>(
@@ -146,7 +149,7 @@ Future<void> smartCheckout(
         ),
       );
       if (smart == true) {
-        await ctrl.run(label, () async {
+        return await ctrl.run(label, () async {
           await ctrl.repo.stash(message: 'Uncommitted changes before checkout', includeUntracked: false);
           try {
             await checkout();
@@ -155,9 +158,10 @@ Future<void> smartCheckout(
           }
         }, success: '$label done (local changes restored)');
       }
-      return;
+      return false;
     }
     ctrl.notify(AppNotification('$label failed', details: e.message, isError: true));
+    return false;
   } finally {
     ctrl.busy.value = null;
     await ctrl.refreshAll();
@@ -203,17 +207,17 @@ Future<void> takeRemoteAction(
   if (ok) await ctrl.takeRemote(branch, ref, abort: abort);
 }
 
-Future<void> checkoutBranch(
+/// Returns false when [b] was not checked out cleanly (see [smartCheckout]).
+Future<bool> checkoutBranch(
     BuildContext context, RepoController ctrl, Branch b) async {
-  if (b.isCurrent) return;
+  if (b.isCurrent) return true;
   if (!b.isRemote && b.worktree != null) {
     await showBranchInWorktreeDialog(context, ctrl, b.name, b.worktree!);
-    return;
+    return false;
   }
   if (!b.isRemote) {
-    await smartCheckout(context, ctrl, 'Checkout ${b.name}',
+    return smartCheckout(context, ctrl, 'Checkout ${b.name}',
         () => ctrl.repo.checkout(b.name));
-    return;
   }
   // Remote branch: checkout existing tracking branch or create one.
   final local = ctrl.branches.value
@@ -221,11 +225,12 @@ Future<void> checkoutBranch(
       .firstOrNull;
   if (local != null && local.worktree != null) {
     await showBranchInWorktreeDialog(context, ctrl, local.name, local.worktree!);
+    return false;
   } else if (local != null) {
-    await smartCheckout(context, ctrl, 'Checkout ${local.name}',
+    return smartCheckout(context, ctrl, 'Checkout ${local.name}',
         () => ctrl.repo.checkout(local.name));
   } else {
-    await smartCheckout(context, ctrl, 'Checkout ${b.name}',
+    return smartCheckout(context, ctrl, 'Checkout ${b.name}',
         () => ctrl.repo.checkoutRemote(b));
   }
 }
@@ -364,21 +369,75 @@ Future<void> deleteBranchAction(
     }
     return;
   }
-  ctrl.busy.value = 'Delete ${b.name}';
+  await _deleteLocalBranch(context, ctrl, b.name, success: 'Deleted branch ${b.name}');
+}
+
+/// "Delete" on the current branch [b]: it is left first, by checking out
+/// another branch or by creating and checking out a new one, and only then
+/// deleted locally. Nothing is deleted while [b] is still checked out, nor
+/// when leaving it reported an error.
+Future<void> deleteCurrentBranchAction(
+    BuildContext context, RepoController ctrl, Branch b) async {
+  final state = ctrl.status.value.state;
+  if (state != RepoState.normal) {
+    ctrl.notify(AppNotification('Finish or abort the ${state.operation} in progress first: '
+        '${b.name} cannot be deleted now.'));
+    return;
+  }
+  final choice = await showDeleteCurrentBranchDialog(context, deleting: b.name, branches: ctrl.branches.value);
+  if (choice == null || !context.mounted) return;
+  final bool left;
+  switch (choice) {
+    case CheckoutAndDelete(:final target):
+      left = await checkoutBranch(context, ctrl, target);
+    case CreateAndDelete(:final name, :final startPoint):
+      final fromRemote = ctrl.branches.value.any((x) => x.isRemote && x.name == startPoint);
+      left = await smartCheckout(context, ctrl, 'Create branch $name',
+          () => ctrl.repo.createBranch(name, startPoint: startPoint, fromRemote: fromRemote));
+  }
+  // Still on b: the checkout failed, was declined or went to another worktree.
+  if (ctrl.status.value.branch == b.name) {
+    if (choice is CreateAndDelete && ctrl.branches.value.any((x) => !x.isRemote && x.name == choice.name)) {
+      ctrl.notify(AppNotification(
+          'Branch ${choice.name} was created but could not be checked out: ${b.name} was not deleted.',
+          isError: true));
+    }
+    return;
+  }
+  // HEAD moved but leaving reported an error (e.g. Smart Checkout could not
+  // restore the local changes): b is kept and the error stays shown.
+  if (!left || !context.mounted) return;
+  final head = ctrl.status.value.branch ?? 'HEAD';
+  await _deleteLocalBranch(context, ctrl, b.name,
+      success: 'Deleted branch ${b.name}, now on $head',
+      kept: '${b.name} was not deleted: it is not fully merged. You are on $head.');
+}
+
+/// Deletes the local branch [name] (`git branch -d`), asking to force it
+/// when it is not fully merged; [kept] is notified when the user declines.
+Future<void> _deleteLocalBranch(
+  BuildContext context,
+  RepoController ctrl,
+  String name, {
+  required String success,
+  String? kept,
+}) async {
+  ctrl.busy.value = 'Delete $name';
   try {
-    await ctrl.repo.deleteBranch(b.name);
-    ctrl.notify(AppNotification('Deleted branch ${b.name}'));
+    await ctrl.repo.deleteBranch(name);
+    ctrl.notify(AppNotification(success));
   } on GitException catch (e) {
     ctrl.busy.value = null;
     if (e.stderr.contains('not fully merged') && context.mounted) {
       final force = await showConfirm(context,
           title: 'Branch Is Not Fully Merged',
-          message: 'Branch ${b.name} is not fully merged.\nDeleting it may lose commits. Delete anyway?',
+          message: 'Branch $name is not fully merged.\nDeleting it may lose commits. Delete anyway?',
           confirmLabel: 'Delete',
           destructive: true);
       if (force) {
-        await ctrl.run('Delete ${b.name}', () => ctrl.repo.deleteBranch(b.name, force: true),
-            success: 'Deleted branch ${b.name}');
+        await ctrl.run('Delete $name', () => ctrl.repo.deleteBranch(name, force: true), success: success);
+      } else if (kept != null) {
+        ctrl.notify(AppNotification(kept));
       }
     } else {
       ctrl.notify(AppNotification('Delete branch failed', details: e.message, isError: true));

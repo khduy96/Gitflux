@@ -1160,7 +1160,7 @@
         },
         {
           "command": "gitTools.branch.delete",
-          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote)(-tracked)?(-diverged)?$/",
+          "when": "view == gitTools.branches && viewItem =~ /^branch-(local|remote|current)(-tracked)?(-diverged)?$/",
           "group": "5_edit@3"
         },
         {

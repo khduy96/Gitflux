@@ -13,6 +13,8 @@ const { newWorktree, openWorktree } = require('./worktrees');
 const { signChoice, askSignTag } = require('./signing');
 const { pickBranchName } = require('./branchName');
 const { commitCopyText } = require('../domain/logic/quickActions');
+const { checkoutTargets, startPoints, stateOperation } = require('../domain/logic/leaveBranch');
+const { DeleteCurrentBranch } = require('../domain/usecases/deleteCurrentBranch');
 
 /** @typedef {import('./model').RepoModel} RepoModel */
 /** @typedef {import('../domain/entities').Branch} Branch */
@@ -49,8 +51,10 @@ function warnConflicts(m) {
 
 /**
  * Checkout that offers Smart Checkout (stash, checkout, unstash) when local
- * changes would be overwritten.
+ * changes would be overwritten. Resolves to false when it was declined or
+ * reported an error, HEAD moved or not (local changes not restored).
  * @param {RepoModel} m
+ * @returns {Promise<boolean>}
  */
 async function smartCheckout(m, label, checkout) {
   m.busy = label;
@@ -58,6 +62,7 @@ async function smartCheckout(m, label, checkout) {
   try {
     await checkout();
     vscode.window.setStatusBarMessage(`$(check) ${label}`, 4000);
+    return true;
   } catch (e) {
     m.busy = null;
     // The branch is checked out in another worktree: offer to open that one.
@@ -68,14 +73,14 @@ async function smartCheckout(m, label, checkout) {
         { modal: true, detail: `${elsewhere}\n\nA branch can be checked out in one worktree at a time. Open that worktree, or create a new branch from it.` },
         'Open that Worktree');
       if (choice) await openWorktree(path.normalize(elsewhere));
-      return;
+      return false;
     }
     const overwritten = e instanceof GitError &&
       /would be overwritten|commit your changes or stash them/.test(e.stderr);
     if (!overwritten) {
       m.log(`${label} failed: ${e.message}`, 'error');
       vscode.window.showErrorMessage(`${label} failed: ${e.message}`);
-      return;
+      return false;
     }
     const choice = await vscode.window.showWarningMessage(
       'Your local changes would be overwritten by checkout.',
@@ -83,7 +88,7 @@ async function smartCheckout(m, label, checkout) {
       'Smart Checkout',
     );
     if (choice === 'Smart Checkout') {
-      await m.run(label, async () => {
+      return await m.run(label, async () => {
         await m.repo.stash({ message: 'Uncommitted changes before checkout' });
         try {
           await checkout();
@@ -91,8 +96,8 @@ async function smartCheckout(m, label, checkout) {
           await m.repo.stashPop();
         }
       }, { success: `${label} (local changes restored)` });
-      return;
     }
+    return false;
   } finally {
     m.busy = null;
     m.fire('busy');
@@ -100,9 +105,12 @@ async function smartCheckout(m, label, checkout) {
   }
 }
 
-/** @param {RepoModel} m @param {Branch} b */
+/**
+ * Resolves to false when `b` was not checked out cleanly (see smartCheckout).
+ * @param {RepoModel} m @param {Branch} b @returns {Promise<boolean>}
+ */
 async function checkoutBranch(m, b) {
-  if (b.current) return;
+  if (b.current) return true;
   if (!b.remote) {
     return smartCheckout(m, `Checkout ${b.name}`, () => m.repo.checkout(b.name));
   }
@@ -175,6 +183,138 @@ async function deleteBranch(m, b) {
     }
   }
   await m.refreshAll();
+}
+
+/** main / master / develop: starred and listed first in the branch lists. */
+const favoriteBranch = (b) => (/(^|\/)(main|master|develop)$/.test(b.name) ? 1 : 0);
+
+/** The current branch first, then the favorite ones, then by name. */
+const sortedBranches = (list) => [...list].sort((a, b) =>
+  (b.current - a.current) || (favoriteBranch(b) - favoriteBranch(a)) || a.name.localeCompare(b.name));
+
+/** A branch row of the Branches popup, also used by the pickers shaped like it. @param {RepoModel} m @param {Branch} b */
+function branchPickItem(m, b) {
+  const elsewhere = !b.remote && !b.current ? worktreeOfBranch(m.worktrees, b.name) : null;
+  return {
+    label: `${b.current ? '$(tag)' : favoriteBranch(b) ? '$(star-full)' : '$(git-branch)'} ${b.name}`,
+    description: [b.ahead ? `↑${b.ahead}` : '', b.behind ? `↓${b.behind}` : '', b.upstream && !b.remote ? b.upstream : '',
+      elsewhere ? `checked out in ${path.basename(elsewhere.path)}` : '']
+      .filter(Boolean).join(' '),
+    branch: b,
+  };
+}
+
+/**
+ * Picks the branch to leave the current one for: Local and Remote groups
+ * shown like in the Branches popup, with the default branch first of all so
+ * that Enter takes it right away; without one, a hint first that Enter does
+ * nothing on.
+ * @param {RepoModel} m @param {string} title
+ * @param {import('../domain/logic/leaveBranch').LeaveChoices} choices
+ * @returns {Promise<Branch|undefined>}
+ */
+async function pickLeaveBranch(m, title, choices) {
+  const isDefault = (b) => !b.remote && b.name === choices.defaultName;
+  const item = (b) => branchPickItem(m, b);
+  const local = [...choices.local.filter(isDefault), ...sortedBranches(choices.local.filter((b) => !isDefault(b)))];
+  const qp = vscode.window.createQuickPick();
+  qp.title = title;
+  qp.placeholder = 'Search for branches';
+  qp.matchOnDescription = true;
+  qp.items = [
+    ...(choices.defaultName ? [] : [{ label: '$(info) Select a branch below', description: 'no main or master branch to take by default' }]),
+    ...(local.length ? [sep('Local'), ...local.map(item)] : []),
+    ...(choices.remote.length ? [sep('Remote'), ...sortedBranches(choices.remote).map(item)] : []),
+  ];
+  const picked = await new Promise((resolve) => {
+    qp.onDidAccept(() => {
+      const sel = /** @type {any} */ (qp.selectedItems[0]);
+      if (!sel || !sel.branch) return;
+      resolve(sel.branch);
+      qp.hide();
+    });
+    qp.onDidHide(() => resolve(undefined));
+    qp.show();
+  });
+  qp.dispose();
+  return picked;
+}
+
+/**
+ * "Delete" on the current branch: it is left first, for another branch or a
+ * new one, then deleted locally once HEAD has moved (DeleteCurrentBranch).
+ * Choosing how to leave it stands for the "Delete branch X?" confirmation.
+ * @param {RepoModel} m @param {Branch} b
+ */
+async function deleteCurrentBranch(m, b) {
+  if (m.status.state !== 'normal') {
+    vscode.window.showWarningMessage(`Finish or abort the ${stateOperation(m.status.state) || 'operation'} in progress first: ${b.name} cannot be deleted now.`);
+    return;
+  }
+  const how = await vscode.window.showQuickPick([
+    { label: '$(log-in) Checkout Another Branch and Delete…', id: 'checkout' },
+    { label: '$(add) Create New Branch and Delete…', id: 'create' },
+  ], { title: `Delete current branch ${b.name}` });
+  if (!how) return;
+  /** @type {() => Promise<boolean>} */
+  let leave;
+  let created;
+  if (how.id === 'checkout') {
+    const choices = checkoutTargets(m.branches, b.name);
+    if (!choices.local.length && !choices.remote.length) {
+      vscode.window.showInformationMessage(`There is no other branch to checkout: ${b.name} cannot be deleted this way.`);
+      return;
+    }
+    const target = await pickLeaveBranch(m, `Checkout and delete ${b.name}`, choices);
+    if (!target) return;
+    leave = () => checkoutBranch(m, target);
+  } else {
+    const from = await pickLeaveBranch(m, `New branch from… (then delete ${b.name})`, startPoints(m.branches));
+    if (!from) return;
+    // The branch being deleted is still there: its name is taken too.
+    const existing = m.branches.filter((x) => !x.remote).map((x) => x.name);
+    const name = await pickBranchName({
+      title: `New Branch from ${from.name} (then delete ${b.name})`,
+      validate: (v) => validateRefName(v, existing),
+    });
+    if (!name) return;
+    created = name;
+    leave = () => smartCheckout(m, `Create branch ${name}`,
+      () => m.repo.createBranch(name, { startPoint: from.name, checkout: true, fromRemote: !!from.remote }));
+  }
+  /** @type {import('../domain/usecases/deleteCurrentBranch').DeleteCurrentBranchResult} */
+  let r;
+  try {
+    r = await new DeleteCurrentBranch(m.repo).run({
+      branch: b.name,
+      leave,
+      created,
+      confirmForce: async (branch) => !!(await vscode.window.showWarningMessage(`Branch ${branch} is not fully merged.`,
+        { modal: true, detail: 'Deleting it may lose commits. Delete anyway?' }, 'Force Delete')),
+    });
+  } catch (e) {
+    r = { outcome: 'failed', head: null, error: e.message };
+  }
+  await m.refreshAll();
+  const head = r.head || 'a detached HEAD';
+  switch (r.outcome) {
+    case 'deleted':
+      vscode.window.setStatusBarMessage(`$(check) Deleted branch ${b.name}, now on ${head}`, 4000);
+      break;
+    case 'kept':
+      vscode.window.showInformationMessage(`${b.name} was not deleted: it is not fully merged. You are on ${head}.`);
+      break;
+    case 'stayed':
+      // Checkout declined or failed: smartCheckout has already told why.
+      if (r.createdNotCheckedOut) vscode.window.showWarningMessage(`Branch ${created} was created but could not be checked out: ${b.name} was not deleted.`);
+      break;
+    case 'leaveFailed':
+      // HEAD moved but smartCheckout reported an error (e.g. local changes not restored): b is kept.
+      break;
+    case 'failed':
+      vscode.window.showErrorMessage(`Delete branch failed: ${r.error}`);
+      break;
+  }
 }
 
 /**
@@ -494,7 +634,7 @@ async function branchActions(m, b) {
   }
   if (!b.remote) items.push({ label: '$(edit) Rename…', id: 'rename' });
   items.push({ label: '$(copy) Copy Branch Name', id: 'copy' });
-  if (!b.current) items.push({ label: '$(trash) Delete', id: 'delete' });
+  items.push({ label: '$(trash) Delete', id: 'delete' });
   const pick = await vscode.window.showQuickPick(items, { title: b.name });
   if (!pick) return;
   return runBranchAction(m, b, pick.id);
@@ -524,7 +664,7 @@ async function runBranchAction(m, b, id) {
     case 'copy':
       await vscode.env.clipboard.writeText(b.name);
       return vscode.window.setStatusBarMessage(`Copied ${b.name}`, 3000);
-    case 'delete': return deleteBranch(m, b);
+    case 'delete': return b.current ? deleteCurrentBranch(m, b) : deleteBranch(m, b);
   }
 }
 
@@ -534,19 +674,7 @@ async function branchesPopup(m) {
   qp.title = `Git Branches · ${m.name}`;
   qp.placeholder = 'Search for branches and actions';
   qp.matchOnDescription = true;
-  const sorted = (list) => [...list].sort((a, b) =>
-    (b.current - a.current) || (fav(b) - fav(a)) || a.name.localeCompare(b.name));
-  const fav = (b) => (/(^|\/)(main|master|develop)$/.test(b.name) ? 1 : 0);
-  const branchItem = (b) => {
-    const elsewhere = !b.remote && !b.current ? worktreeOfBranch(m.worktrees, b.name) : null;
-    return {
-      label: `${b.current ? '$(tag)' : fav(b) ? '$(star-full)' : '$(git-branch)'} ${b.name}`,
-      description: [b.ahead ? `↑${b.ahead}` : '', b.behind ? `↓${b.behind}` : '', b.upstream && !b.remote ? b.upstream : '',
-        elsewhere ? `checked out in ${path.basename(elsewhere.path)}` : '']
-        .filter(Boolean).join(' '),
-      branch: b,
-    };
-  };
+  const branchItem = (b) => branchPickItem(m, b);
   qp.items = [
     { label: '$(arrow-down) Update Project…', id: 'update' },
     { label: '$(check) Commit…', id: 'commit' },
@@ -556,9 +684,9 @@ async function branchesPopup(m) {
     { label: '$(tag) Checkout Tag or Revision…', id: 'revision' },
     { label: '$(history) Recent Branches…', id: 'recent' },
     sep('Local'),
-    ...sorted(m.branches.filter((b) => !b.remote)).map(branchItem),
+    ...sortedBranches(m.branches.filter((b) => !b.remote)).map(branchItem),
     sep('Remote'),
-    ...sorted(m.branches.filter((b) => b.remote)).map(branchItem),
+    ...sortedBranches(m.branches.filter((b) => b.remote)).map(branchItem),
   ];
   qp.onDidAccept(async () => {
     const sel = /** @type {any} */ (qp.selectedItems[0]);
@@ -1010,7 +1138,7 @@ async function addToGitignore(m, changes) {
 }
 
 module.exports = {
-  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, deleteBranches, takeRemote, takeUpstream, takeUpstreamTarget, takeCurrentUpstream, mergeIntoCurrent, rebaseOnto,
+  validateRefName, warnConflicts, smartCheckout, checkoutBranch, newBranch, renameBranch, deleteBranch, deleteCurrentBranch, deleteBranches, takeRemote, takeUpstream, takeUpstreamTarget, takeCurrentUpstream, mergeIntoCurrent, rebaseOnto,
   checkoutAndRebase, compareWithCurrent, compareCommits, updateBranch, branchActions, runBranchAction, branchesPopup, checkoutRevision,
   push, update, fetch, manageRemotes, stash, stashApply, stashDrop, stashBranch, stashShowFiles, resolveConflicts,
   commitAction, rollback, deleteUntracked, addToGitignore, addToVcs, unversion,
