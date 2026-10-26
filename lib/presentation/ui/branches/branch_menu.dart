@@ -66,7 +66,8 @@ Future<String?> pickBranchAction(
           icon: Icons.cloud_download_outlined),
     if (!b.isRemote) menuItem('rename', 'Rename…', icon: Icons.edit_outlined),
     menuItem('copy', 'Copy Branch Name', icon: Icons.copy),
-    menuItem('delete', 'Delete', icon: Icons.delete_outline, enabled: !isCurrent, color: isCurrent ? null : AppColors.error),
+    // The current branch is left first (see deleteCurrentBranchAction).
+    menuItem('delete', 'Delete', icon: Icons.delete_outline, color: AppColors.error),
   ]);
 }
 
@@ -122,7 +123,11 @@ Future<void> runBranchAction(
     case 'copy':
       copyToClipboard(context, b.name);
     case 'delete':
-      await deleteBranchAction(context, ctrl, b);
+      if (b.isCurrent) {
+        await deleteCurrentBranchAction(context, ctrl, b);
+      } else {
+        await deleteBranchAction(context, ctrl, b);
+      }
   }
 }
 

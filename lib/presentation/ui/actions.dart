@@ -9,6 +9,7 @@ import '../../domain/errors.dart';
 import '../../domain/logic/rebase_todo.dart';
 import '../../domain/logic/worktree_parser.dart';
 import '../state/repo_controller.dart';
+import 'branches/delete_current_branch_dialog.dart';
 import 'common.dart';
 import 'dialogs/basic_dialogs.dart';
 import 'dialogs/interactive_rebase_dialog.dart';
@@ -364,21 +365,71 @@ Future<void> deleteBranchAction(
     }
     return;
   }
-  ctrl.busy.value = 'Delete ${b.name}';
+  await _deleteLocalBranch(context, ctrl, b.name, success: 'Deleted branch ${b.name}');
+}
+
+/// "Delete" on the current branch [b]: it is left first, by checking out
+/// another branch or by creating and checking out a new one, and only then
+/// deleted locally. Nothing is deleted while [b] is still checked out.
+Future<void> deleteCurrentBranchAction(
+    BuildContext context, RepoController ctrl, Branch b) async {
+  final state = ctrl.status.value.state;
+  if (state != RepoState.normal) {
+    ctrl.notify(AppNotification('Finish or abort the ${state.operation} in progress first: '
+        '${b.name} cannot be deleted now.'));
+    return;
+  }
+  final choice = await showDeleteCurrentBranchDialog(context, deleting: b.name, branches: ctrl.branches.value);
+  if (choice == null || !context.mounted) return;
+  switch (choice) {
+    case CheckoutAndDelete(:final target):
+      await checkoutBranch(context, ctrl, target);
+    case CreateAndDelete(:final name, :final startPoint):
+      final fromRemote = ctrl.branches.value.any((x) => x.isRemote && x.name == startPoint);
+      await smartCheckout(context, ctrl, 'Create branch $name',
+          () => ctrl.repo.createBranch(name, startPoint: startPoint, fromRemote: fromRemote));
+  }
+  // Still on b: the checkout failed, was declined or went to another worktree.
+  if (ctrl.status.value.branch == b.name) {
+    if (choice is CreateAndDelete && ctrl.branches.value.any((x) => !x.isRemote && x.name == choice.name)) {
+      ctrl.notify(AppNotification(
+          'Branch ${choice.name} was created but could not be checked out: ${b.name} was not deleted.',
+          isError: true));
+    }
+    return;
+  }
+  if (!context.mounted) return;
+  final head = ctrl.status.value.branch ?? 'HEAD';
+  await _deleteLocalBranch(context, ctrl, b.name,
+      success: 'Deleted branch ${b.name}, now on $head',
+      kept: '${b.name} was not deleted: it is not fully merged. You are on $head.');
+}
+
+/// Deletes the local branch [name] (`git branch -d`), asking to force it
+/// when it is not fully merged; [kept] is notified when the user declines.
+Future<void> _deleteLocalBranch(
+  BuildContext context,
+  RepoController ctrl,
+  String name, {
+  required String success,
+  String? kept,
+}) async {
+  ctrl.busy.value = 'Delete $name';
   try {
-    await ctrl.repo.deleteBranch(b.name);
-    ctrl.notify(AppNotification('Deleted branch ${b.name}'));
+    await ctrl.repo.deleteBranch(name);
+    ctrl.notify(AppNotification(success));
   } on GitException catch (e) {
     ctrl.busy.value = null;
     if (e.stderr.contains('not fully merged') && context.mounted) {
       final force = await showConfirm(context,
           title: 'Branch Is Not Fully Merged',
-          message: 'Branch ${b.name} is not fully merged.\nDeleting it may lose commits. Delete anyway?',
+          message: 'Branch $name is not fully merged.\nDeleting it may lose commits. Delete anyway?',
           confirmLabel: 'Delete',
           destructive: true);
       if (force) {
-        await ctrl.run('Delete ${b.name}', () => ctrl.repo.deleteBranch(b.name, force: true),
-            success: 'Deleted branch ${b.name}');
+        await ctrl.run('Delete $name', () => ctrl.repo.deleteBranch(name, force: true), success: success);
+      } else if (kept != null) {
+        ctrl.notify(AppNotification(kept));
       }
     } else {
       ctrl.notify(AppNotification('Delete branch failed', details: e.message, isError: true));
