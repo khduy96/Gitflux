@@ -88,20 +88,28 @@ class _DeleteCurrentBranchDialogState extends State<_DeleteCurrentBranchDialog> 
     return q.isEmpty ? branches : branches.where((b) => b.name.toLowerCase().contains(q)).toList();
   }
 
-  /// Keeps the selection visible: when the filter hides it, the first match
-  /// is selected instead.
-  Branch? _visible(Branch? selected, List<Branch> shown) =>
-      selected == null || shown.contains(selected) ? selected : shown.firstOrNull;
+  /// The highlighted branch of [all] filtered by [search]: [selected] (the
+  /// default until a row is clicked) while the filter shows it, so clearing
+  /// the filter brings it back; else the first match, or the only match when
+  /// nothing is selected.
+  static Branch? _visible(Branch? selected, List<Branch> all, TextEditingController search) {
+    if (search.text.trim().isEmpty) return selected;
+    final shown = _filter(all, search);
+    if (selected != null && shown.contains(selected)) return selected;
+    return selected != null || shown.length == 1 ? shown.firstOrNull : null;
+  }
 
-  Branch? get _selected => _mode == _Mode.checkout ? _target : _start;
+  Branch? get _shownTarget => _visible(_target, _targets, _targetSearch);
+  Branch? get _shownStart => _visible(_start, _starts, _startSearch);
+  Branch? get _selected => _mode == _Mode.checkout ? _shownTarget : _shownStart;
 
   void _submit() {
     switch (_mode) {
       case _Mode.checkout:
-        final t = _target;
+        final t = _shownTarget;
         if (t != null) Navigator.pop(context, CheckoutAndDelete(t));
       case _Mode.create:
-        final s = _start;
+        final s = _shownStart;
         if (s == null) return;
         final n = _name.text.trim();
         final err = validateRefName(n,
@@ -121,8 +129,7 @@ class _DeleteCurrentBranchDialogState extends State<_DeleteCurrentBranchDialog> 
         title: Text(title, style: const TextStyle(fontSize: 13)),
       );
 
-  Widget _search(TextEditingController c, {required List<Branch> all, required bool target, bool autofocus = false}) =>
-      TextField(
+  Widget _search(TextEditingController c, {bool autofocus = false}) => TextField(
         controller: c,
         autofocus: autofocus,
         style: const TextStyle(fontSize: 13),
@@ -132,14 +139,7 @@ class _DeleteCurrentBranchDialogState extends State<_DeleteCurrentBranchDialog> 
           prefixIconConstraints: BoxConstraints(minWidth: 30),
           hintText: 'Search branches',
         ),
-        onChanged: (_) => setState(() {
-          final shown = _filter(all, c);
-          if (target) {
-            _target = _visible(_target, shown);
-          } else {
-            _start = _visible(_start, shown);
-          }
-        }),
+        onChanged: (_) => setState(() {}),
         // Keeps the focus when Enter does nothing (no branch selected).
         onEditingComplete: () {},
         onSubmitted: (_) => _submit(),
@@ -237,8 +237,8 @@ class _DeleteCurrentBranchDialogState extends State<_DeleteCurrentBranchDialog> 
                 children: [
                   _radio(_Mode.checkout, 'Checkout Another Branch and Delete'),
                   if (_mode == _Mode.checkout) ...[
-                    _indented(_search(_targetSearch, all: _targets, target: true, autofocus: true)),
-                    _indented(_list(targets, _target, (b) => setState(() => _target = b),
+                    _indented(_search(_targetSearch, autofocus: true)),
+                    _indented(_list(targets, _shownTarget, (b) => setState(() => _target = b),
                         empty: _targets.isEmpty ? 'No other branch to check out' : 'No branch matches')),
                   ],
                   _radio(_Mode.create, 'Create New Branch and Delete'),
@@ -256,8 +256,8 @@ class _DeleteCurrentBranchDialogState extends State<_DeleteCurrentBranchDialog> 
                       onSubmitted: (_) => _submit(),
                     )),
                     _indented(const Text('From:', style: TextStyle(fontSize: 13, color: AppColors.textDim))),
-                    _indented(_search(_startSearch, all: _starts, target: false)),
-                    _indented(_list(starts, _start, (b) => setState(() => _start = b), empty: 'No branch matches')),
+                    _indented(_search(_startSearch)),
+                    _indented(_list(starts, _shownStart, (b) => setState(() => _start = b), empty: 'No branch matches')),
                   ],
                 ],
               ),

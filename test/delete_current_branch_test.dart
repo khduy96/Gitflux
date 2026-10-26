@@ -151,6 +151,35 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
   });
 
+  testWidgets('option 1: Smart Checkout moves HEAD but its unstash conflicts: feature is kept, the error stays shown',
+      (tester) async {
+    // feature is merged into main, which then changes a.txt: the unstash on main conflicts.
+    commit('a.txt', 'feature\n', 'feature work');
+    git(['checkout', '-q', 'main']);
+    git(['merge', '-q', '--ff-only', 'feature']);
+    commit('a.txt', 'main\n', 'main work');
+    git(['checkout', '-q', 'feature']);
+    write('a.txt', 'uncommitted\n');
+    final ctrl = await open(tester);
+    await openDelete(tester, ctrl);
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await settle(tester, () => shown('Git Checkout Problem'));
+    await tester.tap(find.text('Smart Checkout'));
+    await settle(tester, () => ctrl.busy.value == null && ctrl.notifications.value?.isError == true);
+    // Leaves time for a delete that must not come.
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+    }
+    expect(head(), 'main');
+    expect(exists('refs/heads/feature'), isTrue);
+    expect(shown('Branch Is Not Fully Merged'), isFalse);
+    expect(ctrl.busy.value, isNull);
+    expect(ctrl.notifications.value?.isError, isTrue);
+    expect(ctrl.notifications.value?.title, 'Checkout main failed');
+    await tester.pump(const Duration(seconds: 8));
+  });
+
   testWidgets('option 2, Enter with the default start point: on the new branch; feature not merged, Force declined',
       (tester) async {
     commit('f.txt', 'feature\n', 'feature work');
@@ -256,5 +285,92 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text(title), findsNothing);
     expect(result, isA<CheckoutAndDelete>().having((c) => c.target.name, 'target', 'dev'));
+  });
+
+  /// Opens the dialog on [branches] (feature being deleted); its result goes to [done].
+  Future<void> openDialog(WidgetTester tester, List<Branch> branches, void Function(LeaveBranchChoice?) done) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(host(Builder(
+      builder: (context) => TextButton(
+          onPressed: () async =>
+              done(await showDeleteCurrentBranchDialog(context, deleting: 'feature', branches: branches)),
+          child: const Text('open')),
+    )));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('the filter keeps the default: it comes back once the filter is cleared', (tester) async {
+    const branches = [
+      Branch(name: 'feature', isRemote: false, hash: '', isCurrent: true),
+      Branch(name: 'main', isRemote: false, hash: ''),
+      Branch(name: 'dev', isRemote: false, hash: ''),
+      Branch(name: 'origin/dev', isRemote: true, hash: ''),
+    ];
+    LeaveBranchChoice? result;
+    await openDialog(tester, branches, (r) => result = r);
+    final search = find.byType(TextField).first;
+    expect(selected(tester, 'main'), isTrue);
+
+    await tester.enterText(search, 'zzz');
+    await tester.pump();
+    expect(find.text('No branch matches'), findsOneWidget);
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(find.text(title), findsOneWidget, reason: 'nothing is selected');
+
+    await tester.enterText(search, '');
+    await tester.pump();
+    expect(selected(tester, 'main'), isTrue, reason: 'the default is selected again');
+
+    await tester.enterText(search, 'ai');
+    await tester.pump();
+    expect(selected(tester, 'main'), isTrue);
+
+    await tester.enterText(search, 'dev');
+    await tester.pump();
+    expect(selected(tester, 'dev'), isTrue, reason: 'main hidden: the first match');
+    expect(selected(tester, 'origin/dev'), isFalse);
+
+    await tester.enterText(search, '');
+    await tester.pump();
+    expect(selected(tester, 'main'), isTrue);
+    expect(selected(tester, 'dev'), isFalse);
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(find.text(title), findsNothing);
+    expect(result, isA<CheckoutAndDelete>().having((c) => c.target.name, 'target', 'main'));
+  });
+
+  testWidgets('without a default, a filter with a single match selects it', (tester) async {
+    const branches = [
+      Branch(name: 'feature', isRemote: false, hash: '', isCurrent: true),
+      Branch(name: 'dev', isRemote: false, hash: ''),
+      Branch(name: 'origin/dev', isRemote: true, hash: ''),
+    ];
+    LeaveBranchChoice? result;
+    await openDialog(tester, branches, (r) => result = r);
+    final search = find.byType(TextField).first;
+    bool anySelected() => tester.widgetList<HoverRow>(find.byType(HoverRow)).any((r) => r.selected);
+
+    await tester.enterText(search, 'dev');
+    await tester.pump();
+    expect(anySelected(), isFalse, reason: 'two matches, no default');
+
+    await tester.enterText(search, 'origin');
+    await tester.pump();
+    expect(selected(tester, 'origin/dev'), isTrue);
+
+    await tester.enterText(search, '');
+    await tester.pump();
+    expect(anySelected(), isFalse, reason: 'still no default without a filter');
+
+    await tester.enterText(search, 'origin');
+    await tester.pump();
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(result, isA<CheckoutAndDelete>().having((c) => c.target.name, 'target', 'origin/dev'));
   });
 }

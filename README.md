@@ -268,9 +268,13 @@ Dialog **Interactively Rebase from Here…**:
     remote đó làm upstream.
   - Checkout chạy như Checkout thường (Smart Checkout, dialog worktree). Branch cũ chỉ bị xoá sau khi đã rời nó
     thành công; huỷ (Esc / Cancel) hoặc checkout không được thì branch cũ còn nguyên và vẫn là current branch.
-    Chỉ xoá branch local, branch trên remote giữ nguyên (không push gì). Branch chưa merge vào HEAD mới thì hỏi
-    **Force Delete**; từ chối thì branch cũ còn nguyên và bạn ở lại branch mới. Repo đang merge / rebase /
-    cherry-pick / revert / `git am` thì chỉ hiện thông báo, không chạy lệnh git nào
+    Bước rời branch báo lỗi dù HEAD đã đổi (ví dụ Smart Checkout không khôi phục được thay đổi cục bộ) thì branch
+    cũ cũng không bị xoá, thông báo lỗi vẫn hiện.
+    Chỉ xoá branch local, branch trên remote giữ nguyên (không push gì). Xoá như `git branch -d`: branch phải đã
+    merge vào upstream của nó (nếu có), không thì vào HEAD mới; chưa merge thì hiện dialog
+    **Branch Is Not Fully Merged** hỏi xoá hẳn (nút **Delete**); từ chối thì branch cũ còn nguyên và bạn ở lại
+    branch mới. Repo đang merge / rebase / cherry-pick / revert / `git am` thì chỉ hiện thông báo, không chạy lệnh
+    git nào
 - Rebase / Merge **từ origin**: chuột phải một branch local B (đang ở A) có thêm **Rebase 'A' onto 'origin/B'**,
   **Merge 'origin/B' into 'A'…** và **Quick Merge 'origin/B' into 'A'** (khi B có branch trên remote: upstream, hoặc
   cùng tên trên origin). `origin/B` được fetch trước, nên không cần checkout B và pull; B local không bị đổi

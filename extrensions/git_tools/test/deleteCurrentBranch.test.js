@@ -121,6 +121,20 @@ test('DeleteCurrentBranch: deletes once HEAD moved', async () => {
   assert.deepEqual(repo.calls.deleteBranch, [{ name: 'feature', force: false }]);
 });
 
+test('DeleteCurrentBranch: HEAD moved but leaving reported an error (unstash conflict), nothing is deleted', async () => {
+  const repo = fakeRepo();
+  const r = await new DeleteCurrentBranch(/** @type {any} */ (repo)).run({
+    branch: 'feature', leave: async () => { repo.state.head = 'main'; return false; }, confirmForce: never,
+  });
+  assert.deepEqual(r, { outcome: 'leaveFailed', head: 'main' });
+  assert.deepEqual(repo.calls.deleteBranch, []);
+
+  const ok = await new DeleteCurrentBranch(/** @type {any} */ (fakeRepo())).run({
+    branch: 'feature', leave: async () => true, confirmForce: never,
+  });
+  assert.equal(ok.outcome, 'stayed', 'HEAD still decides first');
+});
+
 test('DeleteCurrentBranch: not fully merged and force declined keeps the branch', async () => {
   const repo = fakeRepo({ deleteErrors: [notMerged('feature')] });
   const asked = [];

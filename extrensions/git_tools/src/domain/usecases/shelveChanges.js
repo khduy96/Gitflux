@@ -4,17 +4,13 @@
 const { allPaths } = require('../entities');
 const { ShelfRejected } = require('../errors');
 const { shelfPaths } = require('../logic/shelf');
+const { stateOperation } = require('../logic/leaveBranch');
 
 /** @typedef {import('../ports').GitRepository} GitRepository */
 /** @typedef {import('../ports').ShelfStore} ShelfStore */
 /** @typedef {import('../entities').FileChange} FileChange */
 /** @typedef {import('../entities').Shelf} Shelf */
 /** @typedef {import('../entities').ShelfFile} ShelfFile */
-
-/** Operations during which nothing is shelved. */
-const OPERATION = {
-  merging: 'merge', rebasing: 'rebase', cherryPicking: 'cherry-pick', reverting: 'revert', applyingMailbox: 'patch application (git am)',
-};
 
 /**
  * A checked shelve, ready to run. `skipped`: submodules, nested
@@ -43,7 +39,7 @@ class ShelveChanges {
    */
   prepare({ status, changes, name, keep = false }) {
     if (status.state !== 'normal') {
-      throw new ShelfRejected(`Shelving is not possible while a ${OPERATION[status.state] || status.state} is in progress.`);
+      throw new ShelfRejected(`Shelving is not possible while a ${stateOperation(status.state) || status.state} is in progress.`);
     }
     if (!status.head) throw new ShelfRejected('Shelving needs a commit to shelve against: make the first commit.');
     if (!name.trim()) throw new ShelfRejected('Shelf name is empty.');

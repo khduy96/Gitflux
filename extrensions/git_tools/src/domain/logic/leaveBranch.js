@@ -11,7 +11,8 @@
  */
 
 /**
- * What is in progress, for "Finish or abort the <op> in progress first".
+ * What is in progress, for "Finish or abort the <op> in progress first" (also
+ * used by ShelveChanges).
  * @type {Partial<Record<RepoState, string>>}
  */
 const OPERATION = {
